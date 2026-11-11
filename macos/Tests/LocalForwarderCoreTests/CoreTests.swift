@@ -84,6 +84,12 @@ final class CoreTests: XCTestCase {
     func testInheritedRulesDoNotIncludeOrdinarySettings() {
         XCTAssertEqual(SSHCommand.inheritedForwards("hostname a\nlocalforward 1234 localhost:22\nremoteforward 4567 localhost:33\ndynamicforward 1080\n" ).count, 3)
     }
+    func testCapturedCommandTimeoutHasBoundedCleanup() throws {
+        let start = ContinuousTime.now()
+        let result = try ProcessTools.capture("/bin/sleep", ["120"], timeout: 0.05)
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertLessThan(ContinuousTime.now() - start, 3)
+    }
     func testPublicKeyInstallerPreservesRestrictedExistingEntry() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

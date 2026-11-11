@@ -6,7 +6,32 @@ import Glibc
 #endif
 
 public struct CommandResult { public let status: Int32; public let output: String }
+private final class CaptureCleanup {
+    let process: Process
+    private let lock = NSLock()
+    private var finished = false
+    init(_ process: Process) { self.process = process }
+    func finish() {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        ProcessTools.stopAndWait(process)
+        finished = true
+    }
+}
 public enum ProcessTools {
+    private static let capturesLock = NSLock()
+    private static var captures: [ObjectIdentifier: CaptureCleanup] = [:]
+    private static var shuttingDown = false
+
+    /// Called off the UI thread during final shutdown, including outstanding ssh -G inspections.
+    public static func cancelCapturedProcesses() {
+        capturesLock.lock()
+        shuttingDown = true
+        let pending = Array(captures.values)
+        capturesLock.unlock()
+        for task in pending { requestStop(task.process) }
+        for task in pending { task.finish() }
+    }
     /// The application helper establishes an owned process group BEFORE exec, including ProxyCommand descendants.
     public static var sshLauncher: String?
     public static func configure(_ process: Process, executable: String, arguments: [String]) {
@@ -49,15 +74,26 @@ public enum ProcessTools {
         let process = Process(); configure(process, executable: executable, arguments: arguments)
         process.environment = environment(); process.standardInput = FileHandle.nullDevice
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
-        try process.run(); _ = setpgid(process.processIdentifier, process.processIdentifier)
-        let limit = DispatchWorkItem { stop(process) }
+        let cleanup = CaptureCleanup(process)
+        capturesLock.lock()
+        guard !shuttingDown else { capturesLock.unlock(); throw AppError("앱을 종료하고 있습니다.") }
+        do { try process.run() } catch { capturesLock.unlock(); throw error }
+        captures[ObjectIdentifier(process)] = cleanup
+        capturesLock.unlock()
+        _ = setpgid(process.processIdentifier, process.processIdentifier)
+        let limit = DispatchWorkItem { cleanup.finish() }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: limit)
+        defer {
+            limit.cancel()
+            cleanup.finish()
+            capturesLock.lock(); captures.removeValue(forKey: ObjectIdentifier(process)); capturesLock.unlock()
+        }
         var bytes = Data(); var exceeded = false
         while true {
             let data = pipe.fileHandleForReading.readData(ofLength: 8192)
             if data.isEmpty { break }
             if bytes.count + data.count <= 1_048_576 { bytes.append(data) }
-            else { exceeded = true; stop(process) }
+            else { exceeded = true; cleanup.finish() }
         }
         process.waitUntilExit(); limit.cancel()
         if exceeded { throw AppError("SSH 진단 출력이 허용 크기를 초과했습니다.") }

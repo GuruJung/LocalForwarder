@@ -92,7 +92,7 @@ public:
     }
     void timer() {
         KillTimer(window,TIMER_SESSION); auto action=machine.tick(GetTickCount64());
-        if(action==Action::timeout) { ++generation; child.reset(); lastError="SSH 연결 준비 시간이 20초를 초과했습니다."; emitError(); dispatch(machine.failed(GetTickCount64())); }
+        if(action==Action::timeout) { ++generation; child.reset(); lastError="SSH 연결 준비 시간이 20초를 초과했습니다.\n"+(querying?effective:log); emitError(); dispatch(machine.failed(GetTickCount64())); }
         else dispatch(action);
     }
     void dispatch(Action action) {
@@ -126,6 +126,10 @@ public:
     void childEvent(std::unique_ptr<ChildEvent> event) {
         if(event->generation!=generation || machine.state==State::exiting) return;
         if(!event->ended) {
+            if(test && !querying) {
+                DWORD written=0;
+                WriteFile(GetStdHandle(STD_ERROR_HANDLE),event->text.data(),static_cast<DWORD>(event->text.size()),&written,nullptr);
+            }
             if(querying) { if(effective.size()<262144) effective.append(event->text,0,262144-effective.size()); }
             else {
                 log+=event->text; if(log.size()>65536) log.erase(0,log.size()-65536);
@@ -143,6 +147,7 @@ public:
                 lastError="활성 포워딩 규칙이 없습니다."; emitError(); dispatch(machine.failed(GetTickCount64())); return;
             }
             readiness=Readiness(remoteForwardCount(effective));
+            if(test) outputLine("LF_QUERY remote_forwards="+std::to_string(remoteForwardCount(effective)));
             if(!test) set(Inherited,formatInherited(effective));
             try { startChild(sshArguments(attemptHost,testConfig,false)); }
             catch(const std::exception& e) { lastError=e.what(); emitError(); dispatch(machine.failed(GetTickCount64())); }

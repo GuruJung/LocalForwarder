@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
     var activeID: String?
     var tray: NSStatusItem?
     var inspectionGeneration = 0
+    var finishing = false
+    var terminationReady = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -33,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         makeWindow()
         session.onChange = { [weak self] state in self?.changed(state) }
         session.onInitialFailure = { [weak self] error in self?.initialFailure(error) }
-        session.onExit = { NSApp.terminate(nil) }
+        session.onExit = { [weak self] in self?.finishTermination() }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
         openSettings()
     }
@@ -46,8 +48,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         return false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if session.state == .exiting || session.state == .editing { return .terminateNow }
+        if terminationReady { return .terminateNow }
         session.quit(); return .terminateCancel
+    }
+    private func finishTermination() {
+        guard !finishing else { return }
+        finishing = true; inspectionGeneration += 1
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            ProcessTools.cancelCapturedProcesses()
+            DispatchQueue.main.async {
+                self?.terminationReady = true
+                NSApp.terminate(nil)
+            }
+        }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if session.state == .editing { session.quit() } else { sender.orderOut(nil) }

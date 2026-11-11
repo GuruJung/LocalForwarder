@@ -676,29 +676,34 @@ class RealSSHTests(unittest.TestCase):
 
 def check_fixture(fixture: Fixture):
     """Independently verify the daemon, relay and echo endpoint without an app build."""
-    tunnel = subprocess.Popen([fixture.ssh, "-F", str(fixture.ssh_config), "-N", "-n", "-T",
+    log_path = fixture.root / "fixture-client.log"
+    log = log_path.open("w", encoding="utf-8")
+    tunnel = subprocess.Popen([fixture.ssh, "-F", str(fixture.ssh_config), "-v", "-N", "-n", "-T",
                                "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "lf-fixture"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                              stdout=subprocess.DEVNULL, stderr=log)
     try:
         deadline = time.monotonic() + 10
         while True:
             if tunnel.poll() is not None:
-                raise RuntimeError(tunnel.stderr.read().decode("utf-8", errors="replace"))
+                raise RuntimeError(log_path.read_text(encoding="utf-8", errors="replace")[-12000:])
             try:
                 echo(fixture.inherited_port)
+                echo(fixture.remote_port)
                 break
             except OSError:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.1)
-        fixture.relay.disconnect(block=True)
+        fixture.relay.disconnect(block=False)
         tunnel.wait(timeout=10)
         wait_port_closed(fixture.inherited_port)
+        wait_port_closed(fixture.remote_port)
     finally:
         if tunnel.poll() is None:
             tunnel.terminate()
             tunnel.wait(timeout=10)
-        tunnel.stderr.close()
+        log.close()
+    return log_path.read_text(encoding="utf-8", errors="replace")[-12000:]
 
 
 class EvidenceResult(unittest.TextTestResult):
@@ -758,8 +763,8 @@ def main() -> int:
         report["ssh_path"] = fixture.ssh
         report["ssh_keygen_path"] = fixture.keygen
         report["sshd_path"] = fixture.sshd
+        report["fixture_tunnel_diagnostics"] = check_fixture(fixture)
         if options.fixture_check:
-            check_fixture(fixture)
             report.update(status="fixture-validated", app_tests_run=False)
             return 0
         RealSSHTests.fixture = fixture
