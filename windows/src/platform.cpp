@@ -44,10 +44,19 @@ void protectPath(const fs::path& path) {
 }
 Config loadConfig(const fs::path& directory) {
     auto path=directory/L"config.json"; if(!fs::exists(path)) return {};
-    if(fs::file_size(path)>4*1024*1024) throw std::runtime_error("설정 파일이 너무 큽니다 (최대 4 MiB).");
-    std::ifstream stream(path,std::ios::binary); if(!stream) throw std::runtime_error("설정 파일을 열 수 없습니다.");
-    std::string text((std::istreambuf_iterator<char>(stream)),{});
-    if(stream.bad()) throw std::runtime_error("설정 파일을 읽을 수 없습니다.");
+    // A concurrent instance may atomically replace the path while this handle
+    // reads the old file. Sharing deletion allows that without locks or retries.
+    Handle file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(!file) throw std::runtime_error("설정 파일을 열 수 없습니다: "+winError());
+    LARGE_INTEGER size{}; if(!GetFileSizeEx(file.value,&size)) throw std::runtime_error(winError());
+    if(size.QuadPart>4*1024*1024) throw std::runtime_error("설정 파일이 너무 큽니다 (최대 4 MiB).");
+    std::string text(static_cast<size_t>(size.QuadPart),'\0'); size_t offset=0;
+    while(offset<text.size()) {
+        DWORD count=0;
+        if(!ReadFile(file.value,text.data()+offset,static_cast<DWORD>(text.size()-offset),&count,nullptr)) throw std::runtime_error("설정 파일을 읽을 수 없습니다: "+winError());
+        if(!count) break; offset+=count;
+    }
+    text.resize(offset);
     return parseConfig(text);
 }
 Host loadHost(const fs::path& directory,const std::string& id) {

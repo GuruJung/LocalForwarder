@@ -56,5 +56,6 @@ Capture capture(const fs::path& executable, const std::vector<std::string>& args
 int interactive(const fs::path& executable, const std::vector<std::string>& args);
 void outputLine(const std::string& line);
 void launchRecovery(const std::string& profileId);
+std::string derivePublicKey(const fs::path& key);
 int setupAuthentication(const fs::path& directory, const std::string& profileId);
 }

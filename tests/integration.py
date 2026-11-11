@@ -585,15 +585,20 @@ class RealSSHTests(unittest.TestCase):
         wait_port_closed(old_port)
 
     def test_05_automatic_reconnect_after_real_60_seconds(self):
-        session, _, config = self.start("auto-success")
+        session, directory, config = self.start("auto-success")
         session.wait_state("connected")
         self.fixture.relay.disconnect(block=False)
         index, lost_at = session.wait_state("waitingReconnect")
+        old_port = config["hosts"][0]["forwards"][0]["localPort"]
+        new_port = next(port for port in ports(2) if port != old_port)
+        config["hosts"][0]["forwards"][0]["localPort"] = new_port
+        self.fixture.write_config(directory, config)
         reconnect_index, retry_at = session.wait_state("reconnecting", after=index + 1, timeout=80)
         self.assertGreaterEqual(retry_at - lost_at, 58)
         self.assertLess(retry_at - lost_at, 75)
         session.wait_state("connected", after=reconnect_index + 1)
-        echo(config["hosts"][0]["forwards"][0]["localPort"])
+        echo(new_port)
+        wait_port_closed(old_port)
         self.report["automatic_reconnect_delay_seconds"] = retry_at - lost_at
 
     def test_06_failed_automatic_reconnect_then_real_60_second_exit(self):

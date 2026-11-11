@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <sstream>
 
 namespace lf {
 namespace {
@@ -22,29 +23,44 @@ int verify(const fs::path& ssh,const Host& host) {
     }
     return 1;
 }
-std::string readPublic(const fs::path& key) {
-    auto pub=key; pub+=L".pub";
-    if(!fs::exists(pub)) {
-        std::cout << "공개키를 추출합니다. 기존 키에 암호가 있으면 입력하세요.\n" << std::flush;
-        auto exe=systemSSH().parent_path()/L"ssh-keygen.exe";
-        auto temp=pub; temp+=wide("."+newId()+".tmp");
-        SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE};
-        Handle file(CreateFileW(temp.c_str(),GENERIC_WRITE,0,&sa,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
-        if(!file) throw std::runtime_error(winError());
-        STARTUPINFOW si{}; si.cb=sizeof(si); si.dwFlags=STARTF_USESTDHANDLES;
-        si.hStdInput=GetStdHandle(STD_INPUT_HANDLE); si.hStdError=GetStdHandle(STD_ERROR_HANDLE); si.hStdOutput=file.value;
-        auto cmd=quoteWindowsArgument(exe.wstring())+L" -y -f "+quoteWindowsArgument(key.wstring());
-        PROCESS_INFORMATION pi{};
-        if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,TRUE,0,nullptr,nullptr,&si,&pi)) { file.reset(); fs::remove(temp); throw std::runtime_error(winError()); }
-        Handle process(pi.hProcess),thread(pi.hThread); WaitForSingleObject(process.value,INFINITE);
-        DWORD code=1; GetExitCodeProcess(process.value,&code); file.reset();
-        if(code) { fs::remove(temp); throw std::runtime_error("공개키 추출에 실패했습니다."); }
-        if(!MoveFileExW(temp.c_str(),pub.c_str(),MOVEFILE_WRITE_THROUGH)) { fs::remove(temp); throw std::runtime_error("공개키 파일을 저장할 수 없습니다."); }
-    }
-    std::ifstream file(pub,std::ios::binary); std::string line; std::getline(file,line);
-    if(!line.empty() && line.back()=='\r') line.pop_back();
-    if(line.empty()) throw std::runtime_error("공개키 파일이 비어 있습니다."); return line;
 }
+std::string derivePublicKey(const fs::path& key) {
+    std::cout << "공개키를 추출합니다. 기존 키에 암호가 있으면 입력하세요.\n" << std::flush;
+    auto exe=systemSSH().parent_path()/L"ssh-keygen.exe";
+    struct TemporaryDirectory {
+        fs::path path;
+        ~TemporaryDirectory() { std::error_code ignored; fs::remove_all(path,ignored); }
+    } temp{fs::temp_directory_path()/wide("LocalForwarder-public-"+newId())};
+    if(!fs::create_directory(temp.path)) throw std::runtime_error("임시 키 디렉터리를 만들 수 없습니다.");
+    protectPath(temp.path);
+    auto output=temp.path/L"public-key";
+    SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE};
+    Handle file(CreateFileW(output.c_str(),GENERIC_WRITE,0,&sa,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(!file) throw std::runtime_error(winError());
+    STARTUPINFOW si{}; si.cb=sizeof(si); si.dwFlags=STARTF_USESTDHANDLES;
+    si.hStdInput=GetStdHandle(STD_INPUT_HANDLE); si.hStdError=GetStdHandle(STD_ERROR_HANDLE); si.hStdOutput=file.value;
+    auto cmd=quoteWindowsArgument(exe.wstring())+L" -y -f "+quoteWindowsArgument(key.wstring());
+    PROCESS_INFORMATION pi{};
+    if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,TRUE,0,nullptr,nullptr,&si,&pi)) throw std::runtime_error(winError());
+    Handle process(pi.hProcess),thread(pi.hThread); WaitForSingleObject(process.value,INFINITE);
+    DWORD code=1; GetExitCodeProcess(process.value,&code); file.reset();
+    if(code) throw std::runtime_error("공개키 추출에 실패했습니다.");
+    auto readLine=[](const fs::path& path) {
+        std::ifstream stream(path,std::ios::binary); std::string line; std::getline(stream,line);
+        if(!line.empty() && line.back()=='\r') line.pop_back();
+        return line;
+    };
+    auto derived=readLine(output);
+    if(derived.empty()) throw std::runtime_error("추출한 공개키가 비어 있습니다.");
+    // Only the selected private key determines which public key is authorized.
+    // An existing companion file may supply a comment, never a different key.
+    auto fields=[](const std::string& line) {
+        std::istringstream stream(line); std::string type,blob; stream>>type>>blob;
+        return std::pair{type,blob};
+    };
+    auto pub=key; pub+=L".pub";
+    auto existing=readLine(pub);
+    return !existing.empty() && fields(existing)==fields(derived) ? existing : derived;
 }
 int setupAuthentication(const fs::path& directory,const std::string& profileId) {
     // The GUI-subsystem executable is explicitly attached to its external terminal only here.
@@ -90,7 +106,7 @@ int setupAuthentication(const fs::path& directory,const std::string& profileId) 
             if(interactive(keygen,{"-t","ed25519","-N","","-C","LocalForwarder-"+profileId,"-f",utf8(key.wstring())})) throw std::runtime_error("키 생성 실패");
             protectPath(key); created=true;
         }
-        auto publicKey=readPublic(key);
+        auto publicKey=derivePublicKey(key);
         if(!created) {
             std::cout<<"기존 키를 SSH 에이전트에 등록합니다. 키 암호가 있으면 입력하세요.\n"<<std::flush;
             if(interactive(ssh.parent_path()/L"ssh-add.exe",{utf8(key.wstring())})) {

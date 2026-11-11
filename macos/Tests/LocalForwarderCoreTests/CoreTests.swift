@@ -53,6 +53,42 @@ final class CoreTests: XCTestCase {
         let damaged = Data("{broken".utf8); try damaged.write(to: one.file)
         XCTAssertThrowsError(try one.save(first)); XCTAssertEqual(try Data(contentsOf: one.file), damaged)
     }
+    func testConcurrentSavesRemainValidAtSpecialCharacterPath() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Local Forwarder 한글 '\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(directory: directory)
+        var initial = host()
+        initial.identityFile = directory.appendingPathComponent("개인 키's identity").path
+        try store.save(initial)
+        let baseline = initial
+        final class Failures {
+            private let lock = NSLock()
+            private var messages: [String] = []
+            func add(_ message: String) { lock.lock(); defer { lock.unlock() }; messages.append(message) }
+            func read() -> [String] { lock.lock(); defer { lock.unlock() }; return messages }
+        }
+        let failures = Failures()
+        DispatchQueue.concurrentPerform(iterations: 32) { index in
+            do {
+                let writer = ConfigurationStore(directory: directory)
+                var update = baseline; update.name = "writer-\(index)"
+                try writer.save(update)
+                let snapshot = try JSONDecoder().decode(Configuration.self, from: Data(contentsOf: writer.file))
+                if snapshot.version != 1 || snapshot.hosts.count != 1 || snapshot.hosts[0].id != baseline.id {
+                    failures.add("동시 저장 중 유효하지 않은 설정을 읽었습니다.")
+                }
+            } catch { failures.add(error.localizedDescription) }
+        }
+        XCTAssertTrue(failures.read().isEmpty, failures.read().joined(separator: "\n"))
+        let concurrentResult = try store.host(baseline.id)
+        XCTAssertTrue(concurrentResult.name.hasPrefix("writer-"))
+        XCTAssertEqual(concurrentResult.identityFile, baseline.identityFile)
+        var last = baseline; last.name = "마지막 저장"
+        try ConfigurationStore(directory: directory).save(last)
+        let fresh = try ConfigurationStore(directory: directory).host(baseline.id)
+        XCTAssertEqual(fresh, last)
+        XCTAssertTrue(SSHCommand.connect(fresh).contains(baseline.identityFile!))
+    }
     func testCommandArgumentsAndDisabledForward() throws {
         var value = host(); value.user = "alice"; value.port = 2222; value.identityFile = "/tmp/한 글 key"
         value.forwards.append(Forward(id: "disabled", enabled: false, localPort: 1234, remoteHost: "::1", remotePort: 99))
