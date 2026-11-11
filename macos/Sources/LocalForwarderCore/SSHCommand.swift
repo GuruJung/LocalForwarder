@@ -48,17 +48,25 @@ public enum SSHCommand {
 public struct Readiness {
     public var authenticated = false
     public var enteredSession = false
+    public var localListener = false
     public var remoteExpected: Int
     public var remoteSucceeded = 0
     public var forwardingFailed = false
     public init(remoteExpected: Int = 0) { self.remoteExpected = remoteExpected }
     public mutating func consume(_ line: String) {
-        if line.contains("Authenticated to ") || line.contains("Authentication succeeded") { authenticated = true }
+        if line.contains("Authenticated to ") || line.contains("Authentication succeeded") {
+            // ProxyJump's -W child shares stderr. Its session entry is not target readiness.
+            authenticated = true; enteredSession = false; localListener = false; remoteSucceeded = 0
+        }
+        if line.contains("Local forwarding listening on ") { localListener = true }
         if line.contains("Entering interactive session") { enteredSession = true }
         if line.contains("remote forward success for:") { remoteSucceeded += 1 }
         if line.contains("Could not request local forwarding") || line.contains("remote port forwarding failed") || line.contains("Could not request remote forwarding") {
             forwardingFailed = true
         }
     }
-    public var ready: Bool { authenticated && enteredSession && remoteSucceeded >= remoteExpected && !forwardingFailed }
+    public var ready: Bool {
+        let forwardsReady = remoteExpected > 0 ? remoteSucceeded >= remoteExpected : localListener
+        return authenticated && enteredSession && forwardsReady && !forwardingFailed
+    }
 }

@@ -203,13 +203,19 @@ bool Readiness::feed(const std::string& chunk) {
     pending_ += chunk;
     for (size_t n; (n = pending_.find('\n')) != std::string::npos;) {
         auto line = pending_.substr(0, n); pending_.erase(0,n+1);
-        if (line.find("Authenticated to ") != std::string::npos) authenticated_ = true;
+        if (line.find("Authenticated to ") != std::string::npos) {
+            // ProxyJump children share stderr. Their session entry cannot prove
+            // the destination's forwarding is ready; start a new evidence set.
+            authenticated_ = true; entered_ = false; localListening_ = false; remoteConfirmed_ = 0;
+        }
+        if (line.find("Local forwarding listening on ") != std::string::npos) localListening_ = true;
         if (line.find("Entering interactive session") != std::string::npos) entered_ = true;
         if (line.find("remote forward success for:") != std::string::npos) ++remoteConfirmed_;
         if (line.find("remote port forwarding failed") != std::string::npos || line.find("Could not request local forwarding") != std::string::npos || line.find("cannot listen to port") != std::string::npos) failed_ = true;
     }
     if (pending_.size() > 65536) pending_.erase(0,pending_.size()-65536);
-    return !failed_ && authenticated_ && entered_ && remoteConfirmed_ >= remoteExpected_;
+    return !failed_ && authenticated_ && entered_ &&
+        (remoteExpected_ > 0 ? remoteConfirmed_ >= remoteExpected_ : localListening_);
 }
 const char* stateName(State state) {
     switch(state) {

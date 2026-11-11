@@ -31,6 +31,14 @@ int main() {
     check(!r.feed("Authenticated to h\ndebug1: Entering inter"),"partial marker");
     check(!r.feed("active session.\n"),"remote acknowledgement required");
     check(r.feed("debug1: remote forward success for: listen 1234, connect localhost:22\n"),"remote acknowledged");
+    Readiness jump;
+    check(!jump.feed("Authenticated to jump\ndebug1: Entering interactive session.\n"),"jump child alone never ready");
+    check(!jump.feed("Authenticated to target\ndebug1: Local forwarding listening on 127.0.0.1 port 15432.\n"),"target listener still requires target session entry");
+    check(jump.feed("debug1: Entering interactive session.\n"),"target session with local listener ready");
+    Readiness remoteJump(1);
+    check(!remoteJump.feed("Authenticated to jump\ndebug1: Entering interactive session.\n"),"jump child cannot satisfy remote forwarding");
+    check(!remoteJump.feed("debug1: remote forward success for: listen 1234, connect localhost:22\nAuthenticated to target\ndebug1: Entering interactive session.\n"),"target authentication resets preceding acknowledgements");
+    check(remoteJump.feed("debug1: remote forward success for: listen 1234, connect localhost:22\n"),"target remote acknowledgement ready");
     Readiness failed;
     check(!failed.feed("Authenticated to h\nCould not request local forwarding.\ndebug1: Entering interactive session.\n"),"failed forward never connected");
     Machine m;check(m.begin(false,0)==Action::start,"begin");m.ready();

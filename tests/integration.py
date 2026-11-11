@@ -772,6 +772,91 @@ class RealSSHTests(unittest.TestCase):
             for path in (marker, child_marker, script, private_config):
                 path.unlink(missing_ok=True)
 
+    def test_11_proxyjump_requires_target_forwarding_readiness(self):
+        fixture = self.fixture
+        # A jump ssh -W process emits its own authentication and interactive-session
+        # messages on the parent's stderr before the target SSH handshake completes.
+        # No inherited RemoteForward is present: a remote-ack gate would mask the bug.
+        known_hosts = fixture.root / "proxyjump-known-hosts"
+        host_fields = fixture.host_key.with_suffix(".pub").read_text().split()
+        known_hosts.write_text(
+            f"[127.0.0.1]:{fixture.server_port} {host_fields[0]} {host_fields[1]}\n",
+            encoding="utf-8",
+        )
+        private_config = fixture.root / "proxyjump-config"
+
+        def write_jump_config(target_port):
+            private_config.write_text("\n".join([
+                "Host jump-fixture target-fixture", f"  User {fixture.user}",
+                f"  IdentityFile {ssh_path(fixture.client_key)}",
+                f"  UserKnownHostsFile {ssh_path(known_hosts)}", "  GlobalKnownHostsFile none",
+                "  StrictHostKeyChecking yes", "  IdentitiesOnly yes", "  BatchMode yes",
+                "Host jump-fixture", "  HostName 127.0.0.1", f"  Port {fixture.server_port}",
+                "Host target-fixture", "  HostName 127.0.0.1", f"  Port {target_port}",
+                "  ProxyJump jump-fixture",
+            ]) + "\n", encoding="utf-8")
+
+        def start_jump(name):
+            profile = fixture.profile(name=name)
+            profile["hosts"][0]["target"] = "target-fixture"
+            directory = fixture.config_directory(name, profile)
+            session = AppSession(self.app, fixture, directory, ssh_configuration=private_config)
+            self.sessions.append(session)
+            return session, profile
+
+        with socket.socket() as sink:
+            sink.bind(("127.0.0.1", 0))
+            sink.listen()
+            sink.settimeout(.2)
+            stop = threading.Event()
+            accepted = []
+
+            def accept_without_ssh_banner():
+                while not stop.is_set():
+                    try:
+                        connection, _ = sink.accept()
+                        accepted.append(connection)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        return
+
+            worker = threading.Thread(target=accept_without_ssh_banner, daemon=True)
+            worker.start()
+            failed = None
+            try:
+                write_jump_config(sink.getsockname()[1])
+                failed, _ = start_jump("proxyjump-blocked")
+                deadline = time.monotonic() + 45
+                while failed.process.poll() is None:
+                    with failed.condition:
+                        self.assertNotIn("connected", [state for _, state in failed.events], failed.diagnostics())
+                        self.assertLess(time.monotonic(), deadline, failed.diagnostics())
+                        failed.condition.wait(.1)
+                self.assertNotEqual(failed.wait_exit(timeout=5), 0, failed.diagnostics())
+                self.assertNotIn("connected", [state for _, state in failed.events], failed.diagnostics())
+                self.assertGreaterEqual(len(accepted), 2, "Both SSH attempts must reach the blocked target through the jump")
+            finally:
+                if failed:
+                    failed.close()
+                stop.set()
+                worker.join(timeout=1)
+                for connection in accepted:
+                    connection.close()
+
+        # The same jump configuration must work once the target is an actual SSH
+        # server; it must not solve the regression by rejecting ProxyJump entirely.
+        write_jump_config(fixture.server_port)
+        succeeded, profile = start_jump("proxyjump-success")
+        succeeded.wait_state("connected", timeout=35)
+        for rule in profile["hosts"][0]["forwards"]:
+            echo(rule["localPort"])
+        succeeded.send("quit")
+        self.assertEqual(succeeded.wait_exit(timeout=10), 0, succeeded.diagnostics())
+        for rule in profile["hosts"][0]["forwards"]:
+            wait_port_closed(rule["localPort"])
+        self.report["proxyjump"] = "blocked target never connected; authenticated target forwards data"
+
 
 def check_fixture(fixture: Fixture):
     """Independently verify the daemon, relay and echo endpoint without an app build."""

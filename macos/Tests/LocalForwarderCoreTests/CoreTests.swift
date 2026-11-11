@@ -110,12 +110,40 @@ final class CoreTests: XCTestCase {
     }
     func testReadinessWaitsForRemoteAcknowledgementsAndRejectsFailure() {
         var readiness = Readiness(remoteExpected: 2)
-        readiness.consume("debug1: Entering interactive session."); XCTAssertFalse(readiness.ready)
         readiness.consume("Authenticated to server ([127.0.0.1]:22) using publickey.")
+        readiness.consume("debug1: Entering interactive session."); XCTAssertFalse(readiness.ready)
         readiness.consume("debug1: remote forward success for: listen 9090, connect localhost:9090"); XCTAssertFalse(readiness.ready)
         readiness.consume("debug1: remote forward success for: listen 9091, connect localhost:9091"); XCTAssertTrue(readiness.ready)
         var failed = Readiness(); failed.consume("Could not request local forwarding.")
-        failed.consume("Authenticated to server"); failed.consume("Entering interactive session"); XCTAssertFalse(failed.ready)
+        failed.consume("Authenticated to server"); failed.consume("Local forwarding listening on 127.0.0.1 port 9090.")
+        failed.consume("Entering interactive session"); XCTAssertFalse(failed.ready)
+    }
+    func testJumpSessionDoesNotEstablishTargetReadiness() {
+        var readiness = Readiness()
+        readiness.consume("Authenticated to jump ([127.0.0.1]:22) using publickey.")
+        readiness.consume("debug1: channel_connect_stdio_fwd: target:22")
+        readiness.consume("debug1: Entering interactive session.")
+        XCTAssertFalse(readiness.ready, "The ProxyJump -W child has no forwarding listeners")
+        readiness.consume("Authenticated to target ([127.0.0.1]:23) using publickey.")
+        readiness.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        XCTAssertFalse(readiness.ready, "The jump child's earlier session entry must be reset")
+        readiness.consume("debug1: Entering interactive session.")
+        XCTAssertTrue(readiness.ready)
+    }
+    func testAuthenticationResetsEarlierRemoteAcknowledgements() {
+        var readiness = Readiness(remoteExpected: 1)
+        readiness.consume("Authenticated to jump")
+        readiness.consume("debug1: Entering interactive session.")
+        readiness.consume("Authenticated to target")
+        readiness.consume("debug1: Entering interactive session.")
+        XCTAssertFalse(readiness.ready)
+        readiness.consume("debug1: remote forward success for: listen 9090, connect localhost:9090")
+        XCTAssertTrue(readiness.ready)
+        readiness.consume("Authenticated to another-target")
+        XCTAssertFalse(readiness.ready)
+        XCTAssertEqual(readiness.remoteSucceeded, 0)
+        XCTAssertFalse(readiness.enteredSession)
+        XCTAssertFalse(readiness.localListener)
     }
     func testInheritedRulesDoNotIncludeOrdinarySettings() {
         XCTAssertEqual(SSHCommand.inheritedForwards("hostname a\nlocalforward 1234 localhost:22\nremoteforward 4567 localhost:33\ndynamicforward 1080\n" ).count, 3)
