@@ -393,7 +393,11 @@ class AppSession:
         return "\n".join(self.output[-100:] + ["--- stderr ---"] + self.errors[-100:])
 
     def wait_exit(self, timeout):
-        result = self.process.wait(timeout=timeout)
+        try:
+            result = self.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            error.add_note("Application output at timeout:\n" + self.diagnostics()[-24000:])
+            raise
         for reader in self.readers:
             reader.join(timeout=2)
         return result
@@ -633,8 +637,45 @@ class RealSSHTests(unittest.TestCase):
     def test_08_collision_does_not_stop_existing_instance(self):
         first, _, config = self.start("independent-first")
         first.wait_state("connected")
-        second, _, _ = self.start("independent-second", config)
-        self.assertNotEqual(second.wait_exit(timeout=35), 0, second.diagnostics())
+        # OpenSSH enables SO_REUSEADDR. Windows may permit two SSH listeners on
+        # the same address/port; POSIX normally rejects them. Observe that native
+        # behavior without introducing a wrapper-side port or process precheck.
+        duplicate, _, _ = self.start("duplicate-bind-observation", config)
+        deadline = time.monotonic() + 45
+        while True:
+            with duplicate.condition:
+                connected = any(state == "connected" for _, state in duplicate.events)
+                ended = duplicate.process.poll() is not None
+                if connected or ended:
+                    break
+                self.assertLess(time.monotonic(), deadline, duplicate.diagnostics())
+                duplicate.condition.wait(.1)
+        if connected:
+            self.report["native_duplicate_bind"] = "allowed by native SSH/OS socket binding"
+            duplicate.send("quit")
+            self.assertEqual(duplicate.wait_exit(timeout=10), 0, duplicate.diagnostics())
+        else:
+            self.report["native_duplicate_bind"] = "rejected by native SSH/OS socket binding"
+            self.assertNotEqual(duplicate.wait_exit(timeout=5), 0, duplicate.diagnostics())
+        first.assert_alive()
+        echo(config["hosts"][0]["forwards"][0]["localPort"])
+
+        # Force a real bind failure independently of the OS's duplicate-SSH
+        # listener semantics, and prove failure cleanup leaves the first alive.
+        with socket.socket() as occupied:
+            if WINDOWS:
+                occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            second_config = json.loads(json.dumps(config))
+            second_config["hosts"][0]["forwards"].append({
+                "id": "exclusive-conflict", "enabled": True,
+                "localPort": occupied.getsockname()[1],
+                "remoteHost": "127.0.0.1", "remotePort": self.fixture.echo.port,
+            })
+            second, _, _ = self.start("independent-second", second_config)
+            self.assertNotEqual(second.wait_exit(timeout=35), 0, second.diagnostics())
+            self.assertNotIn("connected", [state for _, state in second.events])
         first.assert_alive()
         echo(config["hosts"][0]["forwards"][0]["localPort"])
 
