@@ -3,6 +3,10 @@ import LocalForwarderCore
 
 typealias Host = LocalForwarderCore.Host
 
+private final class FormDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let store = ConfigurationStore()
     lazy var session = SSHSession(store: store)
@@ -97,12 +101,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         return scroll
     }
     private func makeWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 790), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+        let titleHeight = NSWindow.frameRect(forContentRect: .zero, styleMask: style).height
+        let initialSize = NSSize(width: min(820, max(400, visible.width - 40)),
+                                 height: min(790, max(300, visible.height - titleHeight - 40)))
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: initialSize), styleMask: style, backing: .buffered, defer: false)
+        window.contentMinSize = NSSize(width: min(680, initialSize.width), height: min(360, initialSize.height))
         window.title = "LocalForwarder"; window.delegate = self; window.isReleasedWhenClosed = false; window.center()
+
+        let formScroll = NSScrollView()
+        formScroll.hasVerticalScroller = true; formScroll.autohidesScrollers = true
+        formScroll.translatesAutoresizingMaskIntoConstraints = false
+        let content = window.contentView!
+        content.addSubview(formScroll)
+        NSLayoutConstraint.activate([formScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                                     formScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                                     formScroll.topAnchor.constraint(equalTo: content.topAnchor),
+                                     formScroll.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        let document = FormDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        formScroll.documentView = document
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView!.addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 20), stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -20), stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 20)])
+        document.addSubview(stack)
+        NSLayoutConstraint.activate([document.leadingAnchor.constraint(equalTo: formScroll.contentView.leadingAnchor),
+                                     document.topAnchor.constraint(equalTo: formScroll.contentView.topAnchor),
+                                     document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor),
+                                     stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
+                                     stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
+                                     stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
+                                     stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20)])
         selector.target = self; selector.action = #selector(selectedHost)
         selector.widthAnchor.constraint(equalToConstant: 480).isActive = true
         addHostButton = button("추가", #selector(addHost)); deleteHostButton = button("삭제", #selector(deleteHost))
@@ -129,6 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
         connectButton = button("저장 후 연결", #selector(connect)); connectButton.keyEquivalent = "\r"
         let actions = NSStackView(views: [button("저장", #selector(saveClicked)), connectButton, button("인증 설정…", #selector(setupAuthentication)), button("종료", #selector(quit))]); actions.spacing = 12; stack.addArrangedSubview(actions)
         let statusScroll = scrolling(statusText, height: 95); stack.addArrangedSubview(statusScroll); statusScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        content.layoutSubtreeIfNeeded()
+        formScroll.contentView.scroll(to: .zero)
     }
     @objc func openSettings() {
         do {

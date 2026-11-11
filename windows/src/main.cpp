@@ -57,6 +57,8 @@ public:
     int exitCode=0;
 private:
     std::map<int,HWND> controls;
+    std::map<int,RECT> layout;
+    int scrollX=0,scrollY=0;
     std::vector<Host> hosts;
     Host draft;
     std::string activeId,activeName;
@@ -81,7 +83,7 @@ public:
     }
     void initialize() {
         connectedIcon=stateIcon(true); disconnectedIcon=stateIcon(false); taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");
-        if(!test) { createControls(); reload(); }
+        if(!test) { createControls(); updateScroll(); reload(); }
         notifyState();
     }
     void testStart(const std::string& id) { activeId=id; dispatch(machine.begin(false,GetTickCount64())); }
@@ -194,11 +196,59 @@ public:
     void set(int id,const std::wstring& text) { SetWindowTextW(controls.at(id),text.c_str()); }
     std::wstring get(int id) { return textOf(controls.at(id)); }
     void make(int id,const wchar_t* type,const wchar_t* title,DWORD style,int x,int y,int w,int h) {
+        layout[id]={x,y,x+w,y+h};
         auto dpi=GetDpiForWindow(window); auto scale=[dpi](int n){return MulDiv(n,static_cast<int>(dpi),96);};
         auto control=CreateWindowExW(wcscmp(type,L"EDIT")==0?WS_EX_CLIENTEDGE:0,type,title,WS_CHILD|WS_VISIBLE|style,scale(x),scale(y),scale(w),scale(h),window,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),GetModuleHandleW(nullptr),nullptr);
         if(!control) throw std::runtime_error(winError()); controls[id]=control; SendMessageW(control,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);
     }
     void label(int id,const wchar_t* title,int x,int y,int w) { make(id,L"STATIC",title,0,x,y,w,22); }
+    void updateScroll() {
+        if(test) return;
+        RECT client{}; GetClientRect(window,&client);
+        int oldX=scrollX,oldY=scrollY; auto dpi=GetDpiForWindow(window);
+        SCROLLINFO horizontal{sizeof(horizontal),SIF_RANGE|SIF_PAGE|SIF_POS,0,MulDiv(830,dpi,96)-1,static_cast<UINT>(std::max(0L,client.right)),scrollX,0};
+        SCROLLINFO vertical{sizeof(vertical),SIF_RANGE|SIF_PAGE|SIF_POS,0,MulDiv(745,dpi,96)-1,static_cast<UINT>(std::max(0L,client.bottom)),scrollY,0};
+        SetScrollInfo(window,SB_HORZ,&horizontal,TRUE); SetScrollInfo(window,SB_VERT,&vertical,TRUE);
+        horizontal.fMask=SIF_POS;vertical.fMask=SIF_POS;GetScrollInfo(window,SB_HORZ,&horizontal);GetScrollInfo(window,SB_VERT,&vertical);
+        scrollX=horizontal.nPos;scrollY=vertical.nPos;
+        if(oldX!=scrollX || oldY!=scrollY) ScrollWindowEx(window,oldX-scrollX,oldY-scrollY,nullptr,nullptr,nullptr,nullptr,SW_SCROLLCHILDREN|SW_INVALIDATE|SW_ERASE);
+    }
+    void scrollTo(int bar,int position) {
+        SCROLLINFO info{sizeof(info),SIF_ALL};GetScrollInfo(window,bar,&info);int old=info.nPos;
+        info.fMask=SIF_POS;info.nPos=position;SetScrollInfo(window,bar,&info,TRUE);GetScrollInfo(window,bar,&info);
+        if(bar==SB_VERT) scrollY=info.nPos; else scrollX=info.nPos;
+        if(info.nPos!=old) ScrollWindowEx(window,bar==SB_HORZ?old-info.nPos:0,bar==SB_VERT?old-info.nPos:0,nullptr,nullptr,nullptr,nullptr,SW_SCROLLCHILDREN|SW_INVALIDATE|SW_ERASE);
+    }
+    void scrollCommand(int bar,int command) {
+        SCROLLINFO info{sizeof(info),SIF_ALL};GetScrollInfo(window,bar,&info);int position=info.nPos;int line=MulDiv(24,GetDpiForWindow(window),96);
+        switch(command) {
+            case SB_LINEUP:position-=line;break;case SB_LINEDOWN:position+=line;break;
+            case SB_PAGEUP:position-=static_cast<int>(info.nPage);break;case SB_PAGEDOWN:position+=static_cast<int>(info.nPage);break;
+            case SB_THUMBTRACK:case SB_THUMBPOSITION:position=info.nTrackPos;break;
+            case SB_TOP:position=info.nMin;break;case SB_BOTTOM:position=info.nMax;break;default:return;
+        }
+        scrollTo(bar,position);
+    }
+    void ensureFocusVisible() {
+        if(test) return;auto focused=GetFocus();if(!focused || !IsChild(window,focused)) return;
+        RECT area{},client{};GetWindowRect(focused,&area);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&area),2);GetClientRect(window,&client);
+        if(area.top<0) scrollTo(SB_VERT,scrollY+area.top);else if(area.bottom>client.bottom) scrollTo(SB_VERT,scrollY+area.bottom-client.bottom);
+        if(area.left<0) scrollTo(SB_HORZ,scrollX+area.left);else if(area.right>client.right) scrollTo(SB_HORZ,scrollX+area.right-client.right);
+    }
+    void dpiChanged(RECT suggested) {
+        auto dpi=GetDpiForWindow(window);scrollX=scrollY=0;
+        HFONT old=font; font=CreateFontW(-MulDiv(10,dpi,72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+        for(auto& [id,control]:controls) {
+            auto rect=layout.at(id);SetWindowPos(control,nullptr,MulDiv(rect.left,dpi,96),MulDiv(rect.top,dpi,96),MulDiv(rect.right-rect.left,dpi,96),MulDiv(rect.bottom-rect.top,dpi,96),SWP_NOZORDER|SWP_NOACTIVATE);
+            SendMessageW(control,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);
+        }
+        if(old)DeleteObject(old);
+        if(controls.contains(Rules)) {int widths[]={60,120,440,150};for(int i=0;i<4;++i)ListView_SetColumnWidth(controls[Rules],i,MulDiv(widths[i],dpi,96));}
+        MONITORINFO monitor{sizeof(monitor)};GetMonitorInfoW(MonitorFromRect(&suggested,MONITOR_DEFAULTTONEAREST),&monitor);
+        int width=std::min(suggested.right-suggested.left,monitor.rcWork.right-monitor.rcWork.left),height=std::min(suggested.bottom-suggested.top,monitor.rcWork.bottom-monitor.rcWork.top);
+        SetWindowPos(window,nullptr,suggested.left,suggested.top,width,height,SWP_NOZORDER|SWP_NOACTIVATE);updateScroll();
+    }
+
     void createControls() {
         font=CreateFontW(-MulDiv(10,GetDpiForWindow(window),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
         label(300,L"접속 호스트",16,16,100); make(HostList,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,125,12,480,240);
@@ -304,6 +354,11 @@ public:
         if(msg==taskbarCreated && taskbarCreated) { trayAdded=false; if(machine.state!=State::editing) updateTray(); return 0; }
         switch(msg) {
             case WM_COMMAND: command(LOWORD(w),HIWORD(w)); return 0;
+            case WM_SIZE: updateScroll();return 0;
+            case WM_VSCROLL:scrollCommand(SB_VERT,LOWORD(w));return 0;
+            case WM_HSCROLL:scrollCommand(SB_HORZ,LOWORD(w));return 0;
+            case WM_MOUSEWHEEL:{SCROLLINFO info{sizeof(info),SIF_POS};GetScrollInfo(window,SB_VERT,&info);scrollTo(SB_VERT,info.nPos-MulDiv(GET_WHEEL_DELTA_WPARAM(w),72*static_cast<int>(GetDpiForWindow(window)),WHEEL_DELTA*96));return 0;}
+            case WM_DPICHANGED:if(!test)dpiChanged(*reinterpret_cast<RECT*>(l));return 0;
             case WM_NOTIFY: { auto* n=reinterpret_cast<NMHDR*>(l); if(n->idFrom==Rules && n->code==LVN_ITEMCHANGED) ruleChanged(reinterpret_cast<NMLISTVIEW*>(l)); return 0; }
             case WM_CHILD_EVENT: childEvent(std::unique_ptr<ChildEvent>(reinterpret_cast<ChildEvent*>(l))); return 0;
             case WM_PREVIEW: { std::unique_ptr<PreviewEvent> e(reinterpret_cast<PreviewEvent*>(l)); if(e->generation==previewGeneration && !test) set(Inherited,wide(e->text)); return 0; }
@@ -343,9 +398,12 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int) {
         App app(directory); app.test=test; app.testConfig=testConfig;
         WNDCLASSW cls{}; cls.hInstance=instance; cls.lpfnWndProc=windowProc; cls.lpszClassName=L"LocalForwarderWindow"; cls.hCursor=LoadCursorW(nullptr,IDC_ARROW); cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1); cls.hIcon=LoadIconW(nullptr,IDI_APPLICATION);
         if(!RegisterClassW(&cls)) throw std::runtime_error(winError());
-        DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;
+        DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_THICKFRAME|WS_VSCROLL|WS_HSCROLL;
         auto dpi=GetDpiForSystem(); RECT rect{0,0,MulDiv(830,dpi,96),MulDiv(745,dpi,96)}; AdjustWindowRectExForDpi(&rect,style,FALSE,0,dpi);
-        HWND hwnd=CreateWindowExW(0,cls.lpszClassName,L"LocalForwarder",style,CW_USEDEFAULT,CW_USEDEFAULT,rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,instance,&app);
+        POINT cursor{};GetCursorPos(&cursor);MONITORINFO monitor{sizeof(monitor)};GetMonitorInfoW(MonitorFromPoint(cursor,MONITOR_DEFAULTTONEAREST),&monitor);
+        int width=std::min(rect.right-rect.left,monitor.rcWork.right-monitor.rcWork.left),height=std::min(rect.bottom-rect.top,monitor.rcWork.bottom-monitor.rcWork.top);
+        int x=monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-width)/2,y=monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-height)/2;
+        HWND hwnd=CreateWindowExW(0,cls.lpszClassName,L"LocalForwarder",style,x,y,width,height,nullptr,nullptr,instance,&app);
         if(!hwnd) throw std::runtime_error(winError());
         app.initialize();
         if(test) {
@@ -360,7 +418,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int) {
             }).detach();
             app.testStart(profile);
         } else ShowWindow(hwnd,SW_SHOW);
-        MSG msg{}; while(GetMessageW(&msg,nullptr,0,0)>0) { if(!IsDialogMessageW(hwnd,&msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); } }
+        MSG msg{}; while(GetMessageW(&msg,nullptr,0,0)>0) { if(!IsDialogMessageW(hwnd,&msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); } else app.ensureFocusVisible(); }
         CoUninitialize(); return static_cast<int>(msg.wParam);
     } catch(const std::exception& e) {
         if(argv) LocalFree(argv);

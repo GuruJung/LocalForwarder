@@ -80,6 +80,11 @@ Child::Child(const fs::path& exe,const std::vector<std::string>& args,Callback c
     SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE}; HANDLE readRaw=nullptr,writeRaw=nullptr;
     if(!CreatePipe(&readRaw,&writeRaw,&sa,0)) throw std::runtime_error(winError());
     pipe_.reset(readRaw); Handle writer(writeRaw);
+    // Win32 OpenSSH redirects and closes stdout before its forwarding loop.
+    // Separate handles keep stderr valid when that happens, even on the same pipe.
+    HANDLE errorRaw=nullptr;
+    if(!DuplicateHandle(GetCurrentProcess(),writer.value,GetCurrentProcess(),&errorRaw,0,TRUE,DUPLICATE_SAME_ACCESS)) throw std::runtime_error(winError());
+    Handle errorWriter(errorRaw);
     if(!SetHandleInformation(pipe_.value,HANDLE_FLAG_INHERIT,0)) throw std::runtime_error(winError());
     Handle input(CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
     if(!input) throw std::runtime_error(winError());
@@ -89,10 +94,10 @@ Child::Child(const fs::path& exe,const std::vector<std::string>& args,Callback c
     SIZE_T bytes=0; InitializeProcThreadAttributeList(nullptr,1,0,&bytes); std::vector<unsigned char> attrs(bytes);
     auto* list=reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrs.data());
     if(!InitializeProcThreadAttributeList(list,1,0,&bytes)) throw std::runtime_error(winError());
-    HANDLE inherit[]={input.value,writer.value};
+    HANDLE inherit[]={input.value,writer.value,errorWriter.value};
     if(!UpdateProcThreadAttribute(list,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherit,sizeof(inherit),nullptr,nullptr)) { auto e=GetLastError(); DeleteProcThreadAttributeList(list); throw std::runtime_error(winError(e)); }
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput=input.value; startup.StartupInfo.hStdOutput=writer.value; startup.StartupInfo.hStdError=writer.value; startup.lpAttributeList=list;
+    startup.StartupInfo.hStdInput=input.value; startup.StartupInfo.hStdOutput=writer.value; startup.StartupInfo.hStdError=errorWriter.value; startup.lpAttributeList=list;
     PROCESS_INFORMATION pi{}; auto cmd=commandLine(exe,args);
     std::vector<std::wstring> environment;
     if(auto* block=GetEnvironmentStringsW()) {
@@ -112,7 +117,7 @@ Child::Child(const fs::path& exe,const std::vector<std::string>& args,Callback c
     process_.reset(pi.hProcess); Handle thread(pi.hThread);
     if(!AssignProcessToJobObject(job_.value,process_.value)) { auto e=GetLastError(); TerminateProcess(process_.value,1); throw std::runtime_error(winError(e)); }
     if(ResumeThread(thread.value)==static_cast<DWORD>(-1)) { TerminateJobObject(job_.value,1); throw std::runtime_error(winError()); }
-    writer.reset(); input.reset();
+    writer.reset(); errorWriter.reset(); input.reset();
     reader_=std::thread([this,callback=std::move(callback)] {
         char data[4096]; DWORD size=0;
         while(ReadFile(pipe_.value,data,sizeof(data),&size,nullptr) && size) callback(false,std::string(data,size),0);
