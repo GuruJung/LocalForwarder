@@ -3,6 +3,7 @@
 #include <aclapi.h>
 #include <objbase.h>
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -48,7 +49,7 @@ Config loadConfig(const fs::path& directory) {
     // reads the old file. Sharing deletion allows that without locks or retries.
     Handle file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
     if(!file) throw std::runtime_error("설정 파일을 열 수 없습니다: "+winError());
-    LARGE_INTEGER size{}; if(!GetFileSizeEx(file.value,&size)) throw std::runtime_error(winError());
+    LARGE_INTEGER size{}; if(!GetFileSizeEx(file.value,&size)) throw std::runtime_error("GetFileSizeEx(config.json): "+winError());
     if(size.QuadPart>4*1024*1024) throw std::runtime_error("설정 파일이 너무 큽니다 (최대 4 MiB).");
     std::string text(static_cast<size_t>(size.QuadPart),'\0'); size_t offset=0;
     while(offset<text.size()) {
@@ -66,13 +67,22 @@ Host loadHost(const fs::path& directory,const std::string& id) {
 static void saveConfig(const fs::path& directory,const Config& config) {
     fs::create_directories(directory); auto temp=directory/wide("config."+newId()+".tmp");
     auto content=writeConfig(config);
-    Handle file(CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(!file) throw std::runtime_error(winError());
+    Handle file(CreateFileW(temp.c_str(),GENERIC_WRITE|DELETE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(!file) throw std::runtime_error("CreateFile(config temporary): "+winError());
     try {
         DWORD written=0;
-        if(!WriteFile(file.value,content.data(),static_cast<DWORD>(content.size()),&written,nullptr) || written!=content.size() || !FlushFileBuffers(file.value)) throw std::runtime_error(winError());
-        file.reset();
-        if(!MoveFileExW(temp.c_str(),(directory/L"config.json").c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) throw std::runtime_error(winError());
+        if(!WriteFile(file.value,content.data(),static_cast<DWORD>(content.size()),&written,nullptr)) throw std::runtime_error("WriteFile(config temporary): "+winError());
+        if(written!=content.size()) throw std::runtime_error("WriteFile(config temporary): incomplete write");
+        if(!FlushFileBuffers(file.value)) throw std::runtime_error("FlushFileBuffers(config temporary): "+winError());
+        // Windows 11 POSIX rename semantics replace an open target atomically.
+        // MoveFileEx can leave the target delete-pending during concurrent reads.
+        auto target=fs::absolute(directory/L"config.json").wstring();
+        std::vector<unsigned char> buffer(sizeof(FILE_RENAME_INFO)+target.size()*sizeof(wchar_t));
+        auto* rename=reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+        rename->Flags=FILE_RENAME_FLAG_REPLACE_IF_EXISTS|FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        rename->FileNameLength=static_cast<DWORD>(target.size()*sizeof(wchar_t));
+        std::memcpy(rename->FileName,target.data(),rename->FileNameLength);
+        if(!SetFileInformationByHandle(file.value,FileRenameInfoEx,rename,static_cast<DWORD>(buffer.size()))) throw std::runtime_error("SetFileInformationByHandle(FileRenameInfoEx, config.json): "+winError());
     } catch(...) { file.reset(); std::error_code e; fs::remove(temp,e); throw; }
 }
 void saveHost(const fs::path& directory,const Host& host) {
