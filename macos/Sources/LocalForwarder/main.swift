@@ -8,6 +8,7 @@ func writeLine(_ message: String) {
 let arguments = CommandLine.arguments
 ProcessTools.sshLauncher = Bundle.main.executableURL?.path
 if arguments.count >= 2 && arguments[1] == "--run-ssh" {
+    signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGHUP, SIG_DFL)
     guard setpgid(0, 0) == 0 || getpgrp() == getpid() else { exit(125) }
     let values = [SSHCommand.executable] + Array(arguments.dropFirst(2))
     let pointers = values.map { strdup($0) } + [nil]

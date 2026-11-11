@@ -157,7 +157,7 @@ std::vector<std::string> sshArguments(const Host& h, const std::string& configFi
 }
 std::vector<std::string> authArguments(const Host& h, bool batch) {
     validate(h); auto args = transport(h);
-    for (auto option : {"ClearAllForwardings=yes", "ExitOnForwardFailure=yes"}) { args.emplace_back("-o"); args.emplace_back(option); }
+    for (auto option : {"SessionType=default", "ClearAllForwardings=yes", "ExitOnForwardFailure=yes"}) { args.emplace_back("-o"); args.emplace_back(option); }
     args.emplace_back("-o"); args.emplace_back(batch ? "BatchMode=yes" : "BatchMode=no");
     args.emplace_back("-o"); args.emplace_back(batch ? "StrictHostKeyChecking=yes" : "StrictHostKeyChecking=ask");
     args.emplace_back("-T"); args.emplace_back("--"); args.push_back(h.target); return args;

@@ -63,13 +63,29 @@ public enum ProcessTools {
         if exceeded { throw AppError("SSH 진단 출력이 허용 크기를 초과했습니다.") }
         return CommandResult(status: process.terminationStatus, output: String(decoding: bytes, as: UTF8.self))
     }
+    /// Foundation may launch a new process group. Give interactive tools the terminal and restore it afterwards.
+    public static func foreground(_ process: Process) -> () -> Void {
+        let fd = open("/dev/tty", O_RDWR)
+        guard fd >= 0 else { return {} }
+        let previousGroup = tcgetpgrp(fd)
+        let group = getpgid(process.processIdentifier)
+        guard previousGroup > 0, group > 0, group != previousGroup else { _ = close(fd); return {} }
+        let previousSignal = signal(SIGTTOU, SIG_IGN)
+        if tcsetpgrp(fd, group) == 0 { _ = kill(-group, SIGCONT) }
+        return {
+            _ = tcsetpgrp(fd, previousGroup)
+            _ = signal(SIGTTOU, previousSignal)
+            _ = close(fd)
+        }
+    }
     @discardableResult public static func interactive(_ executable: String, _ arguments: [String], input: Data? = nil) throws -> Int32 {
-        let process = Process(); configure(process, executable: executable, arguments: arguments)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
         process.environment = environment(interactive: true)
         process.standardOutput = FileHandle.standardOutput; process.standardError = FileHandle.standardError
         var pipe: Pipe?
         if input != nil { let inputPipe = Pipe(); pipe = inputPipe; process.standardInput = inputPipe } else { process.standardInput = FileHandle.standardInput }
         try process.run()
+        let restore = foreground(process); defer { restore(); if process.isRunning { stopAndWait(process) } }
         if let input, let pipe { try pipe.fileHandleForWriting.write(contentsOf: input); try pipe.fileHandleForWriting.close() }
         process.waitUntilExit(); return process.terminationStatus
     }

@@ -1,6 +1,8 @@
 import AppKit
 import LocalForwarderCore
 
+typealias Host = LocalForwarderCore.Host
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let store = ConfigurationStore()
     lazy var session = SSHSession(store: store)
@@ -278,10 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTa
             let configuration = NSWorkspace.OpenConfiguration()
             NSWorkspace.shared.open([script], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: configuration) { [weak self] _, error in
                 DispatchQueue.main.async {
-                    if let error { try? FileManager.default.removeItem(at: script); self?.showError(error.localizedDescription) }
+                    if let error { try? FileManager.default.removeItem(at: script); self?.showError(error.localizedDescription); self?.session.quit() }
                     else { self?.session.quit() }
                 }
             }
-        } catch { showError(error.localizedDescription) }
+        } catch { showError(error.localizedDescription); session.quit() }
     }
 }

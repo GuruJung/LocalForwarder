@@ -9,8 +9,19 @@ if (-not $vs) { $vs = & $vswhere -latest -products '*' -property installationPat
 if (-not $vs) { throw 'MSVC installation was not found.' }
 $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
 $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-$environment = & $env:ComSpec /d /s /c "`"`"$devcmd`" -no_logo -arch=$Architecture -host_arch=$hostArch >nul && set`""
-if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }
+$bootstrap = Join-Path ([System.IO.Path]::GetTempPath()) ("localforwarder-msvc-" + [guid]::NewGuid().ToString('N') + '.cmd')
+try {
+    @(
+        '@echo off'
+        "call `"$devcmd`" -no_logo -arch=$Architecture -host_arch=$hostArch >nul"
+        'if errorlevel 1 exit /b 1'
+        'set'
+    ) | Set-Content -LiteralPath $bootstrap -Encoding ascii
+    $environment = & $env:ComSpec /d /c $bootstrap
+    if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }
+} finally {
+    Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue
+}
 foreach ($line in $environment) {
     if ($line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
 }

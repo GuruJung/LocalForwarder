@@ -1,6 +1,8 @@
 import XCTest
 @testable import LocalForwarderCore
 
+typealias Host = LocalForwarderCore.Host
+
 final class CoreTests: XCTestCase {
     func host() -> Host { Host(id: "fixture", name: "서버", target: "server", forwards: [Forward(id: "rule", localPort: 15432, remoteHost: "localhost", remotePort: 5432)]) }
     func testAutomaticRecoveryAndTerminalFailure() {

@@ -60,14 +60,14 @@ public enum AuthenticationSetup {
         }
         // Registration may use an existing configured key or a terminal password before the selected key is authorized.
         host.identityFile = key
-        let args = SSHCommand.options(host, configuration: configuration) + ["-T", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=ask", host.target, installCommand]
+        let args = SSHCommand.options(host, configuration: configuration) + ["-T", "-o", "SessionType=default", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=ask", host.target, installCommand]
         var registered = false
         for attempt in 0..<2 {
             if try ProcessTools.interactive(SSHCommand.executable, args, input: Data(publicKey.utf8)) == 0 { registered = true; break }
             if attempt == 0 { print("첫 연결이 실패하여 1초 뒤 다시 시도합니다."); Thread.sleep(forTimeInterval: 1) }
         }
         guard registered else { throw AppError("공개키 등록에 실패했습니다. 서버 권한과 인증 정책을 확인하세요.") }
-        let verification = SSHCommand.options(host, configuration: configuration) + ["-T", "-n", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host.target, "true"]
+        let verification = SSHCommand.options(host, configuration: configuration) + ["-T", "-n", "-o", "SessionType=default", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host.target, "true"]
         var verified = false
         for attempt in 0..<2 {
             let result = try ProcessTools.capture(SSHCommand.executable, verification, timeout: 20)
@@ -83,7 +83,8 @@ public enum AuthenticationSetup {
         let child = Process(); child.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen"); child.arguments = ["-y", "-f", key]
         child.standardInput = FileHandle.standardInput; child.standardError = FileHandle.standardError
         let pipe = Pipe(); child.standardOutput = pipe; child.environment = ProcessTools.environment(interactive: true)
-        try child.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); child.waitUntilExit()
+        try child.run(); let restore = ProcessTools.foreground(child); defer { restore() }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile(); child.waitUntilExit()
         return CommandResult(status: child.terminationStatus, output: String(decoding: data, as: UTF8.self))
     }
 }
