@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -338,9 +339,9 @@ def shell_quote(value: str) -> str:
 
 
 class AppSession:
-    def __init__(self, app: str, fixture: Fixture, directory: Path):
+    def __init__(self, app: str, fixture: Fixture, directory: Path, ssh_configuration: Path | None = None):
         self.process = subprocess.Popen(
-            [app, "--test-session", str(directory), PROFILE_ID, str(fixture.ssh_config)],
+            [app, "--test-session", str(directory), PROFILE_ID, str(ssh_configuration or fixture.ssh_config)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
@@ -718,6 +719,58 @@ class RealSSHTests(unittest.TestCase):
         output = run([fixture.ssh, "-F", str(selected_config), "-o", "BatchMode=yes",
                       "-o", "ClearAllForwardings=yes", "lf-fixture", "echo registered-key-works"])
         self.assertIn("registered-key-works", output.stdout)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Foundation query-worker shutdown regression")
+    def test_10_quit_interrupts_inflight_ssh_configuration_inspection(self):
+        fixture = self.fixture
+        marker = fixture.root / "inspection-shell.pid"
+        child_marker = fixture.root / "inspection-child.pid"
+        script = fixture.root / "blocking-inspection.sh"
+        script.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > " + shell_quote(str(marker)) +
+            "\nsleep 30 &\nprintf '%s\\n' \"$!\" > " + shell_quote(str(child_marker)) + "\nwait\n",
+            encoding="utf-8",
+        )
+        private_config = fixture.root / "blocking-inspection-config"
+        command = "/bin/sh " + shell_quote(str(script))
+        escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+        private_config.write_text(fixture.ssh_config.read_text(encoding="utf-8") +
+                                  '\nMatch exec "' + escaped + '"\n', encoding="utf-8")
+        directory = fixture.config_directory("quit-inspection", fixture.profile())
+        session = AppSession(self.app, fixture, directory, ssh_configuration=private_config)
+        self.sessions.append(session)
+        owned_group = None
+        pids = []
+        try:
+            deadline = time.monotonic() + 8
+            while not marker.exists() or not child_marker.exists() or not child_marker.read_text().strip():
+                session.assert_alive()
+                self.assertLess(time.monotonic(), deadline, session.diagnostics())
+                time.sleep(.02)
+            pids = [int(marker.read_text().strip()), int(child_marker.read_text().strip())]
+            owned_group = os.getpgid(pids[0])
+            self.assertNotEqual(owned_group, os.getpgrp(), "Inspection must not share the test driver's group")
+            start = time.monotonic()
+            session.send("quit")
+            self.assertEqual(session.wait_exit(timeout=3), 0, session.diagnostics())
+            self.assertLess(time.monotonic() - start, 3)
+            self.assertNotIn("connected", [state for _, state in session.events])
+            for pid in pids:
+                result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+                self.assertTrue(result.returncode != 0 or result.stdout.strip().startswith("Z"),
+                                f"Owned inspection descendant {pid} remains live: {result.stdout}")
+        finally:
+            # Cleanup only the group identified from this test's own marker process.
+            if owned_group is not None and owned_group != os.getpgrp():
+                for pid in pids:
+                    try:
+                        if os.getpgid(pid) == owned_group:
+                            os.killpg(owned_group, signal.SIGKILL)
+                            break
+                    except ProcessLookupError:
+                        pass
+            for path in (marker, child_marker, script, private_config):
+                path.unlink(missing_ok=True)
 
 
 def check_fixture(fixture: Fixture):

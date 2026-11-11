@@ -23,6 +23,10 @@ public enum ProcessTools {
     private static var captures: [ObjectIdentifier: CaptureCleanup] = [:]
     private static var shuttingDown = false
 
+    public static func preventNewCaptures() {
+        capturesLock.lock(); shuttingDown = true; capturesLock.unlock()
+    }
+
     /// Called off the UI thread during final shutdown, including outstanding ssh -G inspections.
     public static func cancelCapturedProcesses() {
         capturesLock.lock()

@@ -19,6 +19,7 @@ public final class SSHSession {
     private var profileID: String?
     private var process: Process?
     private var generation = 0
+    private var finalShutdownStarted = false
     private var timer: DispatchSourceTimer?
     private var readiness = Readiness()
     private var bytes = Data()
@@ -42,6 +43,12 @@ public final class SSHSession {
         apply(machine.tick(now: ContinuousTime.now()))
     }
     private func apply(_ effects: [SessionEffect]) {
+        if effects.contains(.exit), !finalShutdownStarted {
+            finalShutdownStarted = true
+            ProcessTools.preventNewCaptures()
+            // A blocked ssh -G runs on worker. Cancel it independently BEFORE the exit barrier.
+            DispatchQueue.global(qos: .userInitiated).async { ProcessTools.cancelCapturedProcesses() }
+        }
         onChange?(state)
         timer?.cancel(); timer = nil
         if let deadline = machine.deadline {
