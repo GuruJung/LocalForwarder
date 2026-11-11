@@ -1,0 +1,74 @@
+name: Native build and verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS 15 Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build, test, and package
+        run: bash scripts/eval-macos.sh
+      - name: Upload macOS package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: LocalForwarder-macos-arm64
+          path: dist/LocalForwarder-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: evidence-macos-arm64
+          path: dist/*evidence*.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare isolated test SSH server
+        shell: pwsh
+        run: ./scripts/prepare-ci-sshd.ps1 -Architecture '${{ matrix.arch }}'
+      - name: Build, test, and package
+        shell: pwsh
+        run: ./scripts/eval-windows.ps1 -Architecture '${{ matrix.arch }}'
+      - name: Upload Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: LocalForwarder-windows-${{ matrix.arch }}
+          path: dist/LocalForwarder-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: evidence-windows-${{ matrix.arch }}
+          path: dist/*evidence*.json
+          if-no-files-found: warn
+          retention-days: 7
