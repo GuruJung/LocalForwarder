@@ -37,7 +37,7 @@ std::string describeFailure(const std::string& text);
 class Readiness {
     std::string pending_;
     int remoteExpected_ = 0, remoteConfirmed_ = 0;
-    bool entered_ = false, authenticated_ = false, failed_ = false;
+    bool entered_ = false, authenticated_ = false, localListening_ = false, failed_ = false;
 public:
     explicit Readiness(int expected = 0) : remoteExpected_(expected) {}
     bool feed(const std::string& chunk);
