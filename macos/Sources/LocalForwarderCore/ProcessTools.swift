@@ -18,6 +18,23 @@ private final class CaptureCleanup {
         finished = true
     }
 }
+/// A cancellation scope belongs to one host attempt, including its configuration inspection.
+public final class ProcessCancellation {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var cleanup: (() -> Void)?
+    public init() {}
+    public func cancel() {
+        lock.lock(); cancelled = true; let action = cleanup; lock.unlock()
+        if let action { DispatchQueue.global(qos: .userInitiated).async(execute: action) }
+    }
+    fileprivate func register(_ action: @escaping () -> Void) {
+        lock.lock(); cleanup = action; let shouldCancel = cancelled; lock.unlock()
+        if shouldCancel { DispatchQueue.global(qos: .userInitiated).async(execute: action) }
+    }
+    fileprivate func clear() { lock.lock(); cleanup = nil; lock.unlock() }
+    fileprivate var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+}
 public enum ProcessTools {
     private static let capturesLock = NSLock()
     private static var captures: [ObjectIdentifier: CaptureCleanup] = [:]
@@ -74,7 +91,8 @@ public enum ProcessTools {
         requestStop(process)
         DispatchQueue.global().async { stopAndWait(process) }
     }
-    public static func capture(_ executable: String, _ arguments: [String], timeout: Double = 12) throws -> CommandResult {
+    public static func capture(_ executable: String, _ arguments: [String], timeout: Double = 12, cancellation: ProcessCancellation? = nil) throws -> CommandResult {
+        if cancellation?.isCancelled == true { throw AppError("연결 작업이 취소되었습니다.") }
         let process = Process(); configure(process, executable: executable, arguments: arguments)
         process.environment = environment(); process.standardInput = FileHandle.nullDevice
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
@@ -85,11 +103,13 @@ public enum ProcessTools {
         captures[ObjectIdentifier(process)] = cleanup
         capturesLock.unlock()
         _ = setpgid(process.processIdentifier, process.processIdentifier)
+        cancellation?.register { cleanup.finish() }
         let limit = DispatchWorkItem { cleanup.finish() }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: limit)
         defer {
             limit.cancel()
             cleanup.finish()
+            cancellation?.clear()
             capturesLock.lock(); captures.removeValue(forKey: ObjectIdentifier(process)); capturesLock.unlock()
         }
         var bytes = Data(); var exceeded = false
