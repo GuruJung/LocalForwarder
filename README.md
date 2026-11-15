@@ -2,6 +2,8 @@
 
 시스템 OpenSSH를 사용하는 작은 네이티브 SSH local forwarding GUI입니다. macOS는 Swift/AppKit, Windows는 C++/Win32로 구현합니다. SSH 프로토콜과 실제 데이터 전송은 OS의 `ssh`가 담당합니다.
 
+**개발 상태 (2026-11-13):** macOS 동결을 해제하고, 주말 동안 개발 가능한 macOS를 기준으로 기능 개발·버그 수정·실사용 검증을 진행합니다. Windows 구현은 명시적인 전환·해제 요청까지 동결하고 기존 빌드·테스트·패키징 CI는 유지합니다. 주말 종료만으로 정책이 자동 전환되지는 않습니다. Windows CI 통과가 최신 macOS와의 기능 동등성이나 실제 Windows PC에서의 수동 검증을 의미하지는 않습니다. 플랫폼별 반영 상태는 [Windows 반영 대기](docs/dev-plans/windows-catchup.md)에 기록하며, 이전 [macOS 차이 기록](docs/dev-plans/macos-catchup.md)은 보존합니다.
+
 ## 지원 환경과 다운로드
 
 | OS | CPU | 파일 |
