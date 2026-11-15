@@ -870,6 +870,7 @@ class ManagerSession(AppSession):
         self.condition = threading.Condition()
         self.events = []
         self.host_events = []
+        self.snapshot_serial = 0
         self.output = []
         self.errors = []
         self.readers = [threading.Thread(target=self._read, args=(self.process.stdout, False), daemon=True),
@@ -906,12 +907,14 @@ class ManagerSession(AppSession):
 
     def snapshot(self, host_id):
         after = len(self.host_events)
-        self.send("snapshot")
+        self.snapshot_serial += 1
+        request_id = f"snapshot-{self.snapshot_serial}"
+        self.send("snapshot", requestID=request_id)
         deadline = time.monotonic() + 5
         with self.condition:
             while True:
                 for _, host in self.host_events[after:]:
-                    if host["id"] == host_id:
+                    if host["id"] == host_id and host.get("requestID") == request_id:
                         return host
                 self.assert_alive()
                 if time.monotonic() >= deadline:
@@ -1100,8 +1103,8 @@ class MultiHostSSHTests(unittest.TestCase):
                 else:
                     _, _, state = session.wait_host("host-1", "connected")
                     echo(host["forwards"][0]["localPort"])
-                    self.assertIn("failed", [rule["state"] for rule in state["forwards"]], state)
-                    self.assertIn("ready", [rule["state"] for rule in state["forwards"]], state)
+                    self.assertEqual({rule["id"]: rule["state"] for rule in state["forwards"]},
+                                     {"rule-0": "ready", "occupied": "failed"}, session.diagnostics())
                 echo(config["hosts"][0]["forwards"][0]["localPort"])
                 session.assert_alive()
                 session.close()

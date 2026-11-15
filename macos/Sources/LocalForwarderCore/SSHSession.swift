@@ -31,11 +31,25 @@ public final class SSHSession: SSHSessionProtocol {
     private var timer: DispatchSourceTimer?
     private var readiness = Readiness()
     private var tracker: ForwardTracker?
-    private var bytes = Data()
+    private final class DiagnosticStream {
+        let handle: FileHandle
+        let source: DispatchSourceRead
+        let targetProcess: Bool
+        var bytes = Data()
+        init(pipe: Pipe, targetProcess: Bool) {
+            let handle = pipe.fileHandleForReading
+            self.handle = handle; self.targetProcess = targetProcess
+            let fd = handle.fileDescriptor
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+            source.setCancelHandler { try? handle.close() }
+        }
+    }
     private var diagnostic = ""
+    private var targetDiagnostic = ""
     private var inspection: ProcessCancellation?
     private let worker = DispatchQueue(label: "LocalForwarder.host-process")
-    private var readSource: DispatchSourceRead?
+    private var streams: [DiagnosticStream] = []
     public init(sshConfiguration: String? = nil) { self.sshConfiguration = sshConfiguration }
     public var state: ConnectionState { machine.state }
     public var forwards: [ForwardRuntime] { tracker?.forwards ?? [] }
@@ -79,7 +93,7 @@ public final class SSHSession: SSHSessionProtocol {
     private func stopOwned() {
         generation += 1
         inspection?.cancel(); inspection = nil
-        readSource?.cancel(); readSource = nil
+        for stream in streams { stream.source.cancel() }; streams = []
         guard let old = process else { return }
         process = nil
         ProcessTools.requestStop(old)
@@ -87,13 +101,16 @@ public final class SSHSession: SSHSessionProtocol {
     }
     private func report(_ text: String) { lastError = SSHCommand.userMessage(text); onError?(lastError) }
     private func fail(_ text: String) {
-        let retryable = host?.retryOnConnectionRefused == true && !readiness.authenticated && SSHCommand.isConnectionRefusal(text)
+        // Successful jump authentication must not hide a target's pre-authentication refusal.
+        // Conversely, an explicit proxy authentication/configuration error must not be
+        // mistaken for a retryable target close merely because its transport disappears.
+        let retryable = host?.retryOnConnectionRefused == true && !readiness.authenticated && SSHCommand.isConnectionRefusal(targetDiagnostic.isEmpty ? text : targetDiagnostic, auxiliaryDiagnostic: text)
         report(text); apply(machine.failed(now: ContinuousTime.now(), retryable: retryable))
     }
     private func launch() {
         let token = generation
         guard let host else { fail("접속 호스트가 선택되지 않았습니다."); return }
-        bytes = Data(); diagnostic = ""; readiness = Readiness(requireForwards: false)
+        diagnostic = ""; targetDiagnostic = ""; readiness = Readiness(requireForwards: false)
         tracker = ForwardTracker(host: host)
         let cancellation = ProcessCancellation(); inspection = cancellation
         worker.async { [weak self] in
@@ -123,45 +140,62 @@ public final class SSHSession: SSHSessionProtocol {
         }
     }
     private func spawn(_ host: Host, token: Int) {
-        let child = Process(); ProcessTools.configure(child, executable: SSHCommand.executable, arguments: SSHCommand.connect(host, configuration: sshConfiguration))
-        child.environment = ProcessTools.environment(); child.standardInput = FileHandle.nullDevice; child.standardOutput = FileHandle.nullDevice
-        let pipe = Pipe(); child.standardError = pipe
-        let handle = pipe.fileHandleForReading; let fd = handle.fileDescriptor
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
-        source.setEventHandler { [weak self] in self?.drain(fd, token: token) }
-        source.setCancelHandler { try? handle.close() }
-        readSource = source; source.resume()
+        let child = Process()
+        // -E writes through OpenSSH's private logging fd, without redirecting stderr.
+        // The ProxyJump/ProxyCommand child's stderr therefore cannot establish target readiness.
+        ProcessTools.configure(child, executable: SSHCommand.executable, arguments: SSHCommand.connect(host, configuration: sshConfiguration))
+        child.environment = ProcessTools.environment(); child.standardInput = FileHandle.nullDevice
+        let targetPipe = Pipe(); let auxiliaryPipe = Pipe()
+        child.standardOutput = targetPipe; child.standardError = auxiliaryPipe
+        let readers = [DiagnosticStream(pipe: targetPipe, targetProcess: true), DiagnosticStream(pipe: auxiliaryPipe, targetProcess: false)]
+        streams = readers
+        for stream in readers {
+            stream.source.setEventHandler { [weak self, weak stream] in
+                guard let stream else { return }
+                self?.drain(stream, token: token)
+            }
+            stream.source.resume()
+        }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async { [weak self] in
-                guard let self, token == self.generation else { source.cancel(); return }
-                self.drain(fd, token: token)
-                source.cancel(); self.readSource = nil
-                if !self.bytes.isEmpty { self.consume(Data([10]), token: token) }
+                guard let self, token == self.generation else {
+                    for stream in readers { stream.source.cancel() }; return
+                }
+                for stream in readers {
+                    self.drain(stream, token: token)
+                    if !stream.bytes.isEmpty { self.consume(Data([10]), from: stream, token: token) }
+                    stream.source.cancel()
+                }
+                self.streams = []
                 self.fail(self.diagnostic.isEmpty ? "SSH가 종료되었습니다 (\(child.terminationStatus))." : self.diagnostic)
             }
         }
         do { process = child; try child.run(); _ = setpgid(child.processIdentifier, child.processIdentifier) }
-        catch { source.cancel(); readSource = nil; process = nil; fail(error.localizedDescription) }
+        catch {
+            for stream in readers { stream.source.cancel() }; streams = []
+            process = nil; fail(error.localizedDescription)
+        }
     }
-    private func drain(_ fd: Int32, token: Int) {
+    private func drain(_ stream: DiagnosticStream, token: Int) {
         guard token == generation else { return }
         var buffer = [UInt8](repeating: 0, count: 8192)
         while true {
-            let count = read(fd, &buffer, buffer.count)
+            let count = read(stream.handle.fileDescriptor, &buffer, buffer.count)
             if count <= 0 { break }
-            consume(Data(buffer.prefix(count)), token: token)
+            consume(Data(buffer.prefix(count)), from: stream, token: token)
         }
     }
-    private func consume(_ data: Data, token: Int) {
+    private func consume(_ data: Data, from stream: DiagnosticStream, token: Int) {
         guard token == generation else { return }
-        bytes.append(data)
-        while let index = bytes.firstIndex(of: 10) {
-            let line = String(decoding: bytes[..<index], as: UTF8.self); bytes.removeSubrange(...index)
+        stream.bytes.append(data)
+        while let index = stream.bytes.firstIndex(of: 10) {
+            let line = String(decoding: stream.bytes[..<index], as: UTF8.self); stream.bytes.removeSubrange(...index)
             diagnostic += line + "\n"
             if diagnostic.utf8.count > 65_536 { diagnostic = String(diagnostic.suffix(32_768)) }
+            guard stream.targetProcess else { continue }
+            targetDiagnostic += line + "\n"
+            if targetDiagnostic.utf8.count > 65_536 { targetDiagnostic = String(targetDiagnostic.suffix(32_768)) }
             readiness.consume(line)
-            // Ignore the ProxyJump child's listener/session diagnostics until the target authenticates.
             if readiness.authenticated { tracker?.consume(line) }
             if readiness.ready && state == .connecting {
                 lastError = ""; machine.ready(); tracker?.sessionReady(); apply([])
@@ -171,6 +205,6 @@ public final class SSHSession: SSHSessionProtocol {
                 lastError = "\(formatter.string(from: recent.time)) · \(recent.message)"; onChange?()
             }
         }
-        if bytes.count > 65_536 { bytes = Data(bytes.suffix(32_768)) }
+        if stream.bytes.count > 65_536 { stream.bytes = Data(stream.bytes.suffix(32_768)) }
     }
 }

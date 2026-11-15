@@ -17,9 +17,10 @@ public enum SSHCommand {
         let host = forward.remoteHost.contains(":") && !forward.remoteHost.hasPrefix("[") ? "[\(forward.remoteHost)]" : forward.remoteHost
         return "127.0.0.1:\(forward.localPort):\(host):\(forward.remotePort)"
     }
-    public static func connect(_ host: Host, configuration: String? = nil) -> [String] {
+    public static func connect(_ host: Host, configuration: String? = nil, diagnosticLog: String? = "/dev/stdout") -> [String] {
         var result = options(host, configuration: configuration) + ["-v", "-N", "-n", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                        "-o", "ExitOnForwardFailure=\(host.exitOnForwardFailure ? "yes" : "no")", "-o", "ClearAllForwardings=no", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+        if let diagnosticLog { result += ["-E", diagnosticLog] }
         for rule in host.forwards where rule.enabled { result += ["-L", forwarding(rule)] }
         return result + [host.target]
     }
@@ -47,6 +48,13 @@ public enum SSHCommand {
             line.hasPrefix("connection closed by ") || line.hasPrefix("connection reset by ")
         }
     }
+    /// Parent SSH diagnostics classify the refusal; proxy success messages do not
+    /// establish the target. Explicit proxy auth/configuration failures still veto retry.
+    public static func isConnectionRefusal(_ targetDiagnostic: String, auxiliaryDiagnostic: String) -> Bool {
+        let auxiliary = auxiliaryDiagnostic.lowercased()
+        let conflictingFailure = needsAuthenticationHelp(auxiliaryDiagnostic) || ["could not resolve hostname", "name or service not known", "network is unreachable", "no route to host", "timed out", "bad configuration", "address already in use", "remote port forwarding failed", "could not request local forwarding"].contains { auxiliary.contains($0) }
+        return !conflictingFailure && isConnectionRefusal(targetDiagnostic)
+    }
     public static func userMessage(_ log: String) -> String {
         if log.contains("Address already in use") || log.contains("cannot listen to port") {
             return "누군가 해당 로컬 포트를 사용하고 있습니다.\n\n" + log
@@ -72,6 +80,12 @@ public struct Readiness {
         self.expectedTarget = expectedTarget; self.expectedPort = expectedPort
     }
     public mutating func consume(_ line: String) {
+        // Defensive handling for callers feeding a combined log: -W belongs to a jump
+        // child, even when it authenticates to the exact same endpoint as the target.
+        if line.contains("channel_connect_stdio_fwd:") || line.contains("new stdio-forward [stdio-forward]") {
+            targetScope = false; authenticated = false; enteredSession = false; localListener = false; remoteSucceeded = 0
+            return
+        }
         if line.contains("Authenticated to ") || line.contains("Authentication succeeded") {
             // ProxyJump's -W child shares stderr. Its session entry is not target readiness.
             targetScope = expectedTarget.map { line.contains("Authenticated to \($0) ") || line.hasSuffix("Authenticated to \($0)") } ?? true

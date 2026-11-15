@@ -238,6 +238,9 @@ final class CoreTests: XCTestCase {
         value.forwards.append(Forward(id: "disabled", enabled: false, localPort: 15434))
         var tracker = ForwardTracker(host: value, inherited: ["remoteforward 19090 [localhost]:9090", "dynamicforward /tmp/socket"])
         tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        tracker.consume("debug1: channel 0: new port-listener [port listener] (inactive timeout: 0)")
+        // OpenSSH announces its intended listener before the bind system call fails.
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15433.")
         tracker.consume("bind [127.0.0.1]:15433: Address already in use")
         tracker.consume("debug1: remote forward success for: listen 19090, connect localhost:9090")
         tracker.sessionReady()
@@ -251,6 +254,39 @@ final class CoreTests: XCTestCase {
         tracker.disconnected()
         XCTAssertTrue(tracker.forwards.allSatisfy { $0.state == .disconnected })
         XCTAssertEqual(tracker.recentErrors.count, 1)
+    }
+    func testListenerAnnouncementWithoutCreatedChannelIsUnknown() {
+        var tracker = ForwardTracker(host: host())
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        XCTAssertNotEqual(tracker.forwards.first?.state, .ready)
+        tracker.sessionReady()
+        XCTAssertEqual(tracker.forwards.first?.state, .unknown)
+    }
+    func testInheritedListenerKeepsActualSuccessfulAddressWhenAnotherBindFails() {
+        let value = Host(id: "inherited", name: "Inherited", target: "server")
+        var tracker = ForwardTracker(host: value, inherited: ["localforward 15432 localhost:5432"])
+        tracker.consume("debug1: Local forwarding listening on ::1 port 15432.")
+        tracker.consume("debug1: channel 0: new port-listener [port listener] (inactive timeout: 0)")
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        tracker.consume("bind [127.0.0.1]:15432: Address already in use")
+        tracker.sessionReady()
+        XCTAssertEqual(tracker.forwards.first?.state, .ready)
+    }
+    func testJumpWithIdenticalAddressAndPortCannotEstablishTargetReadiness() {
+        for marker in ["debug1: channel_connect_stdio_fwd: 127.0.0.1:2222",
+                       "debug1: channel 0: new stdio-forward [stdio-forward] (inactive timeout: 0)"] {
+            var readiness = Readiness(requireForwards: false, expectedTarget: "127.0.0.1", expectedPort: 2222)
+            let authentication = "Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using publickey."
+            readiness.consume(authentication)
+            readiness.consume(marker)
+            readiness.consume("debug1: Entering interactive session.")
+            XCTAssertFalse(readiness.ready, "The jump and target may share an endpoint: \(marker)")
+            readiness.consume(authentication)
+            XCTAssertFalse(readiness.ready)
+            readiness.consume("Could not request local forwarding.")
+            readiness.consume("debug1: Entering interactive session.")
+            XCTAssertTrue(readiness.ready, "The target remains a live SSH session with failed forwards")
+        }
     }
     func testInheritedRulesDoNotIncludeOrdinarySettings() {
         XCTAssertEqual(SSHCommand.inheritedForwards("hostname a\nlocalforward 1234 localhost:22\nremoteforward 4567 localhost:33\ndynamicforward 1080\n" ).count, 3)

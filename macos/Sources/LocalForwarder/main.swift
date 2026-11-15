@@ -11,16 +11,18 @@ func runTestManager(directory: String, configuration: String, start: Bool, singl
     let store = ConfigurationStore(directory: URL(fileURLWithPath: directory))
     let manager = ConnectionManager(store: store, sshConfiguration: configuration)
     var previous: ConnectionState?
-    func snapshot() {
+    func snapshot(requestID: String? = nil) {
         for host in manager.hosts {
             guard let runtime = manager.runtime(host.id) else { continue }
             if let singleID, singleID == host.id, previous != runtime.state {
                 previous = runtime.state; writeLine("LF_STATE " + runtime.state.rawValue)
             }
-            let value: [String: Any] = ["id": host.id, "state": runtime.state.rawValue, "intent": runtime.desiredConnected,
+            var value: [String: Any] = ["id": host.id, "state": runtime.state.rawValue, "intent": runtime.desiredConnected,
                                         "temporary": runtime.temporary, "error": runtime.lastError,
                                         "recentErrors": runtime.recentErrors.map { ["time": ISO8601DateFormatter().string(from: $0.time), "message": $0.message] },
-                                        "forwards": runtime.forwards.map { ["id": $0.id, "state": $0.state.rawValue] }]
+                                        "forwards": runtime.forwards.map { ["id": $0.id, "state": $0.state.rawValue,
+                                                                          "source": $0.source, "description": $0.description, "detail": $0.detail] }]
+            if let requestID { value["requestID"] = requestID }
             if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
                let json = String(data: data, encoding: .utf8) { writeLine("LF_HOST " + json) }
         }
@@ -70,7 +72,7 @@ func runTestManager(directory: String, configuration: String, start: Bool, singl
                     case "wake": manager.wake()
                     case "sleep": manager.sleep()
                     case "network": manager.networkChanged(available: value["available"] as? Bool ?? false)
-                    case "snapshot": snapshot()
+                    case "snapshot": snapshot(requestID: value["requestID"] as? String)
                     case "quit": manager.quit()
                     default: throw AppError("알 수 없는 명령: " + command)
                     }

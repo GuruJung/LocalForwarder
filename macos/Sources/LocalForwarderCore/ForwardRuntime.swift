@@ -22,6 +22,8 @@ public struct ForwardTracker {
     public private(set) var recentErrors: [DestinationError] = []
     private struct Binding { let remote: Bool; let port: Int?; let address: String? }
     private var bindings: [Binding] = []
+    private var pendingListener: (address: String, port: Int)?
+    private var establishedAddresses: [Int: Set<String>] = [:]
     public init(host: Host, inherited: [String] = []) {
         for rule in host.forwards where rule.enabled {
             forwards.append(ForwardRuntime(id: rule.id, description: SSHCommand.forwarding(rule), source: "앱 설정"))
@@ -44,7 +46,7 @@ public struct ForwardTracker {
         guard let port else { return }
         let candidates = bindings.indices.filter { index in
             let binding = bindings[index]
-            return binding.remote == remote && binding.port == port && (address == nil || binding.address == nil || binding.address == address || binding.address == "*")
+            return binding.remote == remote && binding.port == port && (address == nil || binding.address == nil || binding.address == address || binding.address == "*" || binding.address == "" || (binding.address == "localhost" && (address == "127.0.0.1" || address == "::1")))
         }
         guard candidates.count == 1, let index = candidates.first else {
             for index in candidates where forwards[index].state == .preparing {
@@ -52,17 +54,34 @@ public struct ForwardTracker {
             }
             return
         }
-        // One bind address can fail while another succeeds for the same inherited rule.
-        if forwards[index].state == .ready && state == .failed { return }
+        if !remote {
+            if state == .ready { establishedAddresses[index, default: []].insert(address ?? "") }
+            else if state == .failed {
+                if let address { establishedAddresses[index]?.remove(address) }
+                else { establishedAddresses[index] = [] }
+            }
+            // A wildcard/localhost rule may have distinct IPv4 and IPv6 bind outcomes.
+            if !(establishedAddresses[index] ?? []).isEmpty {
+                forwards[index].state = .ready
+                forwards[index].detail = state == .failed ? "일부 주소의 개설 실패: " + line : "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음"
+                return
+            }
+        }
         forwards[index].state = state; forwards[index].detail = state == .ready ? "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음" : line
     }
     public mutating func consume(_ line: String, now: Date = Date()) {
         if let match = captures("Local forwarding listening on (.+) port ([0-9]+)\\.", line) {
-            mark(remote: false, port: Int(match[1]), address: match[0], state: .ready, line: line)
-        } else if let match = captures("bind \\[([^]]+)\\]:([0-9]+):", line) {
+            // OpenSSH prints this BEFORE bind/listen. Only channel creation proves success.
+            pendingListener = Int(match[1]).map { (address: match[0], port: $0) }
+        } else if line.contains(": new port-listener [port listener]"), let pending = pendingListener {
+            mark(remote: false, port: pending.port, address: pending.address, state: .ready, line: line)
+            pendingListener = nil
+        } else if let match = captures("(?:bind|listen) \\[([^]]+)\\]:([0-9]+):", line) {
             mark(remote: false, port: Int(match[1]), address: match[0], state: .failed, line: line)
+            pendingListener = nil
         } else if let match = captures("cannot listen to port: ([0-9]+)", line) {
             mark(remote: false, port: Int(match[0]), state: .failed, line: line)
+            pendingListener = nil
         } else if line.contains("remote forward success for:"), let match = captures("listen (?:.*:)?([0-9]+),", line) {
             mark(remote: true, port: Int(match[0]), state: .ready, line: line)
         } else if let match = captures("remote port forwarding failed for listen port ([0-9]+)", line) {
@@ -76,12 +95,14 @@ public struct ForwardTracker {
         }
     }
     public mutating func sessionReady() {
+        pendingListener = nil
         for index in forwards.indices where forwards[index].state == .preparing {
             forwards[index].state = .unknown
             if forwards[index].detail.isEmpty { forwards[index].detail = "SSH 연결은 성립했지만 이 규칙의 개설 결과는 아직 확인되지 않았습니다." }
         }
     }
     public mutating func disconnected() {
+        pendingListener = nil; establishedAddresses = [:]
         for index in forwards.indices {
             forwards[index].state = .disconnected
         }
