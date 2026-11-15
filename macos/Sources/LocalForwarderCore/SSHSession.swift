@@ -5,155 +5,206 @@ import Darwin
 import Glibc
 #endif
 
-/// All public methods and callbacks run on the main queue. The worker queue owns blocking cleanup/config inspection.
-public final class SSHSession {
+/// Main-queue interface. stop completes only after every process owned by this session has stopped.
+public protocol SSHSessionProtocol: AnyObject {
+    var state: ConnectionState { get }
+    var lastError: String { get }
+    var forwards: [ForwardRuntime] { get }
+    var recentErrors: [DestinationError] { get }
+    var onChange: (() -> Void)? { get set }
+    var onError: ((String) -> Void)? { get set }
+    func start(_ host: Host)
+    func stop(completion: @escaping () -> Void)
+}
+public extension SSHSessionProtocol { var recentErrors: [DestinationError] { [] } }
+
+/// Owns exactly one host snapshot. Saving or editing a profile cannot mutate a running attempt.
+public final class SSHSession: SSHSessionProtocol {
     public private(set) var machine = ConnectionMachine()
     public private(set) var lastError = ""
-    public private(set) var hostName = ""
-    public var onChange: ((ConnectionState) -> Void)?
+    public var onChange: (() -> Void)?
     public var onError: ((String) -> Void)?
-    public var onInitialFailure: ((String) -> Void)?
-    public var onExit: (() -> Void)?
-    public let store: ConfigurationStore
     public let sshConfiguration: String?
-    private var profileID: String?
+    private var host: Host?
     private var process: Process?
     private var generation = 0
-    private var finalShutdownStarted = false
     private var timer: DispatchSourceTimer?
     private var readiness = Readiness()
-    private var bytes = Data()
+    private var tracker: ForwardTracker?
+    private final class DiagnosticStream {
+        let handle: FileHandle
+        let source: DispatchSourceRead
+        let targetProcess: Bool
+        var bytes = Data()
+        init(pipe: Pipe, targetProcess: Bool) {
+            let handle = pipe.fileHandleForReading
+            self.handle = handle; self.targetProcess = targetProcess
+            let fd = handle.fileDescriptor
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+            source.setCancelHandler { try? handle.close() }
+        }
+    }
     private var diagnostic = ""
-    private let worker = DispatchQueue(label: "LocalForwarder.process")
-    private var readSource: DispatchSourceRead?
-    public init(store: ConfigurationStore, sshConfiguration: String? = nil) {
-        self.store = store; self.sshConfiguration = sshConfiguration
-    }
+    private var targetDiagnostic = ""
+    private var inspection: ProcessCancellation?
+    private let worker = DispatchQueue(label: "LocalForwarder.host-process")
+    private var streams: [DiagnosticStream] = []
+    public init(sshConfiguration: String? = nil) { self.sshConfiguration = sshConfiguration }
     public var state: ConnectionState { machine.state }
-    public func start(_ id: String) {
-        guard state == .editing else { return }
-        profileID = id; lastError = ""; apply(machine.begin(now: ContinuousTime.now()))
+    public var forwards: [ForwardRuntime] { tracker?.forwards ?? [] }
+    public var recentErrors: [DestinationError] { tracker?.recentErrors ?? [] }
+    public func start(_ host: Host) {
+        guard state == .disconnected else {
+            stop { [weak self] in self?.start(host) }; return
+        }
+        self.host = host; lastError = ""; tracker = ForwardTracker(host: host)
+        apply(machine.begin(now: ContinuousTime.now()))
     }
-    public func reconnect() { apply(machine.manualReconnect(now: ContinuousTime.now())) }
-    public func quit() { apply(machine.quit()) }
-    public func wake() { advanceTimer() }
+    public func stop(completion: @escaping () -> Void) {
+        timer?.cancel(); timer = nil
+        _ = machine.quit(); stopOwned(); tracker?.disconnected(); onChange?()
+        let token = generation
+        // Retain self until cleanup completes, including deleted hosts and final app shutdown.
+        worker.async { DispatchQueue.main.async {
+            if token == self.generation { self.machine.stopped(); self.onChange?() }
+            completion()
+        } }
+    }
     private func advanceTimer() {
-        let timedOut = machine.deadline.map { $0.kind == .attempt && ContinuousTime.now() >= $0.time } ?? false
-        if timedOut { report("SSH 연결 준비 시간이 20초를 초과했습니다.\n" + diagnostic) }
+        if machine.deadline.map({ $0.kind == .attempt && ContinuousTime.now() >= $0.time }) == true {
+            report("SSH 연결 준비 시간이 20초를 초과했습니다.\n" + diagnostic)
+        }
         apply(machine.tick(now: ContinuousTime.now()))
     }
     private func apply(_ effects: [SessionEffect]) {
-        if effects.contains(.exit), !finalShutdownStarted {
-            finalShutdownStarted = true
-            ProcessTools.preventNewCaptures()
-            // A blocked ssh -G runs on worker. Cancel it independently BEFORE the exit barrier.
-            DispatchQueue.global(qos: .userInitiated).async { ProcessTools.cancelCapturedProcesses() }
-        }
-        onChange?(state)
         timer?.cancel(); timer = nil
+        for effect in effects {
+            switch effect { case .stop: stopOwned(); tracker?.disconnected(); case .launch: launch() }
+        }
         if let deadline = machine.deadline {
             let timer = DispatchSource.makeTimerSource(queue: .main)
             timer.schedule(deadline: .now() + max(0.001, deadline.time - ContinuousTime.now()))
             timer.setEventHandler { [weak self] in self?.advanceTimer() }
             self.timer = timer; timer.resume()
         }
-        for effect in effects {
-            switch effect {
-            case .stop: stopOwned()
-            case .launch: launch()
-            case .fatal:
-                let error = lastError
-                worker.async { [weak self] in DispatchQueue.main.async { self?.onInitialFailure?(error) } }
-            case .exit:
-                worker.async { [weak self] in DispatchQueue.main.async { self?.onExit?() } }
-            }
-        }
+        onChange?()
     }
     private func stopOwned() {
         generation += 1
-        readSource?.cancel(); readSource = nil
+        inspection?.cancel(); inspection = nil
+        for stream in streams { stream.source.cancel() }; streams = []
         guard let old = process else { return }
         process = nil
         ProcessTools.requestStop(old)
         worker.async { ProcessTools.stopAndWait(old) }
     }
     private func report(_ text: String) { lastError = SSHCommand.userMessage(text); onError?(lastError) }
-    private func fail(_ text: String) { report(text); apply(machine.failed(now: ContinuousTime.now())) }
+    private func fail(_ text: String) {
+        // Successful jump authentication must not hide a target's pre-authentication refusal.
+        // Conversely, an explicit proxy authentication/configuration error must not be
+        // mistaken for a retryable target close merely because its transport disappears.
+        let retryable = host?.retryOnConnectionRefused == true && !readiness.authenticated && SSHCommand.isConnectionRefusal(targetDiagnostic.isEmpty ? text : targetDiagnostic, auxiliaryDiagnostic: text)
+        report(text); apply(machine.failed(now: ContinuousTime.now(), retryable: retryable))
+    }
     private func launch() {
         let token = generation
-        guard let id = profileID else { fail("접속 호스트가 선택되지 않았습니다."); return }
-        bytes = Data(); diagnostic = ""; readiness = Readiness()
+        guard let host else { fail("접속 호스트가 선택되지 않았습니다."); return }
+        diagnostic = ""; targetDiagnostic = ""; readiness = Readiness(requireForwards: false)
+        tracker = ForwardTracker(host: host)
+        let cancellation = ProcessCancellation(); inspection = cancellation
         worker.async { [weak self] in
             guard let self else { return }
             do {
-                let host = try self.store.host(id)
-                guard FileManager.default.isExecutableFile(atPath: SSHCommand.executable) else { throw AppError("시스템 OpenSSH를 찾지 못했습니다. macOS 명령행 도구를 확인하세요.") }
-                let result = try ProcessTools.capture(SSHCommand.executable, SSHCommand.inspect(host, configuration: self.sshConfiguration))
+                try host.validate()
+                guard FileManager.default.isExecutableFile(atPath: SSHCommand.executable) else { throw AppError("시스템 OpenSSH를 찾지 못했습니다.") }
+                let result = try ProcessTools.capture(SSHCommand.executable, SSHCommand.inspect(host, configuration: self.sshConfiguration), cancellation: cancellation)
                 guard result.status == 0 else { throw AppError(result.output) }
                 let inherited = SSHCommand.inheritedForwards(result.output)
-                guard host.forwards.contains(where: { $0.enabled }) || !inherited.isEmpty else { throw AppError("활성 포워딩 규칙이 없습니다.") }
-                let remoteCount = inherited.filter { $0.hasPrefix("remoteforward ") }.count
+                let settings = result.output.components(separatedBy: .newlines)
+                let target = settings.first(where: { $0.hasPrefix("hostname ") }).map { String($0.dropFirst(9)) } ?? host.target
+                let port = settings.first(where: { $0.hasPrefix("port ") }).flatMap { Int($0.dropFirst(5)) } ?? host.port ?? 22
                 DispatchQueue.main.async { [weak self] in
                     guard let self, token == self.generation else { return }
-                    self.hostName = host.name; self.readiness = Readiness(remoteExpected: remoteCount)
-                    self.spawn(host, token: token)
+                    self.inspection = nil
+                    self.readiness = Readiness(requireForwards: false, expectedTarget: target, expectedPort: port)
+                    self.tracker = ForwardTracker(host: host, inherited: inherited)
+                    self.spawn(host, token: token); self.onChange?()
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, token == self.generation else { return }
-                    self.fail(error.localizedDescription)
+                    self.inspection = nil; self.fail(error.localizedDescription)
                 }
             }
         }
     }
     private func spawn(_ host: Host, token: Int) {
-        let child = Process(); ProcessTools.configure(child, executable: SSHCommand.executable, arguments: SSHCommand.connect(host, configuration: sshConfiguration))
-        child.environment = ProcessTools.environment(); child.standardInput = FileHandle.nullDevice; child.standardOutput = FileHandle.nullDevice
-        let pipe = Pipe(); child.standardError = pipe
-        let handle = pipe.fileHandleForReading
-        let fd = handle.fileDescriptor
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
-        source.setEventHandler { [weak self] in self?.drain(fd, token: token) }
-        source.setCancelHandler { try? handle.close() }
-        readSource = source; source.resume()
+        let child = Process()
+        // -E writes through OpenSSH's private logging fd, without redirecting stderr.
+        // The ProxyJump/ProxyCommand child's stderr therefore cannot establish target readiness.
+        ProcessTools.configure(child, executable: SSHCommand.executable, arguments: SSHCommand.connect(host, configuration: sshConfiguration))
+        child.environment = ProcessTools.environment(); child.standardInput = FileHandle.nullDevice
+        let targetPipe = Pipe(); let auxiliaryPipe = Pipe()
+        child.standardOutput = targetPipe; child.standardError = auxiliaryPipe
+        let readers = [DiagnosticStream(pipe: targetPipe, targetProcess: true), DiagnosticStream(pipe: auxiliaryPipe, targetProcess: false)]
+        streams = readers
+        for stream in readers {
+            stream.source.setEventHandler { [weak self, weak stream] in
+                guard let stream else { return }
+                self?.drain(stream, token: token)
+            }
+            stream.source.resume()
+        }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async { [weak self] in
-                guard let self, token == self.generation else { source.cancel(); return }
-                self.drain(fd, token: token)
-                source.cancel(); self.readSource = nil
-                if !self.bytes.isEmpty { self.consume(Data([10]), token: token) }
+                guard let self, token == self.generation else {
+                    for stream in readers { stream.source.cancel() }; return
+                }
+                for stream in readers {
+                    self.drain(stream, token: token)
+                    if !stream.bytes.isEmpty { self.consume(Data([10]), from: stream, token: token) }
+                    stream.source.cancel()
+                }
+                self.streams = []
                 self.fail(self.diagnostic.isEmpty ? "SSH가 종료되었습니다 (\(child.terminationStatus))." : self.diagnostic)
             }
         }
-        do {
-            process = child; try child.run(); _ = setpgid(child.processIdentifier, child.processIdentifier)
-        } catch {
-            source.cancel(); readSource = nil; process = nil; fail(error.localizedDescription)
+        do { process = child; try child.run(); _ = setpgid(child.processIdentifier, child.processIdentifier) }
+        catch {
+            for stream in readers { stream.source.cancel() }; streams = []
+            process = nil; fail(error.localizedDescription)
         }
     }
-    private func drain(_ fd: Int32, token: Int) {
+    private func drain(_ stream: DiagnosticStream, token: Int) {
         guard token == generation else { return }
         var buffer = [UInt8](repeating: 0, count: 8192)
         while true {
-            let count = read(fd, &buffer, buffer.count)
+            let count = read(stream.handle.fileDescriptor, &buffer, buffer.count)
             if count <= 0 { break }
-            consume(Data(buffer.prefix(count)), token: token)
+            consume(Data(buffer.prefix(count)), from: stream, token: token)
         }
     }
-    private func consume(_ data: Data, token: Int) {
+    private func consume(_ data: Data, from stream: DiagnosticStream, token: Int) {
         guard token == generation else { return }
-        bytes.append(data)
-        while let index = bytes.firstIndex(of: 10) {
-            let line = String(decoding: bytes[..<index], as: UTF8.self)
-            bytes.removeSubrange(...index)
+        stream.bytes.append(data)
+        while let index = stream.bytes.firstIndex(of: 10) {
+            let line = String(decoding: stream.bytes[..<index], as: UTF8.self); stream.bytes.removeSubrange(...index)
             diagnostic += line + "\n"
             if diagnostic.utf8.count > 65_536 { diagnostic = String(diagnostic.suffix(32_768)) }
+            guard stream.targetProcess else { continue }
+            targetDiagnostic += line + "\n"
+            if targetDiagnostic.utf8.count > 65_536 { targetDiagnostic = String(targetDiagnostic.suffix(32_768)) }
             readiness.consume(line)
-            if readiness.ready && (state == .connecting || state == .reconnecting) {
-                lastError = ""; machine.ready(); apply([])
+            if readiness.authenticated { tracker?.consume(line) }
+            if readiness.ready && state == .connecting {
+                lastError = ""; machine.ready(); tracker?.sessionReady(); apply([])
+            } else { onChange?() }
+            if let recent = tracker?.recentErrors.last, recent.message == line {
+                let formatter = ISO8601DateFormatter()
+                lastError = "\(formatter.string(from: recent.time)) · \(recent.message)"; onChange?()
             }
         }
-        if bytes.count > 65_536 { bytes = Data(bytes.suffix(32_768)) }
+        if stream.bytes.count > 65_536 { stream.bytes = Data(stream.bytes.suffix(32_768)) }
     }
 }

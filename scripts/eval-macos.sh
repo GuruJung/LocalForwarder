@@ -7,6 +7,8 @@ swift build --package-path macos -c release --arch arm64
 binary_dir=$(swift build --package-path macos -c release --arch arm64 --show-bin-path)
 bundle=dist/LocalForwarder.app
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+swift scripts/generate-macos-icon.swift "$bundle/Contents/Resources/LocalForwarder.icns"
+test -s "$bundle/Contents/Resources/LocalForwarder.icns"
 cp LICENSE README.md "$bundle/Contents/Resources/"
 cp "$binary_dir/LocalForwarder" "$bundle/Contents/MacOS/LocalForwarder"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
@@ -18,7 +20,8 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>LocalForwarder</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleIconFile</key><string>LocalForwarder</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
@@ -26,6 +29,6 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
-python3 tests/integration.py --app "$bundle/Contents/MacOS/LocalForwarder"
+python3 tests/integration.py --behavior multi-host-v2 --app "$bundle/Contents/MacOS/LocalForwarder"
 ditto -c -k --keepParent "$bundle" dist/LocalForwarder-macos-arm64.zip
 stat -f 'macOS artifact bytes: %z' dist/LocalForwarder-macos-arm64.zip

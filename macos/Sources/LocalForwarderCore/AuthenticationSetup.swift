@@ -61,23 +61,25 @@ public enum AuthenticationSetup {
         // Registration may use an existing configured key or a terminal password before the selected key is authorized.
         host.identityFile = key
         let args = SSHCommand.options(host, configuration: configuration) + ["-T", "-o", "SessionType=default", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=ask", host.target, installCommand]
-        var registered = false
-        for attempt in 0..<2 {
-            if try ProcessTools.interactive(SSHCommand.executable, args, input: Data(publicKey.utf8)) == 0 { registered = true; break }
-            if attempt == 0 { print("첫 연결이 실패하여 1초 뒤 다시 시도합니다."); Thread.sleep(forTimeInterval: 1) }
+        // Interactive SSH writes diagnostics directly to the terminal. Do not retry an
+        // unclassified failure (which could be authentication or host-key rejection).
+        guard try ProcessTools.interactive(SSHCommand.executable, args, input: Data(publicKey.utf8)) == 0 else {
+            throw AppError("공개키 등록에 실패했습니다. 터미널의 오류와 서버 인증 정책을 확인한 뒤 다시 실행하세요.")
         }
-        guard registered else { throw AppError("공개키 등록에 실패했습니다. 서버 권한과 인증 정책을 확인하세요.") }
         let verification = SSHCommand.options(host, configuration: configuration) + ["-T", "-n", "-o", "SessionType=default", "-o", "ClearAllForwardings=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host.target, "true"]
         var verified = false
         for attempt in 0..<2 {
             let result = try ProcessTools.capture(SSHCommand.executable, verification, timeout: 20)
             if result.status == 0 { verified = true; break }
-            if attempt == 0 { Thread.sleep(forTimeInterval: 1) }
-            else { print(result.output) }
+            guard attempt == 0, host.retryOnConnectionRefused, SSHCommand.isConnectionRefusal(result.output) else {
+                print(result.output); break
+            }
+            print("연결이 거부되어 1초 뒤 한 번 더 검증합니다.")
+            Thread.sleep(forTimeInterval: 1)
         }
         guard verified else { throw AppError("공개키는 등록했지만 입력 없는 접속을 검증하지 못했습니다. 서버 정책을 확인하세요.") }
         try store.setIdentity(key, for: profileID)
-        print("자동 로그인 검증을 완료했습니다. LocalForwarder를 다시 실행하세요.")
+        print("자동 로그인 검증을 완료했습니다. LocalForwarder에서 이 호스트의 연결을 선택하세요.")
     }
     private static func publicKeyInteractively(_ key: String) throws -> CommandResult {
         let child = Process(); child.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen"); child.arguments = ["-y", "-f", key]

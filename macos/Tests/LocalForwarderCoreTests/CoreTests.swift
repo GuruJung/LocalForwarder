@@ -5,40 +5,100 @@ typealias Host = LocalForwarderCore.Host
 
 final class CoreTests: XCTestCase {
     func host() -> Host { Host(id: "fixture", name: "서버", target: "server", forwards: [Forward(id: "rule", localPort: 15432, remoteHost: "localhost", remotePort: 5432)]) }
-    func testAutomaticRecoveryAndTerminalFailure() {
+    func testDisconnectedSessionNeverSchedulesRecoveryOrExit() {
         var machine = ConnectionMachine()
         XCTAssertEqual(machine.begin(now: 0), [.stop, .launch]); machine.ready()
-        XCTAssertEqual(machine.failed(now: 5), [.stop]); XCTAssertEqual(machine.state, .waitingReconnect)
-        XCTAssertEqual(machine.tick(now: 64.9), [])
-        XCTAssertEqual(machine.tick(now: 65), [.stop, .launch]); XCTAssertEqual(machine.state, .reconnecting)
-        XCTAssertEqual(machine.failed(now: 66), [.stop]); XCTAssertEqual(machine.tick(now: 66.9), [])
-        XCTAssertEqual(machine.tick(now: 67), [.launch])
-        XCTAssertEqual(machine.failed(now: 68), [.stop]); XCTAssertEqual(machine.state, .waitingExit)
-        XCTAssertEqual(machine.tick(now: 127.9), [])
-        XCTAssertEqual(machine.tick(now: 128), [.stop, .exit]); XCTAssertEqual(machine.state, .exiting)
-        XCTAssertEqual(machine.tick(now: 200), []); XCTAssertEqual(machine.manualReconnect(now: 201), [])
+        XCTAssertEqual(machine.failed(now: 5, retryable: true), [.stop])
+        XCTAssertEqual(machine.state, .disconnected); XCTAssertNil(machine.deadline)
+        XCTAssertEqual(machine.tick(now: 60), []); XCTAssertEqual(machine.tick(now: 3600), [])
+        XCTAssertEqual(machine.manualReconnect(now: 3601), [.stop, .launch])
+        XCTAssertEqual(machine.manualReconnect(now: 3602), [])
     }
-    func testManualReconnectionReplacesAutomaticAndResetsAfterSuccess() {
-        var machine = ConnectionMachine(); _ = machine.begin(now: 0); machine.ready(); _ = machine.failed(now: 2)
-        XCTAssertEqual(machine.manualReconnect(now: 10), [.stop, .launch]); XCTAssertEqual(machine.state, .reconnecting)
-        XCTAssertEqual(machine.manualReconnect(now: 11), [])
-        machine.ready(); XCTAssertNil(machine.deadline)
-        XCTAssertEqual(machine.tick(now: 62), []); _ = machine.failed(now: 100)
-        XCTAssertEqual(machine.deadline?.time, 160)
-        XCTAssertEqual(machine.quit(), [.stop, .exit]); XCTAssertNil(machine.deadline)
-        XCTAssertEqual(machine.failed(now: 101), []); XCTAssertEqual(machine.tick(now: 200), [])
-    }
-    func testInitialFailureIsFatalAndTimeoutRetriesOnce() {
+    func testOnlyClassifiedPreConnectionFailureRetriesOnce() {
         var machine = ConnectionMachine(); _ = machine.begin(now: 0)
-        XCTAssertEqual(machine.tick(now: 20), [.stop]); XCTAssertEqual(machine.tick(now: 21), [.launch])
-        XCTAssertEqual(machine.tick(now: 41), [.stop, .fatal]); XCTAssertEqual(machine.state, .exiting)
+        XCTAssertEqual(machine.failed(now: 2, retryable: true), [.stop])
+        XCTAssertEqual(machine.state, .connecting)
+        XCTAssertEqual(machine.tick(now: 2.999), [])
+        XCTAssertEqual(machine.tick(now: 3), [.launch])
+        XCTAssertEqual(machine.failed(now: 4, retryable: true), [.stop])
+        XCTAssertEqual(machine.state, .disconnected); XCTAssertNil(machine.deadline)
+        XCTAssertEqual(machine.tick(now: 100), [])
+        _ = machine.manualReconnect(now: 101)
+        XCTAssertEqual(machine.failed(now: 102), [.stop])
+        XCTAssertEqual(machine.state, .disconnected); XCTAssertNil(machine.deadline)
     }
-    func testWakeUsesElapsedDeadlineAndFailedManualStartsNewExitGrace() {
-        var machine = ConnectionMachine(); _ = machine.begin(now: 0); machine.ready(); _ = machine.failed(now: 1)
-        XCTAssertEqual(machine.tick(now: 600), [.stop, .launch]); XCTAssertEqual(machine.state, .reconnecting)
-        _ = machine.failed(now: 601); _ = machine.tick(now: 602); _ = machine.failed(now: 603)
-        _ = machine.manualReconnect(now: 650); _ = machine.failed(now: 651); _ = machine.tick(now: 652); _ = machine.failed(now: 653)
-        XCTAssertEqual(machine.deadline?.time, 713); XCTAssertEqual(machine.tick(now: 714), [.stop, .exit])
+    func testTimeoutDoesNotRetryAndQuitCancelsPendingAttempt() {
+        var machine = ConnectionMachine(); _ = machine.begin(now: 0)
+        XCTAssertEqual(machine.tick(now: 19.999), [])
+        XCTAssertEqual(machine.tick(now: 20), [.stop])
+        XCTAssertEqual(machine.state, .disconnected); XCTAssertEqual(machine.tick(now: 21), [])
+        _ = machine.begin(now: 30); _ = machine.failed(now: 31, retryable: true)
+        XCTAssertEqual(machine.quit(), [.stop]); XCTAssertNil(machine.deadline)
+        XCTAssertEqual(machine.tick(now: 600), []); XCTAssertEqual(machine.failed(now: 601), [])
+        machine.stopped(); XCTAssertEqual(machine.state, .disconnected)
+    }
+    func testV1ReadIsUnchangedAndFirstSavePreservesExactBackup() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ConfigurationStore(directory: directory)
+        let original = Data("{ \"version\": 1, \"hosts\": [{\"id\":\"old\",\"name\":\"old\",\"target\":\"server\",\"forwards\":[]}] }\n".utf8)
+        try original.write(to: store.file)
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.version, 1)
+        XCTAssertTrue(loaded.hosts[0].autoConnect)
+        XCTAssertTrue(loaded.hosts[0].exitOnForwardFailure)
+        XCTAssertTrue(loaded.hosts[0].retryOnConnectionRefused)
+        XCTAssertEqual(try Data(contentsOf: store.file), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["config.json"])
+        var changed = loaded.hosts[0]; changed.autoConnect = false
+        try store.save(changed)
+        XCTAssertEqual(try store.load().version, 2)
+        XCTAssertFalse(try store.host("old").autoConnect)
+        let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("config-v1-") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(backups.first)), original)
+        try store.save(changed)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix("config-v1-") }.count, 1)
+        let permissions = try FileManager.default.attributesOfItem(atPath: store.file.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+    }
+    func testUnsupportedConfigurationAndInvalidSavePreserveOriginal() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ConfigurationStore(directory: directory)
+        let unsupported = Data("{\"version\":99,\"hosts\":[]}".utf8)
+        try unsupported.write(to: store.file)
+        XCTAssertThrowsError(try store.load()); XCTAssertThrowsError(try store.save(host()))
+        XCTAssertEqual(try Data(contentsOf: store.file), unsupported)
+        try FileManager.default.removeItem(at: store.file)
+        try store.save(host()); let valid = try Data(contentsOf: store.file)
+        var invalid = host(); invalid.target = "-oBad"
+        XCTAssertThrowsError(try store.save(invalid))
+        XCTAssertEqual(try Data(contentsOf: store.file), valid)
+    }
+    func testConcurrentDistinctHostsAndIdentityUpdatePreserveOtherFields() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(directory: directory)
+        let lock = NSLock(); var failures: [String] = []
+        DispatchQueue.concurrentPerform(iterations: 24) { index in
+            do {
+                var value = self.host(); value.id = "host-\(index)"; value.name = "name-\(index)"
+                try ConfigurationStore(directory: directory).save(value)
+            } catch { lock.lock(); failures.append(error.localizedDescription); lock.unlock() }
+        }
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
+        XCTAssertEqual(try store.load().hosts.count, 24)
+        var changed = try store.host("host-0"); changed.name = "latest edit"; changed.autoConnect = false
+        try store.save(changed)
+        try ConfigurationStore(directory: directory).setIdentity("/tmp/new-key", for: changed.id)
+        let merged = try store.host(changed.id)
+        XCTAssertEqual(merged.name, "latest edit"); XCTAssertFalse(merged.autoConnect)
+        XCTAssertEqual(merged.identityFile, "/tmp/new-key")
+        XCTAssertEqual(try store.load().hosts.count, 24)
     }
     func testDiskRereadPreservesOtherHostsAndDamagedFiles() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -74,7 +134,7 @@ final class CoreTests: XCTestCase {
                 var update = baseline; update.name = "writer-\(index)"
                 try writer.save(update)
                 let snapshot = try JSONDecoder().decode(Configuration.self, from: Data(contentsOf: writer.file))
-                if snapshot.version != 1 || snapshot.hosts.count != 1 || snapshot.hosts[0].id != baseline.id {
+                if snapshot.version != 2 || snapshot.hosts.count != 1 || snapshot.hosts[0].id != baseline.id {
                     failures.add("동시 저장 중 유효하지 않은 설정을 읽었습니다.")
                 }
             } catch { failures.add(error.localizedDescription) }
@@ -144,6 +204,89 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(readiness.remoteSucceeded, 0)
         XCTAssertFalse(readiness.enteredSession)
         XCTAssertFalse(readiness.localListener)
+    }
+    func testSSHReadinessSeparatesFailedForwardsAndFiltersJumpAuthentication() {
+        var readiness = Readiness(requireForwards: false, expectedTarget: "127.0.0.1", expectedPort: 2222)
+        readiness.consume("Authenticated to 127.0.0.1 ([127.0.0.1]:22) using publickey.")
+        readiness.consume("debug1: Entering interactive session.")
+        XCTAssertFalse(readiness.ready, "The jump child can have the same hostname but a different port")
+        readiness.consume("Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using publickey.")
+        readiness.consume("Could not request local forwarding.")
+        XCTAssertFalse(readiness.ready)
+        readiness.consume("debug1: Entering interactive session.")
+        XCTAssertTrue(readiness.ready, "Live SSH with ExitOnForwardFailure OFF is independent of forward results")
+    }
+    func testOnlyTransportRefusalClassificationPermitsRetry() {
+        for log in ["ssh: connect to host server port 22: Connection refused",
+                    "kex_exchange_identification: Connection closed by remote host",
+                    "Connection reset by 127.0.0.1 port 22"] {
+            XCTAssertTrue(SSHCommand.isConnectionRefusal(log), log)
+        }
+        for log in ["Permission denied (publickey).", "Host key verification failed.",
+                    "bind [127.0.0.1]:15432: Address already in use", "Connection timed out",
+                    "channel 2: open failed: connect failed: Connection refused",
+                    "Authenticated to server\nConnection closed by server", "unclassified failure"] {
+            XCTAssertFalse(SSHCommand.isConnectionRefusal(log), log)
+        }
+        var value = host(); value.exitOnForwardFailure = false
+        XCTAssertTrue(SSHCommand.connect(value).contains("ExitOnForwardFailure=no"))
+        XCTAssertTrue(SSHCommand.inspect(value).contains("ExitOnForwardFailure=no"))
+    }
+    func testForwardRuntimePreservesPartialFailureSourceAndObservedDestinationError() {
+        var value = host()
+        value.forwards.append(Forward(id: "bad", localPort: 15433))
+        value.forwards.append(Forward(id: "disabled", enabled: false, localPort: 15434))
+        var tracker = ForwardTracker(host: value, inherited: ["remoteforward 19090 [localhost]:9090", "dynamicforward /tmp/socket"])
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        tracker.consume("debug1: channel 0: new port-listener [port listener] (inactive timeout: 0)")
+        // OpenSSH announces its intended listener before the bind system call fails.
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15433.")
+        tracker.consume("bind [127.0.0.1]:15433: Address already in use")
+        tracker.consume("debug1: remote forward success for: listen 19090, connect localhost:9090")
+        tracker.sessionReady()
+        XCTAssertEqual(tracker.forwards.map(\.state), [.ready, .failed, .ready, .unknown])
+        XCTAssertEqual(tracker.forwards[0].source, "앱 설정")
+        XCTAssertEqual(tracker.forwards[2].source, "SSH 설정")
+        let observed = Date(timeIntervalSince1970: 123)
+        tracker.consume("channel 1: open failed: connect failed: Connection refused", now: observed)
+        XCTAssertEqual(tracker.recentErrors.first?.time, observed)
+        XCTAssertEqual(tracker.forwards[0].state, .ready, "Destination failure does not undo listener readiness")
+        tracker.disconnected()
+        XCTAssertTrue(tracker.forwards.allSatisfy { $0.state == .disconnected })
+        XCTAssertEqual(tracker.recentErrors.count, 1)
+    }
+    func testListenerAnnouncementWithoutCreatedChannelIsUnknown() {
+        var tracker = ForwardTracker(host: host())
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        XCTAssertNotEqual(tracker.forwards.first?.state, .ready)
+        tracker.sessionReady()
+        XCTAssertEqual(tracker.forwards.first?.state, .unknown)
+    }
+    func testInheritedListenerKeepsActualSuccessfulAddressWhenAnotherBindFails() {
+        let value = Host(id: "inherited", name: "Inherited", target: "server")
+        var tracker = ForwardTracker(host: value, inherited: ["localforward 15432 localhost:5432"])
+        tracker.consume("debug1: Local forwarding listening on ::1 port 15432.")
+        tracker.consume("debug1: channel 0: new port-listener [port listener] (inactive timeout: 0)")
+        tracker.consume("debug1: Local forwarding listening on 127.0.0.1 port 15432.")
+        tracker.consume("bind [127.0.0.1]:15432: Address already in use")
+        tracker.sessionReady()
+        XCTAssertEqual(tracker.forwards.first?.state, .ready)
+    }
+    func testJumpWithIdenticalAddressAndPortCannotEstablishTargetReadiness() {
+        for marker in ["debug1: channel_connect_stdio_fwd: 127.0.0.1:2222",
+                       "debug1: channel 0: new stdio-forward [stdio-forward] (inactive timeout: 0)"] {
+            var readiness = Readiness(requireForwards: false, expectedTarget: "127.0.0.1", expectedPort: 2222)
+            let authentication = "Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using publickey."
+            readiness.consume(authentication)
+            readiness.consume(marker)
+            readiness.consume("debug1: Entering interactive session.")
+            XCTAssertFalse(readiness.ready, "The jump and target may share an endpoint: \(marker)")
+            readiness.consume(authentication)
+            XCTAssertFalse(readiness.ready)
+            readiness.consume("Could not request local forwarding.")
+            readiness.consume("debug1: Entering interactive session.")
+            XCTAssertTrue(readiness.ready, "The target remains a live SSH session with failed forwards")
+        }
     }
     func testInheritedRulesDoNotIncludeOrdinarySettings() {
         XCTAssertEqual(SSHCommand.inheritedForwards("hostname a\nlocalforward 1234 localhost:22\nremoteforward 4567 localhost:33\ndynamicforward 1080\n" ).count, 3)

@@ -858,6 +858,503 @@ class RealSSHTests(unittest.TestCase):
         self.report["proxyjump"] = "blocked target never connected; authenticated target forwards data"
 
 
+class ManagerSession(AppSession):
+    """JSON control adapter around the production multi-host ConnectionManager."""
+    def __init__(self, app, fixture, directory, ssh_configuration, *, start=True):
+        command = [app, "--test-manager", str(directory), str(ssh_configuration)]
+        if not start:
+            command.append("--no-start")
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                        errors="replace", bufsize=1)
+        self.condition = threading.Condition()
+        self.events = []
+        self.host_events = []
+        self.snapshot_serial = 0
+        self.output = []
+        self.errors = []
+        self.readers = [threading.Thread(target=self._read, args=(self.process.stdout, False), daemon=True),
+                        threading.Thread(target=self._read, args=(self.process.stderr, True), daemon=True)]
+        for reader in self.readers:
+            reader.start()
+
+    def _read(self, stream, error):
+        for line in stream:
+            with self.condition:
+                (self.errors if error else self.output).append(line.rstrip())
+                if line.startswith("LF_HOST "):
+                    self.host_events.append((time.monotonic(), json.loads(line[len("LF_HOST "):])))
+                self.condition.notify_all()
+
+    def send(self, command, **values):
+        payload = {"command": command, **values}
+        self.process.stdin.write(json.dumps(payload) + "\n")
+        self.process.stdin.flush()
+
+    def wait_host(self, host_id, state, *, after=0, timeout=30, **values):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while True:
+                for index, (when, host) in enumerate(self.host_events[after:], start=after):
+                    if host["id"] == host_id and host["state"] == state and all(
+                            host.get(key) == value for key, value in values.items()):
+                        return index, when, host
+                self.assert_alive()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(f"Timed out waiting for {host_id}: {state} {values}:\n{self.diagnostics()}")
+                self.condition.wait(min(remaining, .2))
+
+    def snapshot(self, host_id):
+        after = len(self.host_events)
+        self.snapshot_serial += 1
+        request_id = f"snapshot-{self.snapshot_serial}"
+        self.send("snapshot", requestID=request_id)
+        deadline = time.monotonic() + 5
+        with self.condition:
+            while True:
+                for _, host in self.host_events[after:]:
+                    if host["id"] == host_id and host.get("requestID") == request_id:
+                        return host
+                self.assert_alive()
+                if time.monotonic() >= deadline:
+                    raise AssertionError(self.diagnostics())
+                self.condition.wait(.1)
+
+
+class MultiHostSSHTests(unittest.TestCase):
+    """v2 behavior is opt-in; legacy Windows scenarios above remain unchanged."""
+    fixture: Fixture
+    app: str
+    report: dict
+    setUp = RealSSHTests.setUp
+    def tearDown(self):
+        try:
+            RealSSHTests.tearDown(self)
+        finally:
+            with self.fixture.relay.lock:
+                self.fixture.relay.reject_count = 0
+
+    test_public_key_registration = RealSSHTests.test_09_public_key_registration_preserves_and_deduplicates
+
+    def profile(self, count=1):
+        hosts = []
+        for index in range(count):
+            host = self.fixture.profile(ports(1))["hosts"][0]
+            host.update(id=f"host-{index}", autoConnect=True, exitOnForwardFailure=True,
+                        retryOnConnectionRefused=True)
+            hosts.append(host)
+        return {"version": 2, "hosts": hosts}
+
+    def start(self, name, config=None, *, start=True, inherited=False):
+        config = config or self.profile()
+        directory = self.fixture.config_directory(name, config)
+        # Shared inherited listeners would make independently valid hosts conflict.
+        # Test inheritance separately with one host, and leave the fixture itself unchanged.
+        private = directory / "ssh_config"
+        lines = self.fixture.ssh_config.read_text().splitlines()
+        if not inherited:
+            lines = [line for line in lines if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
+        private.write_text("\n".join(lines) + "\n")
+        session = ManagerSession(self.app, self.fixture, directory, private, start=start)
+        self.sessions.append(session)
+        return session, directory, config
+
+    def test_01_independent_hosts_manual_intent_and_whole_cleanup(self):
+        config = self.profile(3)
+        config["hosts"][2]["autoConnect"] = False
+        session, _, _ = self.start("multi-independent", config)
+        for host in config["hosts"][:2]:
+            session.wait_host(host["id"], "connected")
+            echo(host["forwards"][0]["localPort"])
+        session.wait_host("host-2", "disconnected", intent=False)
+        session.send("connect", id="host-2")
+        session.wait_host("host-2", "connected", intent=True)
+        echo(config["hosts"][2]["forwards"][0]["localPort"])
+        before = len(session.host_events)
+        session.send("disconnect", id="host-0")
+        session.wait_host("host-0", "disconnected", after=before, intent=False)
+        wait_port_closed(config["hosts"][0]["forwards"][0]["localPort"])
+        session.send("wake")
+        time.sleep(6)
+        self.assertFalse(session.snapshot("host-0")["intent"])
+        self.assertEqual(session.snapshot("host-0")["state"], "disconnected")
+        for host in config["hosts"][1:]:
+            echo(host["forwards"][0]["localPort"])
+        session.send("quit")
+        self.assertEqual(session.wait_exit(8), 0, session.diagnostics())
+        for host in config["hosts"]:
+            wait_port_closed(host["forwards"][0]["localPort"])
+
+    def test_02_event_recovery_debounces_and_leaves_healthy_host_alone(self):
+        config = self.profile(2)
+        # One direct connection remains healthy while the relay disconnects its peer.
+        config["hosts"][1]["port"] = self.fixture.server_port
+        direct_key = self.fixture.known_hosts.read_text().replace(
+            f"]:{self.fixture.relay.port} ", f"]:{self.fixture.server_port} ")
+        with self.fixture.known_hosts.open("a") as file:
+            file.write(direct_key)
+        session, _, _ = self.start("multi-recovery", config)
+        for host in config["hosts"]:
+            session.wait_host(host["id"], "connected")
+        before = len(session.host_events)
+        self.fixture.relay.disconnect(block=False)
+        lost, _, _ = session.wait_host("host-0", "disconnected", after=before, intent=True)
+        session.send("network", available=False)
+        session.send("network", available=True)
+        time.sleep(2)
+        last_event = time.monotonic()
+        session.send("wake")
+        recovered, when, _ = session.wait_host("host-0", "connected", after=lost + 1, timeout=20)
+        self.assertGreaterEqual(when - last_event, 4.8)
+        self.assertLess(when - last_event, 15)
+        healthy_events = [host["state"] for _, host in session.host_events[lost + 1:recovered + 1]
+                          if host["id"] == "host-1"]
+        self.assertTrue(all(state == "connected" for state in healthy_events), session.diagnostics())
+        echo(config["hosts"][1]["forwards"][0]["localPort"])
+        self.report["recovery_delay_after_last_event_seconds"] = when - last_event
+
+    def test_03_temporary_override_survives_recovery_and_save_clears_it(self):
+        session, directory, config = self.start("multi-temporary")
+        session.wait_host("host-0", "connected")
+        original = config["hosts"][0]["forwards"][0]["localPort"]
+        temporary = json.loads(json.dumps(config["hosts"][0]))
+        temporary["forwards"][0]["localPort"] = ports(1)[0]
+        before = len(session.host_events)
+        session.send("temporary", host=temporary)
+        session.wait_host("host-0", "connected", after=before, temporary=True)
+        echo(temporary["forwards"][0]["localPort"])
+        wait_port_closed(original)
+        self.assertEqual(json.loads((directory / "config.json").read_text()), config)
+        before = len(session.host_events)
+        self.fixture.relay.disconnect(block=False)
+        lost, _, _ = session.wait_host("host-0", "disconnected", after=before)
+        session.send("wake")
+        session.wait_host("host-0", "connected", after=lost + 1, temporary=True)
+        echo(temporary["forwards"][0]["localPort"])
+        # Simulate a successful per-host save notification: it changes the next
+        # configuration, but must not tear down this live temporary connection.
+        session.send("saved", id="host-0")
+        state = session.snapshot("host-0")
+        self.assertFalse(state["temporary"])
+        self.assertEqual(state["state"], "connected")
+        echo(temporary["forwards"][0]["localPort"])
+        before = len(session.host_events)
+        session.send("connect", id="host-0")
+        session.wait_host("host-0", "connected", after=before, temporary=False)
+        echo(original)
+        wait_port_closed(temporary["forwards"][0]["localPort"])
+
+    def test_04_retry_only_once_and_option_off(self):
+        relay = self.fixture.relay
+        for retry in (True, False):
+            with self.subTest(retry=retry):
+                config = self.profile()
+                config["hosts"][0]["retryOnConnectionRefused"] = retry
+                with relay.lock:
+                    relay.reject_count = 1
+                    before_attempts = len(relay.accepted)
+                session, _, _ = self.start("multi-refusal-" + str(retry), config)
+                if retry:
+                    session.wait_host("host-0", "connected")
+                else:
+                    trying, _, _ = session.wait_host("host-0", "connecting")
+                    session.wait_host("host-0", "disconnected", after=trying + 1)
+                    time.sleep(2)
+                attempts = relay.accepted[before_attempts:]
+                self.assertEqual(len(attempts), 2 if retry else 1, session.diagnostics())
+                if retry:
+                    self.assertGreaterEqual(attempts[1] - attempts[0], .8)
+                session.assert_alive()
+                session.close()
+        with relay.lock:
+            relay.reject_count = 10
+            before_attempts = len(relay.accepted)
+        session, _, _ = self.start("multi-refusal-exhausted")
+        session.wait_host("host-0", "connecting")
+        deadline = time.monotonic() + 10
+        while len(relay.accepted) - before_attempts < 2:
+            self.assertLess(time.monotonic(), deadline, session.diagnostics())
+            time.sleep(.1)
+        time.sleep(3)
+        self.assertEqual(len(relay.accepted) - before_attempts, 2)
+        self.assertEqual(session.snapshot("host-0")["state"], "disconnected")
+        session.assert_alive()
+        with relay.lock:
+            relay.reject_count = 0
+
+    def test_05_partial_forward_failure_option_and_peer_isolation(self):
+        for fail_all in (True, False):
+            with self.subTest(exitOnForwardFailure=fail_all), socket.socket() as occupied:
+                occupied.bind(("127.0.0.1", 0))
+                occupied.listen()
+                config = self.profile(2)
+                host = config["hosts"][1]
+                host["exitOnForwardFailure"] = fail_all
+                host["forwards"].append({"id": "occupied", "enabled": True,
+                    "localPort": occupied.getsockname()[1], "remoteHost": "127.0.0.1",
+                    "remotePort": self.fixture.echo.port})
+                session, _, _ = self.start("multi-partial-" + str(fail_all), config)
+                session.wait_host("host-0", "connected")
+                if fail_all:
+                    trying, _, _ = session.wait_host("host-1", "connecting")
+                    session.wait_host("host-1", "disconnected", after=trying + 1)
+                    wait_port_closed(host["forwards"][0]["localPort"])
+                else:
+                    _, _, state = session.wait_host("host-1", "connected")
+                    echo(host["forwards"][0]["localPort"])
+                    self.assertEqual({rule["id"]: rule["state"] for rule in state["forwards"]},
+                                     {"rule-0": "ready", "occupied": "failed"}, session.diagnostics())
+                echo(config["hosts"][0]["forwards"][0]["localPort"])
+                session.assert_alive()
+                session.close()
+
+    def test_06_no_unsolicited_reconnect_or_exit_and_idle_evidence(self):
+        config = self.profile(2)
+        config["hosts"][1]["autoConnect"] = False
+        session, _, _ = self.start("multi-persistence", config)
+        session.wait_host("host-0", "connected")
+        before = len(session.host_events)
+        self.fixture.relay.disconnect(block=False)
+        index, _, _ = session.wait_host("host-0", "disconnected", after=before, intent=True)
+        baseline = process_metrics(session.process.pid)
+        before_attempts = len(self.fixture.relay.accepted)
+        start = time.monotonic()
+        time.sleep(65)
+        elapsed = time.monotonic() - start
+        session.assert_alive()
+        final = process_metrics(session.process.pid)
+        self.assertEqual(len(self.fixture.relay.accepted), before_attempts)
+        self.assertFalse(any(host["state"] in ("connecting", "connected", "reconnecting")
+                             for _, host in session.host_events[index + 1:]))
+        self.report["idle"] = {"duration_seconds": elapsed,
+            "cpu_seconds": final["cpu_seconds"] - baseline["cpu_seconds"],
+            "cpu_percent_one_core": 100 * (final["cpu_seconds"] - baseline["cpu_seconds"]) / elapsed,
+            "rss_bytes": final["rss_bytes"],
+            "scope": "headless production multi-host manager after disconnection; excludes native UI"}
+
+    def test_07_cancel_start_and_temporary_host_full_reconnect(self):
+        session, _, config = self.start("multi-cancel", start=False)
+        session.send("wake")
+        time.sleep(6)
+        state = session.snapshot("host-0")
+        self.assertEqual(state["state"], "disconnected")
+        self.assertFalse(state["intent"])
+        temporary = self.profile()["hosts"][0]
+        temporary["id"] = "temporary-new"
+        session.send("temporary", host=temporary)
+        session.wait_host("temporary-new", "connected", temporary=True)
+        before = len(session.host_events)
+        session.send("reconnect-all")
+        session.wait_host("host-0", "connected", after=before, intent=True)
+        wait_port_closed(temporary["forwards"][0]["localPort"])
+        echo(config["hosts"][0]["forwards"][0]["localPort"])
+        session.send("delete", id="host-0")
+        wait_port_closed(config["hosts"][0]["forwards"][0]["localPort"])
+        session.assert_alive()
+
+    def test_08_inherited_rules_destination_failure_and_disabled_rule(self):
+        dead_destination = ports(1)[0]
+        config = self.profile()
+        host = config["hosts"][0]
+        host["forwards"].extend([
+            {"id": "destination-down", "enabled": True, "localPort": ports(1)[0],
+             "remoteHost": "127.0.0.1", "remotePort": dead_destination},
+            {"id": "disabled", "enabled": False, "localPort": ports(1)[0],
+             "remoteHost": "127.0.0.1", "remotePort": self.fixture.echo.port}])
+        session, _, _ = self.start("multi-inherited", config, inherited=True)
+        session.wait_host("host-0", "connected")
+        for port in (host["forwards"][0]["localPort"], self.fixture.inherited_port, self.fixture.remote_port):
+            echo(port)
+        wait_port_closed(host["forwards"][2]["localPort"])
+        with socket.create_connection(("127.0.0.1", host["forwards"][1]["localPort"]), timeout=4) as connection:
+            connection.settimeout(4)
+            with contextlib.suppress(ConnectionResetError):
+                self.assertEqual(connection.recv(1), b"")
+        deadline = time.monotonic() + 5
+        while True:
+            state = session.snapshot("host-0")
+            if state.get("recentErrors"):
+                break
+            self.assertLess(time.monotonic(), deadline, state)
+            time.sleep(.1)
+        self.assertEqual(state["state"], "connected")
+        self.assertIn("time", state["recentErrors"][-1])
+        self.assertGreaterEqual(len(state["forwards"]), 4)
+        session.send("quit")
+        self.assertEqual(session.wait_exit(8), 0)
+        for port in (self.fixture.inherited_port, self.fixture.remote_port):
+            wait_port_closed(port)
+
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Foundation query-worker shutdown regression")
+    def test_09_quit_interrupts_inflight_ssh_configuration_inspection(self):
+        fixture = self.fixture
+        marker = fixture.root / "inspection-shell.pid"
+        child_marker = fixture.root / "inspection-child.pid"
+        script = fixture.root / "blocking-inspection.sh"
+        script.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > " + shell_quote(str(marker)) +
+            "\nsleep 30 &\nprintf '%s\\n' \"$!\" > " + shell_quote(str(child_marker)) + "\nwait\n",
+            encoding="utf-8",
+        )
+        private_config = fixture.root / "blocking-inspection-config"
+        command = "/bin/sh " + shell_quote(str(script))
+        escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+        private_config.write_text(fixture.ssh_config.read_text(encoding="utf-8") +
+                                  '\nMatch exec "' + escaped + '"\n', encoding="utf-8")
+        directory = fixture.config_directory("multi-quit-inspection", fixture.profile())
+        session = ManagerSession(self.app, fixture, directory, ssh_configuration=private_config)
+        self.sessions.append(session)
+        owned_group = None
+        pids = []
+        try:
+            deadline = time.monotonic() + 8
+            while not marker.exists() or not child_marker.exists() or not child_marker.read_text().strip():
+                session.assert_alive()
+                self.assertLess(time.monotonic(), deadline, session.diagnostics())
+                time.sleep(.02)
+            pids = [int(marker.read_text().strip()), int(child_marker.read_text().strip())]
+            owned_group = os.getpgid(pids[0])
+            self.assertNotEqual(owned_group, os.getpgrp(), "Inspection must not share the test driver's group")
+            start = time.monotonic()
+            session.send("quit")
+            self.assertEqual(session.wait_exit(timeout=3), 0, session.diagnostics())
+            self.assertLess(time.monotonic() - start, 3)
+            self.assertNotIn("connected", [host["state"] for _, host in session.host_events])
+            for pid in pids:
+                result = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+                self.assertTrue(result.returncode != 0 or result.stdout.strip().startswith("Z"),
+                                f"Owned inspection descendant {pid} remains live: {result.stdout}")
+        finally:
+            # Cleanup only the group identified from this test's own marker process.
+            if owned_group is not None and owned_group != os.getpgrp():
+                for pid in pids:
+                    try:
+                        if os.getpgid(pid) == owned_group:
+                            os.killpg(owned_group, signal.SIGKILL)
+                            break
+                    except ProcessLookupError:
+                        pass
+            for path in (marker, child_marker, script, private_config):
+                path.unlink(missing_ok=True)
+
+    def test_10_proxyjump_requires_target_forwarding_readiness(self):
+        fixture = self.fixture
+        # A jump ssh -W process emits its own authentication and interactive-session
+        # messages on the parent's stderr before the target SSH handshake completes.
+        # No inherited RemoteForward is present: a remote-ack gate would mask the bug.
+        known_hosts = fixture.root / "proxyjump-known-hosts"
+        host_fields = fixture.host_key.with_suffix(".pub").read_text().split()
+        known_hosts.write_text(
+            f"[127.0.0.1]:{fixture.server_port} {host_fields[0]} {host_fields[1]}\n",
+            encoding="utf-8",
+        )
+        private_config = fixture.root / "proxyjump-config"
+
+        def write_jump_config(target_port):
+            private_config.write_text("\n".join([
+                "Host jump-fixture target-fixture", f"  User {fixture.user}",
+                f"  IdentityFile {ssh_path(fixture.client_key)}",
+                f"  UserKnownHostsFile {ssh_path(known_hosts)}", "  GlobalKnownHostsFile none",
+                "  StrictHostKeyChecking yes", "  IdentitiesOnly yes", "  BatchMode yes",
+                "Host jump-fixture", "  HostName 127.0.0.1", f"  Port {fixture.server_port}",
+                "Host target-fixture", "  HostName 127.0.0.1", f"  Port {target_port}",
+                "  ProxyJump jump-fixture",
+            ]) + "\n", encoding="utf-8")
+
+        def start_jump(name):
+            profile = fixture.profile(name=name)
+            profile["hosts"][0]["target"] = "target-fixture"
+            directory = fixture.config_directory(name, profile)
+            session = ManagerSession(self.app, fixture, directory, ssh_configuration=private_config)
+            self.sessions.append(session)
+            return session, profile
+
+        with socket.socket() as sink:
+            sink.bind(("127.0.0.1", 0))
+            sink.listen()
+            sink.settimeout(.2)
+            stop = threading.Event()
+            accepted = []
+
+            def accept_without_ssh_banner():
+                while not stop.is_set():
+                    try:
+                        connection, _ = sink.accept()
+                        accepted.append(connection)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        return
+
+            worker = threading.Thread(target=accept_without_ssh_banner, daemon=True)
+            worker.start()
+            failed = None
+            try:
+                write_jump_config(sink.getsockname()[1])
+                failed, _ = start_jump("multi-proxyjump-blocked")
+                trying, _, _ = failed.wait_host(PROFILE_ID, "connecting")
+                failed.wait_host(PROFILE_ID, "disconnected", after=trying + 1, timeout=30)
+                failed.assert_alive()
+                self.assertNotIn("connected", [host["state"] for _, host in failed.host_events], failed.diagnostics())
+                self.assertEqual(len(accepted), 1, "Timeout must reach the target once without retry")
+            finally:
+                if failed:
+                    failed.close()
+                stop.set()
+                worker.join(timeout=1)
+                for connection in accepted:
+                    connection.close()
+
+        # The same jump configuration must work once the target is an actual SSH
+        # server; it must not solve the regression by rejecting ProxyJump entirely.
+        write_jump_config(fixture.server_port)
+        succeeded, profile = start_jump("multi-proxyjump-success")
+        succeeded.wait_host(PROFILE_ID, "connected", timeout=35)
+        for rule in profile["hosts"][0]["forwards"]:
+            echo(rule["localPort"])
+        succeeded.send("quit")
+        self.assertEqual(succeeded.wait_exit(timeout=10), 0, succeeded.diagnostics())
+        for rule in profile["hosts"][0]["forwards"]:
+            wait_port_closed(rule["localPort"])
+        self.report["proxyjump"] = "blocked target never connected; authenticated target forwards data"
+
+
+
+    def test_11_authentication_and_host_key_errors_do_not_retry(self):
+        fixture = self.fixture
+        rejected_key = fixture.root / "rejected-client-key"
+        run([fixture.keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(rejected_key)])
+        for failure in ("authentication", "host-key"):
+            with self.subTest(failure=failure):
+                config = self.profile()
+                directory = fixture.config_directory("multi-" + failure, config)
+                private = directory / "ssh_config"
+                lines = [line for line in fixture.ssh_config.read_text().splitlines()
+                         if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
+                contents = "\n".join(lines) + "\n"
+                if failure == "authentication":
+                    config["hosts"][0]["identityFile"] = str(rejected_key)
+                    fixture.write_config(directory, config)
+                    contents = contents.replace(ssh_path(fixture.client_key), ssh_path(rejected_key))
+                else:
+                    empty = directory / "empty-known-hosts"
+                    empty.write_text("")
+                    contents = contents.replace(ssh_path(fixture.known_hosts), ssh_path(empty))
+                private.write_text(contents)
+                before = len(fixture.relay.accepted)
+                session = ManagerSession(self.app, fixture, directory, private)
+                self.sessions.append(session)
+                trying, _, _ = session.wait_host("host-0", "connecting")
+                session.wait_host("host-0", "disconnected", after=trying + 1)
+                time.sleep(2)
+                self.assertEqual(len(fixture.relay.accepted) - before, 1, session.diagnostics())
+                session.assert_alive()
+                self.assertTrue(session.snapshot("host-0")["error"])
+                session.close()
+
+
 def check_fixture(fixture: Fixture):
     """Independently verify the daemon, relay and echo endpoint without an app build."""
     log_path = fixture.root / "fixture-client.log"
@@ -927,6 +1424,8 @@ class EvidenceResult(unittest.TextTestResult):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app")
+    parser.add_argument("--behavior", choices=("legacy-v1", "multi-host-v2"), default="legacy-v1",
+                        help="legacy-v1 preserves frozen Windows expectations; macOS uses multi-host-v2")
     parser.add_argument("--sshd", default=os.environ.get("LOCALFORWARDER_TEST_SSHD"))
     parser.add_argument("--report", default="dist/integration-evidence.json")
     parser.add_argument("--only", help="Run matching unittest method names, e.g. test_02")
@@ -935,7 +1434,7 @@ def main() -> int:
     if not options.fixture_check and not options.app:
         parser.error("--app is required unless --fixture-check is used")
     started = time.monotonic()
-    report = {"platform": platform.platform(), "architecture": platform.machine(),
+    report = {"behavior": options.behavior, "platform": platform.platform(), "architecture": platform.machine(),
               "tests_started": [], "status": "failed", "limitations": [
                   "Headless integration does not verify native window/tray appearance or external terminal UI.",
               ]}
@@ -951,15 +1450,16 @@ def main() -> int:
         if options.fixture_check:
             report.update(status="fixture-validated", app_tests_run=False)
             return 0
-        RealSSHTests.fixture = fixture
-        RealSSHTests.app = str(Path(options.app).absolute())
-        RealSSHTests.report = report
-        names = unittest.defaultTestLoader.getTestCaseNames(RealSSHTests)
+        test_class = RealSSHTests if options.behavior == "legacy-v1" else MultiHostSSHTests
+        test_class.fixture = fixture
+        test_class.app = str(Path(options.app).absolute())
+        test_class.report = report
+        names = unittest.defaultTestLoader.getTestCaseNames(test_class)
         if options.only:
             names = [name for name in names if options.only in name]
             if not names:
                 raise ValueError("--only did not match any tests")
-        suite = unittest.TestSuite(RealSSHTests(name) for name in names)
+        suite = unittest.TestSuite(test_class(name) for name in names)
         result = unittest.TextTestRunner(verbosity=2, resultclass=EvidenceResult).run(suite)
         report.update(status="passed" if result.wasSuccessful() else "failed",
                       tests_run=result.testsRun,
