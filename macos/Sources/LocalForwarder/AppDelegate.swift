@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func quit() {
         guard !terminating else { return }
         terminating = true; monitor.cancel()
+        settings.prepareForTermination()
         ProcessTools.preventNewCaptures()
         manager.quit()
     }

@@ -33,6 +33,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private var startup = false
     var onClose: ((Bool, Bool) -> Void)?
     private var window: NSWindow!
+    private var statusSheet: NSWindow?
+    private var statusHostID: String?
     private let hostsTable = NSTableView()
     private let rulesTable = NSTableView()
     private let runtimeTable = NSTableView()
@@ -46,6 +48,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private let retryRefused = NSButton(checkboxWithTitle: "연결 거부 시 한 번 재시도", target: nil, action: nil)
     private let command = NSTextView()
     private let status = NSTextField(wrappingLabelWithString: "")
+    private let statusHeading = NSTextField(wrappingLabelWithString: "")
     private let validation = NSTextField(wrappingLabelWithString: "")
     private var connectButton: NSButton!
     private var authButton: NSButton!
@@ -62,6 +65,11 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     func open(select id: String? = nil, startup: Bool = false) {
         if isOpen {
+            if let sheet = statusSheet {
+                window.makeKeyAndOrderFront(nil); sheet.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
             if let id, drafts[id] != nil { capture(); select(id) }
             window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
             return
@@ -86,7 +94,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     func refresh() {
         guard isOpen else { return }
-        runtimeTable.reloadData(); updateStatus(); hostsTable.reloadData()
+        updateStatus(); hostsTable.reloadData()
     }
     private func dirty(_ id: String) -> Bool { drafts[id] != baseline[id] }
     private func capture() {
@@ -114,7 +122,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         exitOnFailure.state = host.exitOnForwardFailure ? .on : .off
         retryRefused.state = host.retryOnConnectionRefused ? .on : .off
         if let index = order.firstIndex(of: id) { hostsTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
-        rulesTable.reloadData(); runtimeTable.reloadData(); validation.stringValue = ""
+        rulesTable.reloadData(); validation.stringValue = ""
         loading = false; updateCommand(); updateStatus()
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
@@ -128,6 +136,17 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     private func updateStatus() {
         guard let id = selectedID else { return }
+        if let runtime = manager.runtime(id) {
+            connectButton.isEnabled = runtime.state != .connecting && runtime.state != .stopping
+        } else { connectButton.isEnabled = true }
+        authButton.isEnabled = authTimers[id] == nil
+        updateConnectionStatus()
+    }
+    private func updateConnectionStatus() {
+        guard let id = statusHostID else { return }
+        if let host = manager.runtime(id)?.executionHost ?? drafts[id]?.host {
+            statusHeading.stringValue = "현재 연결 상태 — " + host.name + "\nSSH 대상: " + host.target
+        }
         status.stringValue = connectionSummary(manager.runtime(id))
         if let runtime = manager.runtime(id) {
             if runtime.temporary {
@@ -144,10 +163,59 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             for error in runtime.recentErrors.suffix(5) {
                 status.stringValue += "\n" + DateFormatter.localizedString(from: error.time, dateStyle: .short, timeStyle: .medium) + " · " + error.message
             }
-            connectButton.isEnabled = runtime.state != .connecting && runtime.state != .stopping
-        } else { connectButton.isEnabled = true }
-        authButton.isEnabled = authTimers[id] == nil
+        }
+        runtimeTable.reloadData()
     }
+    @objc private func showConnectionStatus() {
+        guard statusSheet == nil else { return }
+        finishEditing()
+        guard let id = selectedID, drafts[id] != nil else { return }
+        statusHostID = id
+        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
+        let size = NSSize(width: min(760, visible.width - 40), height: min(480, visible.height - 70))
+        let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        sheet.title = "현재 연결 상태"; sheet.isReleasedWhenClosed = false
+        sheet.contentMinSize = NSSize(width: min(600, size.width), height: min(320, size.height))
+        let content = sheet.contentView!
+        let bodyScroll = NSScrollView(); bodyScroll.hasVerticalScroller = true; bodyScroll.autohidesScrollers = true
+        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; bodyScroll.documentView = document
+        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
+        body.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(body)
+        statusHeading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let explanation = NSTextField(wrappingLabelWithString: "‘준비됨’은 포워딩 개설 성공을 뜻합니다. 목적지 서비스의 정상 동작을 보장하지 않습니다.")
+        for view in [statusHeading, status, scroll(runtimeTable, height: 160), explanation] as [NSView] {
+            body.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        }
+        let close = button("닫기", #selector(closeConnectionStatus)); close.keyEquivalent = "\u{1b}"
+        bodyScroll.translatesAutoresizingMaskIntoConstraints = false; close.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(bodyScroll); content.addSubview(close)
+        NSLayoutConstraint.activate([
+            bodyScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            bodyScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            bodyScroll.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            bodyScroll.bottomAnchor.constraint(equalTo: close.topAnchor, constant: -16),
+            close.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            close.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            document.leadingAnchor.constraint(equalTo: bodyScroll.contentView.leadingAnchor),
+            document.topAnchor.constraint(equalTo: bodyScroll.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: bodyScroll.contentView.widthAnchor),
+            body.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -8),
+            body.topAnchor.constraint(equalTo: document.topAnchor),
+            body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        statusSheet = sheet; updateConnectionStatus()
+        window.beginSheet(sheet) { [weak self, weak sheet] _ in
+            guard let self, self.statusSheet === sheet else { return }
+            sheet?.orderOut(nil); self.statusSheet = nil; self.statusHostID = nil
+        }
+    }
+    @objc private func closeConnectionStatus() {
+        guard let sheet = statusSheet else { return }
+        window.endSheet(sheet)
+        sheet.orderOut(nil); statusSheet = nil; statusHostID = nil
+    }
+    func prepareForTermination() { closeConnectionStatus() }
     private func addDraft() {
         let host = Host(); order.append(host.id); drafts[host.id] = HostDraft(host)
     }
@@ -230,6 +298,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     @objc private func cancel() { finish(accepted: false) }
     private func finish(accepted: Bool) {
+        closeConnectionStatus()
         window.makeFirstResponder(nil)
         window.orderOut(nil); isOpen = false
         drafts = [:]; baseline = [:]; order = []; selectedID = nil
@@ -239,8 +308,10 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === hostsTable { return order.count }
+        if tableView === runtimeTable {
+            return statusHostID.flatMap { manager.runtime($0)?.forwards.count } ?? 0
+        }
         guard let id = selectedID else { return 0 }
-        if tableView === runtimeTable { return manager.runtime(id)?.forwards.count ?? 0 }
         return drafts[id]?.host.forwards.count ?? 0
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -258,9 +329,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             let temporary = baseline[id] == nil && manager.runtime(id) != nil ? " · 임시" : ""
             return (dirty(id) ? "● " : "") + draft.host.name + temporary
         }
-        guard let id = selectedID else { return nil }
         if tableView === runtimeTable {
-            guard let forwards = manager.runtime(id)?.forwards, forwards.indices.contains(row) else { return nil }
+            guard let id = statusHostID, let forwards = manager.runtime(id)?.forwards, forwards.indices.contains(row) else { return nil }
             let forward = forwards[row]
             switch column {
             case "description": return forward.description
@@ -270,7 +340,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             default: return nil
             }
         }
-        guard let draft = drafts[id], draft.host.forwards.indices.contains(row) else { return nil }
+        guard let id = selectedID, let draft = drafts[id], draft.host.forwards.indices.contains(row) else { return nil }
         let rule = draft.host.forwards[row]
         switch column {
         case "enabled": return rule.enabled ? NSControl.StateValue.on.rawValue : NSControl.StateValue.off.rawValue
@@ -435,16 +505,13 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         add(scroll(rulesTable, height: 130))
         add(NSStackView(views: [button("규칙 추가", #selector(addRule)), button("선택 규칙 삭제", #selector(deleteRule))]), fullWidth: false)
         add(NSTextField(labelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 76))
-        add(NSTextField(labelWithString: "현재 연결 상태 — 실행 중인 규칙 (읽기 전용)"))
-        add(status)
         for (id, title, width) in [("description", "포워딩", 260.0), ("source", "출처", 90.0), ("state", "상태", 90.0), ("detail", "상세", 280.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = false; runtimeTable.addTableColumn(column)
         }
-        runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24; add(scroll(runtimeTable, height: 120))
-        add(NSTextField(wrappingLabelWithString: "‘준비됨’은 포워딩 개설 성공을 뜻합니다. 목적지 서비스의 정상 동작을 보장하지 않습니다."))
+        runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24
         validation.textColor = .systemRed; add(validation)
         connectButton = button("연결·재연결", #selector(connectSelected)); authButton = button("인증 설정…", #selector(setupAuthentication))
-        add(NSStackView(views: [button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton]), fullWidth: false)
+        add(NSStackView(views: [button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton, button("연결 상태…", #selector(showConnectionStatus))]), fullWidth: false)
     }
 }
 
