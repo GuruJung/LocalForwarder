@@ -368,24 +368,37 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         window.contentMinSize = NSSize(width: min(800, size.width), height: min(430, size.height)); window.center()
         let content = window.contentView!
         let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
-        sidebar.addArrangedSubview(button("새로 만들기", #selector(addHost)))
+        let hostActions = NSStackView(views: [button("새로 만들기", #selector(addHost)), button("호스트 삭제…", #selector(deleteHost))])
+        hostActions.spacing = 8
+        sidebar.addArrangedSubview(hostActions)
         let hostColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("host")); hostColumn.title = "호스트 · ● 미저장"; hostColumn.width = 185
         hostsTable.addTableColumn(hostColumn); hostsTable.dataSource = self; hostsTable.delegate = self; hostsTable.rowHeight = 28
         hostsTable.allowsEmptySelection = false
         let hostScroll = NSScrollView(); hostScroll.documentView = hostsTable; hostScroll.hasVerticalScroller = true; hostScroll.borderType = .bezelBorder
-        sidebar.addArrangedSubview(hostScroll); sidebar.addArrangedSubview(button("호스트 삭제…", #selector(deleteHost)))
+        sidebar.addArrangedSubview(hostScroll)
         hostScroll.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true
         let formScroll = NSScrollView(); formScroll.hasVerticalScroller = true; formScroll.autohidesScrollers = true
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; formScroll.documentView = document
         let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10; form.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(form)
-        let root = NSStackView(views: [sidebar, formScroll]); root.orientation = .horizontal; root.alignment = .top; root.spacing = 16
+        let sidebarWidth: CGFloat = 205
+        let paneSpacing: CGFloat = 16
+        let root = NSStackView(views: [sidebar, formScroll]); root.orientation = .horizontal; root.alignment = .top; root.spacing = paneSpacing
         root.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(root)
+        let okay = button("OK", #selector(okay)); okay.keyEquivalent = "\r"
+        let cancel = button("Cancel", #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
+        let footer = NSStackView(views: [cancel, okay]); footer.spacing = 8
+        footer.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(footer)
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), root.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            sidebar.widthAnchor.constraint(equalToConstant: 205), sidebar.heightAnchor.constraint(equalTo: root.heightAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), root.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -16),
+            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            footer.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth), sidebar.heightAnchor.constraint(equalTo: root.heightAnchor),
             formScroll.heightAnchor.constraint(equalTo: root.heightAnchor),
+            // A scroll view has no useful intrinsic width; fill the space beside the sidebar.
+            formScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -(sidebarWidth + paneSpacing)),
             document.leadingAnchor.constraint(equalTo: formScroll.contentView.leadingAnchor), document.topAnchor.constraint(equalTo: formScroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor),
             form.leadingAnchor.constraint(equalTo: document.leadingAnchor), form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -8),
@@ -394,13 +407,22 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             form.addArrangedSubview(view)
             if fullWidth { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         }
-        for (label, field) in [("이름", nameField), ("SSH 별칭 / 주소", targetField), ("사용자명 (선택)", userField), ("SSH 포트 (선택)", portField), ("개인키 (선택)", keyField)] {
+        func fieldRow(_ label: String, _ field: NSTextField) -> NSStackView {
             let title = NSTextField(labelWithString: label); title.widthAnchor.constraint(equalToConstant: 112).isActive = true
             field.delegate = self; field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let row = NSStackView(views: [title, field]); row.spacing = 10; add(row)
+            let row = NSStackView(views: [title, field]); row.spacing = 10
+            return row
         }
+        add(fieldRow("이름", nameField))
+        add(fieldRow("SSH 별칭 / 주소", targetField))
+        let credentials = NSStackView(views: [fieldRow("사용자명 (선택)", userField), fieldRow("SSH 포트 (선택)", portField)])
+        credentials.spacing = 12
+        portField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        add(credentials)
+        let keyRow = fieldRow("개인키 (선택)", keyField)
+        keyRow.addArrangedSubview(button("개인키 파일 선택…", #selector(chooseKey)))
+        add(keyRow)
         targetField.placeholderString = "예: my-server 또는 server.example.com"; keyField.placeholderString = "비워두면 기존 SSH 설정 사용"
-        add(button("개인키 파일 선택…", #selector(chooseKey)), fullWidth: false)
         for control in [autoConnect, exitOnFailure, retryRefused] { control.target = self; control.action = #selector(changed) }
         let options = NSStackView(views: [autoConnect, exitOnFailure, retryRefused]); options.spacing = 12; add(options, fullWidth: false)
         add(NSTextField(labelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
@@ -423,9 +445,6 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         validation.textColor = .systemRed; add(validation)
         connectButton = button("연결·재연결", #selector(connectSelected)); authButton = button("인증 설정…", #selector(setupAuthentication))
         add(NSStackView(views: [button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton]), fullWidth: false)
-        let okay = button("OK", #selector(okay)); okay.keyEquivalent = "\r"
-        let cancel = button("Cancel", #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
-        add(NSStackView(views: [cancel, okay]), fullWidth: false)
     }
 }
 

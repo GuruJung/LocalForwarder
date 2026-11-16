@@ -176,7 +176,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { symbol = "minus.circle"; state = "자동 연결 꺼짐, 연결 안 됨" }
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: state)
             item.image?.size = NSSize(width: 16, height: 16)
-            item.toolTip = state + " · " + connectionSummary(runtime)
             guard let menu = item.submenu else { continue }
             menu.item(withTag: 1)?.title = connectionSummary(runtime)
             let error = runtime?.lastError ?? ""
