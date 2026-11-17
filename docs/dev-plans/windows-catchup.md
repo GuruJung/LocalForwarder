@@ -8,20 +8,22 @@
 - 정책: [AGENTS.md](../../AGENTS.md). 목표 동작: [현재 기능 명세](current-spec.md).
 - Windows CI는 유지하고 구현 변경에 맞게 갱신할 수 있다. CI 통과, 실제 Windows PC 수동 검증, macOS와의 기능 동등성은 별도로 판단한다.
 - [macOS 반영 대기·차이 기록](macos-catchup.md)의 기존 근거와 ID를 보존한다. 아래 기존 항목의 후속 결정·진행 상태는 이 문서에서 관리하며, 새 macOS 반영 대기는 macOS 문서에 기록한다. 정책 전환은 기능 차이의 해결이나 검증 완료를 의미하지 않는다.
-- 이번 정책 전환에서는 기존 기록을 확인했으며 새로운 코드 비교, 앱 빌드·테스트 실행, 실제 OS 재현, 최신 CI 결과 확인은 수행하지 않았다.
+- 정책 전환만으로 완료 처리하지 않았으며, 이후 [Windows 재구성 명세](specs/20261117-windows-macos-parity/spec.md)에 따라 macOS 구현과 현재 명세를 다시 대조했다. 아래 상태는 이번 Windows 소스 반영을 나타낸다. Linux 코어 테스트와 Windows 교차 빌드는 네이티브 CI·실기기 검증과 구분한다. 상세 범위는 [검증 절차](../verification/windows-parity.md)를 참고한다.
+
+2026-11-17 네이티브 결과: 커밋 `9f2c2db`, [CI 44003519096](https://github.com/GuruJung/LocalForwarder/actions/runs/44003519096)의 Windows x64·ARM64와 macOS 작업이 모두 통과했다. Windows는 각 CTest 5종과 SSH 통합 14건 통과·2건 제외, macOS는 코어 33건과 통합 15건 통과·1건 제외다. 제외 이유·패키지 크기·유휴 측정과 남은 수동 범위는 [검증 결과](../verification/windows-parity.md#네이티브-자동-검증-결과-2026-11-17)에 구분한다.
 
 ## macOS에서 확정된 변경의 반영 대기
 
 ### WIN-001: 다중 호스트 트레이 수명과 연결 의도
 
-- 상태: 반영 대기 / Windows 미구현·미검증. 근거: `windows/src/core.hpp`의 단일 `Machine`, `windows/src/main.cpp`의 인스턴스·호스트 선택 흐름과 `windows/src/core.cpp`의 기존 수명 정책. macOS `ConnectionManager.swift`, `SSHSession.swift`, `LocalForwarder/main.swift`가 해당 동작의 구현 참고 자료다.
+- 상태: 구현 완료·x64/ARM64 네이티브 자동 검사 통과·실기기 검증 대기. 기존 단일 `Machine`을 `windows/src/manager.*`, `session.*`로 교체하고 `main.cpp`와 `settings.hpp`에 다중 호스트·초안·실행 스냅샷·단일 인스턴스를 반영했다. macOS `ConnectionManager.swift`, `SSHSession.swift`, `LocalForwarder/main.swift`를 참조했다.
 - 변경 이유·기대 동작: 앱 하나가 여러 호스트를 관리하고 실패·창 닫기로 종료하지 않는다. 시작 분기·전체 재연결·호스트별 저장/재연결/끊기/삭제, 수동 연결 의도, 임시 실행 설정과 임시 호스트를 [현재 명세](current-spec.md)대로 지원한다. 단일 인스턴스와 메뉴의 공통 사용자 동작을 이식하며 AppKit·Unix 소켓 자체는 이식 요구가 아니다.
 - Windows 수용 기준: 두 호스트 독립 연결·실패·포트 충돌, 자동 연결 OFF 수동 사용, Cancel의 무연결, 미저장 편집 보존, 선택 호스트만 저장, 임시 실행 설정의 수동·자동 재사용 및 전체 재연결 초기화, 종료·삭제의 전체 자식 정리를 확인한다.
-- 관련 검증: `tests/integration.py`의 `MultiHostSSHTests`와 `macos/Tests/LocalForwarderCoreTests/`. 현재 Windows는 기본 `legacy-v1` 검증을 사용하며 새 동작은 아직 검증하지 않는다. 기능 반영 시 검증 범위를 유지하면서 새 명세에 맞게 테스트를 갱신한다. 실제 Windows PC 검증은 미수행이다.
+- 관련 검증: `tests/integration.py`의 `MultiHostSSHTests`와 `macos/Tests/LocalForwarderCoreTests/`. Windows 평가도 `multi-host-v2`를 명시하며 `manager_tests.cpp`, `ui_tests.cpp`, production 컨트롤러의 `--test-ui`를 추가했다. 기존 보안·정리 검증의 대응 관계는 검증 절차 문서에 남겼다. Linux 코어·관리자·편집 모델 검사와 Windows x64/ARM64 CTest·SSH 통합 검사가 통과했다. 실제 Windows PC 검증은 미수행이다.
 
 ### WIN-002: 이벤트 기반 5초 복구와 조건부 1회 재시도
 
-- 상태: 반영 대기 / Windows 미구현·미검증. `windows/src/core.cpp`의 `failed`/타이머 처리는 첫 실패 무조건 1회 재시도와 60초 자동 재연결·종료를 유지한다.
+- 상태: 구현 완료·x64/ARM64 네이티브 자동 검사 통과·실기기 검증 대기. `windows/src/manager.cpp`의 취소 가능한 복구 예약과 `session.cpp`의 조건부 1회 재시도로 교체했다. `main.cpp`는 Windows 전원 알림과 내부망을 포함한 NLM 네트워크 이벤트를 전달한다. 자동 재연결·종료용 60초 타이머는 제거했다.
 - 변경 이유·기대 동작: 사용자의 연결 의도를 보존하고 불필요한 재연결·종료를 없앤다. 복귀·네트워크 복구 이벤트를 마지막 이벤트부터 5초로 병합하고 의도 ON의 disconnected만 복구한다. 수동 단절·정상 연결·연결 중·늦은 단절은 제외한다. 네트워크 재단절은 예약을 취소한다.
 - 재시도는 옵션 ON인 접속 거부·연결 전 조기 종료·리셋만 1초 뒤 한 번 허용한다. 인증·호스트 키·포트 충돌·타임아웃은 재시도하지 않는다. 자동 종료는 없다.
 - 관련 구현·테스트: macOS `ConnectionMachine.swift`, `ConnectionManager.swift`, `SSHSession.swift`, 코어 테스트의 주입 시계/세션 검증, 통합 테스트 `multi-host-v2`의 복구 지연·재시도·65초 무재연결/무종료 검증.
@@ -29,15 +31,15 @@
 
 ### WIN-003: 설정 v2·선택 저장·마이그레이션과 도우미 저장
 
-- 상태: 반영 대기 / Windows 미구현·미검증. `windows/src/core.cpp`는 버전 1만 읽고 버전 1을 저장한다. macOS `Configuration.swift`는 v1/v2 읽기, v2 저장과 호스트별 잠금 변경을 구현한다.
+- 상태: 구현 완료·x64/ARM64 네이티브 자동 검사 통과·실기기 검증 대기. `windows/src/core.cpp`는 v1/v2 읽기·v2 저장을, `platform.cpp`는 프로세스 내 mutex와 `config.lock`, 원본 백업과 원자적 교체를 구현한다. macOS `Configuration.swift`의 저장 의미를 기준으로 대조했다. `platform_tests.cpp`에 별도 프로세스 동시 저장·키 변경·ACL·삭제 호스트 비복원 회귀 검사를 추가했다.
 - 변경 이유·기대 동작: `autoConnect`, `exitOnForwardFailure`, `retryOnConnectionRefused`를 모두 ON 기본값으로 추가한다. v1 읽기는 파일을 바꾸지 않으며 최초 변경 전에 원본 바이트를 고유 `config-v1-*.json` 백업에 보존한다. 최신 설정을 잠금 안에서 읽고 선택 호스트만 원자적으로 저장하여 동시 인증 도우미 저장에서 다른 호스트를 잃지 않는다.
-- 호환성 영향: **macOS에서 v2로 저장한 설정은 현재 v1 기반 Windows와 구버전 앱에서 사용할 수 없다.** 잘못된 파일로 판단해 자동 덮어쓰지 않아야 한다. 구버전 복귀는 모든 앱·도우미 종료 후 현재 v2 파일을 별도 보관하고 v1 백업을 `config.json`으로 복사한다. v2 이후 편집은 v1 백업에 포함되지 않는다.
+- 호환성 영향: **v2 설정은 구버전 v1 기반 Windows·macOS 앱에서 사용할 수 없다. 이번 Windows 소스는 v2를 지원한다.** 잘못된 파일로 판단해 자동 덮어쓰지 않아야 한다. 구버전 복귀는 모든 앱·도우미 종료 후 현재 v2 파일을 별도 보관하고 v1 백업을 `config.json`으로 복사한다. v2 이후 편집은 v1 백업에 포함되지 않는다.
 - Windows 수용 기준: 누락 옵션 기본값, v1 무변경 읽기, 정확한 원본 백업, 지원 불가/손상 파일 보존, 원자적 저장·권한, 저장 실패와 다중 프로세스/도우미 동시 변경의 다른 호스트 보존을 검증한다. 관련 테스트는 macOS CoreTests와 `multi-host-v2` 임시 실행 설정 시나리오다.
-- 개발 상태: Windows 설정 v2 지원을 구현할 수 있으며 플랫폼을 이유로 별도 예외 승인을 요구하지 않는다. 이 정책 변경 자체는 v2 지원 구현이나 검증 완료를 의미하지 않는다.
+- 검증 상태: 파서·기본값·입력 경계는 Linux 테스트를 통과했다. Windows 잠금·ACL·원자적 교체·프로세스 동시 변경은 x64/ARM64 네이티브 CTest를 통과했다. 실제 사용자 설정은 시험에 사용하지 않는다.
 
 ### WIN-004: SSH·규칙별 상태와 명시적 인증 도우미
 
-- 상태: 반영 대기 / Windows 미구현·미검증. Windows `SSHCommand`의 `ExitOnForwardFailure=yes`, 단일 readiness 판정과 인증 복구 후 GUI 종료 흐름을 구현 시 다시 대조한다.
+- 상태: 구현 완료·x64/ARM64 네이티브 자동 검사 통과·실기기 검증 대기. `core.cpp`·`manager.cpp`에 옵션별 SSH 인수와 규칙 추적을, `session.cpp`에 실제 대상 PID와 대조하는 진단 로그 분리를 구현했다. `main.cpp`의 고정 대상 상태 모달과 `auth.cpp`의 명시적 인증 도우미를 연결했다. 도우미 완료는 선택 호스트의 개인키 변경만 편집 상태에 병합하며 앱이나 다른 연결을 종료하지 않는다.
 - 변경 이유·기대 동작: `ExitOnForwardFailure=OFF`에서는 포워딩 실패가 있어도 살아 있는 SSH를 connected로 유지하고 규칙별 준비/실패/확인 불가와 출처를 표시한다. SSH 종료 시 준비됨을 해제하며 목적지 장애 관측은 시각과 함께 남긴다. 준비됨은 목적지 서비스 정상 보장이 아니다.
 - 인증 도우미는 명시적 사용자 동작으로 선택 호스트에만 실행하며 앱·다른 연결·편집을 유지한다. 무조건 재시도를 없애고 완료 후 자동 연결하지 않는다. 기존 키·제한 옵션·호스트 키 검증을 보존한다.
 - 관련 구현·테스트: macOS `SSHCommand.swift`, `ForwardRuntime.swift`, `SSHSession.swift`, `AuthenticationSetup.swift`; 코어 readiness/ProxyJump/키 보존 테스트와 통합 `multi-host-v2` 부분 실패·상속 규칙·목적지 오류·인증 등록 검사.
@@ -47,15 +49,15 @@
 
 ### MAC-001: 설정 입력 검증의 차이
 
-- 상태: 기존 코드상 차이 확인 / 공통 정책 결정 및 실행 검증 대기. 추적을 위해 기존 ID를 유지한다.
+- 상태: 공통 정책 반영 완료·공통 입력 사례 네이티브 검사 통과. 모든 저장 파일의 양방향 교차 로드와 실제 사용자 환경 검증은 미수행이다. 추적을 위해 기존 ID를 유지한다.
 - 변경 이유·근거·관련 코드와 테스트: [기존 MAC-001 기록](macos-catchup.md#mac-001-설정-입력-검증의-차이). 동일한 버전 1 설정의 허용·거부 결과가 다를 수 있다.
-- 기대 동작: 양쪽 구현과 요구사항을 대조해 공통 입력 정책을 확정하고 현재 명세에 반영한다. 어느 한쪽의 기존 동작을 자동 채택하지 않는다. 손상 파일 보존 요구는 유지한다.
+- 기대 동작: 선택 필드의 생략/null과 명시적 빈 문자열을 구별하고 Unicode 공백·제어문자를 검사한다. 정수값인 JSON 소수·지수 표기도 허용한다. `core_tests.cpp`와 공통 `MultiHostSSHTests.test_15_shared_configuration_validation_corpus`에 동일 입력 검증과 원본 파일 보존 검사를 추가했다. Windows의 이름 NUL 거부는 Win32 문자열 잘림을 막기 위한 기존 안전성 제한으로 유지한다. macOS 이름의 NUL 허용과 이 경계 차이를 기능 동등성으로 보고하지 않는다.
 - Windows 수용 기준: 빈 문자열·공백뿐인 이름, 선택 필드의 생략/null/빈 문자열, Unicode 공백·제어문자를 포함한 공통 JSON 사례에 대해 확정된 정책과 일치하는 결과를 검증한다. 양쪽 저장 결과의 교차 로드와 거부된 파일의 보존을 확인한다.
 - 영향과 대응: 설정 호환성 차이는 확인되어 있으나 실제 데이터 손실이나 보안 취약점은 미확정이다. 양쪽 영향을 검토하고 확정된 정책에 따라 필요한 구현·테스트를 수정한다.
 
 ### MAC-002: SSH 로그를 통한 인증 도움·연결 판정 조건의 차이
 
-- 상태: 기존 코드상 차이 확인 / 실제 OS 로그 재현 및 공통 정책 결정 대기. 기존 ID를 유지한다.
+- 상태: 분류·준비 판정 구현 완료·Windows 9.5p2 네이티브 자동 검사 통과. 모든 SSH 버전·로그 형태와 실제 사용자 인증 복구는 미검증이다. 기존 ID를 유지한다.
 - 변경 이유·근거·관련 코드와 테스트: [기존 MAC-002 기록](macos-catchup.md#mac-002-ssh-로그를-통한-인증-도움연결-판정-조건의-차이). 로그 문자열별 조건이 달라 실제 사용자 영향 확인이 필요하다.
 - 기대 동작: 인증 복구가 필요한 실패를 안내하고 SSH 연결과 포워딩 개설 결과를 구분한다. `ExitOnForwardFailure=OFF`의 부분 실패는 WIN-004에 따른다. 각 OS의 실제 로그와 종료 처리를 검증하며 macOS의 문자열 목록을 그대로 복사하는 것으로 완료하지 않는다.
 - Windows 수용 기준: 인증 실패·키 로드 실패·호스트 키 문제·로컬 및 원격 포워딩 실패·ProxyJump 로그로 기대 분류와 준비 판정을 검증한다. 실제 SSH 수명까지 포함해 잘못된 connected 상태가 없는지 확인한다.
@@ -63,7 +65,7 @@
 
 ## 미확인 영역과 OS 고유 동작
 
-이전 기록의 [추가 확인이 필요한 영역](macos-catchup.md#추가-확인이-필요한-영역)은 계속 미확인 상태다. 연결 이벤트·절전 복귀, 설정 저장·권한·호환성, 프로세스 정리·인증 복구, UI와 OS 통합, 실제 빌드·CI·실사용 결과를 관련 작업 시 대조한다. Windows의 포트 재사용 등 OS 고유 동작은 공통 요구사항과 구분한다.
+이전 기록의 [추가 확인이 필요한 영역](macos-catchup.md#추가-확인이-필요한-영역)은 위 항목별로 구현·검증 상태를 구분한다. Windows 전원·물리 네트워크·VPN 이벤트, DPI·Explorer 복구·외부 터미널 및 실제 Windows→POSIX 서버 인증 등록은 수동 검증 대기다. Windows 포트 재사용은 SSH 결과를 따르며, 다른 호스트의 포트를 사전 검사하거나 중단하지 않는다. Windows OpenSSH의 `-E`는 일반 파일의 동시 읽기를 거부하고 named pipe에는 쓰기 권한 오류가 발생한다는 것을 x64·ARM64 네이티브 검사로 확인했다. 사용자 결정에 따라 로컬 OpenSSH 9.5 이상을 사용하고 PID가 포함된 진단 로그를 실제 대상 프로세스 ID와 대조한다. 다른 PID와 출처 불명 로그는 연결·포워딩 준비 판정에 사용하지 않는다. 디스크 로그를 누적하지 않고 메모리 진단 버퍼를 제한한다. 실제 시스템 OpenSSH의 PID 로그·분리·종료 검증을 Windows 플랫폼 테스트에 포함한다.
 
 ## 항목 관리 방법
 

@@ -12,17 +12,25 @@ struct Forward {
     int localPort = 0;
     std::string remoteHost = "localhost";
     int remotePort = 0;
+    bool operator==(const Forward&) const = default;
 };
 struct Host {
     std::string id, name, target, user, identityFile;
     std::optional<int> port;
     std::vector<Forward> forwards;
+    bool autoConnect = true, exitOnForwardFailure = true, retryOnConnectionRefused = true;
+    bool operator==(const Host&) const = default;
 };
-struct Config { std::vector<Host> hosts; };
+struct Config {
+    std::vector<Host> hosts;
+    int version = 2;
+    bool operator==(const Config&) const = default;
+};
 Config parseConfig(const std::string& text);
 std::string writeConfig(const Config& config);
 void validate(const Host& host);
 bool safeId(const std::string& value);
+std::string forwarding(const Forward& rule);
 std::vector<std::string> sshArguments(const Host& host, const std::string& configFile = {}, bool query = false);
 std::vector<std::string> authArguments(const Host& host, bool batch);
 std::vector<std::string> inheritedForwards(const std::string& effective);
@@ -32,34 +40,27 @@ std::string quotePosix(const std::string& value);
 std::wstring quotePowerShell(const std::wstring& value);
 std::string registrationCommand(const std::string& publicKey);
 bool authenticationFailure(const std::string& text);
+bool isConnectionRefusal(const std::string& targetDiagnostic, const std::string& auxiliaryDiagnostic = {});
 std::string describeFailure(const std::string& text);
+// Only standard OpenSSH version banners at or above the supported baseline.
+bool supportedOpenSSHVersion(const std::string& output);
+// Accept anchored OpenSSH LogVerbose envelopes from the actual child PID.
+// Peer-echoing kex messages remain auxiliary diagnostics, never state evidence.
+std::optional<std::string> targetDiagnosticLine(const std::string& line, uint32_t expectedPid);
 
+// Feed only target diagnostics when requireForwards is false. Proxy stderr must be separate.
 class Readiness {
-    std::string pending_;
-    int remoteExpected_ = 0, remoteConfirmed_ = 0;
+    std::string pending_, expectedTarget_;
+    int remoteExpected_ = 0, remoteConfirmed_ = 0, expectedPort_ = 0;
     bool entered_ = false, authenticated_ = false, localListening_ = false, failed_ = false;
+    bool requireForwards_ = true, targetScope_ = true;
 public:
-    explicit Readiness(int expected = 0) : remoteExpected_(expected) {}
+    explicit Readiness(int expected = 0, bool requireForwards = true,
+                       std::string expectedTarget = {}, int expectedPort = 0);
+    void consume(const std::string& line);
     bool feed(const std::string& chunk);
+    bool ready() const;
+    bool authenticated() const { return authenticated_; }
 };
 int remoteForwardCount(const std::string& effective);
-
-enum class State { editing, connecting, connected, waitingReconnect, reconnecting, waitingExit, exiting };
-enum class Action { none, start, timeout, initialFailure, quit };
-enum class Timer { none, connect, retry, automatic, exit };
-const char* stateName(State state);
-struct Machine {
-    State state = State::editing;
-    Timer timer = Timer::none;
-    uint64_t deadline = 0;
-    int attempt = 0;
-    bool reconnection = false;
-    Action begin(bool reconnect, uint64_t now);
-    Action failed(uint64_t now);
-    Action disconnected(uint64_t now);
-    Action tick(uint64_t now);
-    void ready();
-    void quit();
-    bool busy() const { return state == State::connecting || state == State::reconnecting; }
-};
 }

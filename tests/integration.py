@@ -9,6 +9,7 @@ An owned TCP relay supplies repeatable connection loss without touching system s
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import ctypes
 import getpass
@@ -109,6 +110,41 @@ class EchoServer:
                 connection.close()
 
 
+def socks_echo(proxy_port: int, destination_port: int):
+    """Verify an inherited DynamicForward with actual SOCKS5 data delivery."""
+    def receive(connection, count):
+        result = b""
+        while len(result) < count:
+            chunk = connection.recv(count - len(result))
+            if not chunk:
+                raise AssertionError("SOCKS5 stream ended early")
+            result += chunk
+        return result
+    with socket.create_connection(("127.0.0.1", proxy_port), timeout=4) as connection:
+        connection.settimeout(4)
+        connection.sendall(b"\x05\x01\x00")
+        if receive(connection, 2) != b"\x05\x00":
+            raise AssertionError("SOCKS5 authentication negotiation failed")
+        connection.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") +
+                           destination_port.to_bytes(2, "big"))
+        header = receive(connection, 4)
+        if header[:3] != b"\x05\x00\x00":
+            raise AssertionError(f"SOCKS5 connection failed: {header!r}")
+        if header[3] == 1:
+            receive(connection, 4)
+        elif header[3] == 4:
+            receive(connection, 16)
+        elif header[3] == 3:
+            receive(connection, receive(connection, 1)[0])
+        else:
+            raise AssertionError("Unknown SOCKS5 address type")
+        receive(connection, 2)
+        payload = b"LocalForwarder dynamic forwarding\n"
+        connection.sendall(payload)
+        if receive(connection, len(payload)) != payload:
+            raise AssertionError("DynamicForward corrupted data")
+
+
 class Relay:
     def __init__(self, destination_port: int):
         self.destination_port = destination_port
@@ -120,6 +156,7 @@ class Relay:
         self.connections: set[socket.socket] = set()
         self.enabled = True
         self.reject_count = 0
+        self.reject_gracefully = False
         self.accepted: list[float] = []
         self.closed = False
         threading.Thread(target=self._accept, daemon=True).start()
@@ -135,7 +172,23 @@ class Relay:
                 allowed = self.enabled and self.reject_count == 0
                 if self.reject_count:
                     self.reject_count -= 1
+                graceful = self.reject_gracefully
             if not allowed:
+                if graceful:
+                    # Consume the client identification before sending FIN. Closing
+                    # with unread data can produce a reset whose Windows OpenSSH
+                    # errno is only "Unknown error", not classifiable evidence.
+                    incoming.settimeout(2)
+                    with contextlib.suppress(OSError):
+                        banner = b""
+                        while not banner.endswith(b"\n") and len(banner) < 1024:
+                            data = incoming.recv(1)
+                            if not data:
+                                break
+                            banner += data
+                        incoming.shutdown(socket.SHUT_WR)
+                        while incoming.recv(1024):
+                            pass
                 incoming.close()
                 continue
             try:
@@ -923,7 +976,7 @@ class ManagerSession(AppSession):
 
 
 class MultiHostSSHTests(unittest.TestCase):
-    """v2 behavior is opt-in; legacy Windows scenarios above remain unchanged."""
+    """Production v2 behavior shared by macOS and Windows; legacy cases remain historical."""
     fixture: Fixture
     app: str
     report: dict
@@ -946,16 +999,18 @@ class MultiHostSSHTests(unittest.TestCase):
             hosts.append(host)
         return {"version": 2, "hosts": hosts}
 
-    def start(self, name, config=None, *, start=True, inherited=False):
+    def start(self, name, config=None, *, start=True, inherited=False, dynamic_port=None):
         config = config or self.profile()
         directory = self.fixture.config_directory(name, config)
         # Shared inherited listeners would make independently valid hosts conflict.
         # Test inheritance separately with one host, and leave the fixture itself unchanged.
         private = directory / "ssh_config"
-        lines = self.fixture.ssh_config.read_text().splitlines()
+        lines = self.fixture.ssh_config.read_text(encoding="utf-8").splitlines()
         if not inherited:
             lines = [line for line in lines if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
-        private.write_text("\n".join(lines) + "\n")
+        if dynamic_port is not None:
+            lines.append(f"  DynamicForward 127.0.0.1:{dynamic_port}")
+        private.write_text("\n".join(lines) + "\n", encoding="utf-8")
         session = ManagerSession(self.app, self.fixture, directory, private, start=start)
         self.sessions.append(session)
         return session, directory, config
@@ -1025,7 +1080,7 @@ class MultiHostSSHTests(unittest.TestCase):
         session.wait_host("host-0", "connected", after=before, temporary=True)
         echo(temporary["forwards"][0]["localPort"])
         wait_port_closed(original)
-        self.assertEqual(json.loads((directory / "config.json").read_text()), config)
+        self.assertEqual(json.loads((directory / "config.json").read_text(encoding="utf-8")), config)
         before = len(session.host_events)
         self.fixture.relay.disconnect(block=False)
         lost, _, _ = session.wait_host("host-0", "disconnected", after=before)
@@ -1047,6 +1102,12 @@ class MultiHostSSHTests(unittest.TestCase):
 
     def test_04_retry_only_once_and_option_off(self):
         relay = self.fixture.relay
+        with relay.lock:
+            relay.reject_gracefully = True
+        def restore_rejection():
+            with relay.lock:
+                relay.reject_gracefully = False
+        self.addCleanup(restore_rejection)
         for retry in (True, False):
             with self.subTest(retry=retry):
                 config = self.profile()
@@ -1086,6 +1147,8 @@ class MultiHostSSHTests(unittest.TestCase):
     def test_05_partial_forward_failure_option_and_peer_isolation(self):
         for fail_all in (True, False):
             with self.subTest(exitOnForwardFailure=fail_all), socket.socket() as occupied:
+                if WINDOWS:
+                    occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                 occupied.bind(("127.0.0.1", 0))
                 occupied.listen()
                 config = self.profile(2)
@@ -1162,8 +1225,17 @@ class MultiHostSSHTests(unittest.TestCase):
              "remoteHost": "127.0.0.1", "remotePort": dead_destination},
             {"id": "disabled", "enabled": False, "localPort": ports(1)[0],
              "remoteHost": "127.0.0.1", "remotePort": self.fixture.echo.port}])
-        session, _, _ = self.start("multi-inherited", config, inherited=True)
+        if WINDOWS:
+            # Native Windows sshd can confirm a failed asynchronous TCP connect,
+            # then send EOF without SSH_CHANNEL_OPEN_FAILURE. Keep the closed-port
+            # check and separately provoke a synchronous destination lookup error.
+            host["forwards"].append({"id": "destination-unresolved", "enabled": True,
+                "localPort": ports(1)[0], "remoteHost": "localforwarder-destination.invalid.",
+                "remotePort": 80})
+        dynamic_port = ports(1)[0]
+        session, _, _ = self.start("multi-inherited", config, inherited=True, dynamic_port=dynamic_port)
         session.wait_host("host-0", "connected")
+        socks_echo(dynamic_port, self.fixture.echo.port)
         for port in (host["forwards"][0]["localPort"], self.fixture.inherited_port, self.fixture.remote_port):
             echo(port)
         wait_port_closed(host["forwards"][2]["localPort"])
@@ -1171,19 +1243,41 @@ class MultiHostSSHTests(unittest.TestCase):
             connection.settimeout(4)
             with contextlib.suppress(ConnectionResetError):
                 self.assertEqual(connection.recv(1), b"")
+        if WINDOWS:
+            observed = session.snapshot("host-0")
+            self.assertEqual(observed["state"], "connected")
+            self.assertEqual(next(rule for rule in observed["forwards"]
+                                  if rule["id"] == "destination-down")["state"], "ready")
+            self.report["closed_destination"] = {
+                "transport": "EOF or reset", "ssh_state": observed["state"],
+                "reported_errors": observed.get("recentErrors", []),
+                "policy": "Only emitted SSH errors are reported; no service probe or inferred error."}
+            with socket.create_connection(("127.0.0.1", host["forwards"][3]["localPort"]), timeout=4) as connection:
+                connection.settimeout(10)
+                with contextlib.suppress(ConnectionResetError):
+                    self.assertEqual(connection.recv(1), b"")
         deadline = time.monotonic() + 5
         while True:
             state = session.snapshot("host-0")
             if state.get("recentErrors"):
                 break
-            self.assertLess(time.monotonic(), deadline, state)
+            if time.monotonic() >= deadline:
+                # Preserve the actual collected SSH diagnostics on failure. A
+                # normal relay disconnect makes the app report its final log;
+                # do not weaken the destination-error assertion.
+                before = len(session.host_events)
+                self.fixture.relay.disconnect(block=False)
+                session.wait_host("host-0", "disconnected", after=before)
+                self.fail(f"Destination error was not recorded: {state}\n{session.diagnostics()}")
             time.sleep(.1)
         self.assertEqual(state["state"], "connected")
         self.assertIn("time", state["recentErrors"][-1])
+        self.assertTrue(any("open failed:" in error["message"] or "connect failed:" in error["message"]
+                            for error in state["recentErrors"]))
         self.assertGreaterEqual(len(state["forwards"]), 4)
         session.send("quit")
         self.assertEqual(session.wait_exit(8), 0)
-        for port in (self.fixture.inherited_port, self.fixture.remote_port):
+        for port in (self.fixture.inherited_port, self.fixture.remote_port, dynamic_port):
             wait_port_closed(port)
 
 
@@ -1331,7 +1425,7 @@ class MultiHostSSHTests(unittest.TestCase):
                 config = self.profile()
                 directory = fixture.config_directory("multi-" + failure, config)
                 private = directory / "ssh_config"
-                lines = [line for line in fixture.ssh_config.read_text().splitlines()
+                lines = [line for line in fixture.ssh_config.read_text(encoding="utf-8").splitlines()
                          if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
                 contents = "\n".join(lines) + "\n"
                 if failure == "authentication":
@@ -1342,7 +1436,7 @@ class MultiHostSSHTests(unittest.TestCase):
                     empty = directory / "empty-known-hosts"
                     empty.write_text("")
                     contents = contents.replace(ssh_path(fixture.known_hosts), ssh_path(empty))
-                private.write_text(contents)
+                private.write_text(contents, encoding="utf-8")
                 before = len(fixture.relay.accepted)
                 session = ManagerSession(self.app, fixture, directory, private)
                 self.sessions.append(session)
@@ -1353,6 +1447,174 @@ class MultiHostSSHTests(unittest.TestCase):
                 session.assert_alive()
                 self.assertTrue(session.snapshot("host-0")["error"])
                 session.close()
+
+
+    def test_12_native_duplicate_bind_preserves_existing_host(self):
+        first, _, config = self.start("multi-native-first")
+        first.wait_host("host-0", "connected")
+        duplicate = json.loads(json.dumps(config["hosts"][0]))
+        duplicate["id"] = "duplicate"
+        before = len(first.host_events)
+        first.send("temporary", host=duplicate)
+        deadline = time.monotonic() + 30
+        with first.condition:
+            while True:
+                events = [host for _, host in first.host_events[before:] if host["id"] == "duplicate"]
+                settled = next((host for host in reversed(events)
+                                if host["state"] == "connected" or
+                                (host["state"] == "disconnected" and host["error"])), None)
+                if settled:
+                    break
+                first.assert_alive()
+                self.assertLess(time.monotonic(), deadline, first.diagnostics())
+                first.condition.wait(.1)
+        self.report["native_duplicate_bind"] = {
+            "result": settled["state"], "error": settled["error"],
+            "scope": "observed native SSH/OS behavior, not a guaranteed collision rejection"}
+        self.assertEqual(first.snapshot("host-0")["state"], "connected")
+        # Test delivery only after removing the ambiguous duplicate listener.
+        first.send("delete", id="duplicate")
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                echo(config["hosts"][0]["forwards"][0]["localPort"])
+                break
+            except OSError:
+                self.assertLess(time.monotonic(), deadline, first.diagnostics())
+                time.sleep(.05)
+        first.assert_alive()
+
+    @unittest.skipUnless(WINDOWS, "Windows Job Object query-descendant cleanup")
+    def test_13_windows_quit_interrupts_configuration_inspection(self):
+        marker = self.fixture.root / "windows-query.pid"
+        descendant = self.fixture.root / "windows-query-child.pid"
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        body = (
+            "$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') "
+            "-ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 90' -PassThru; "
+            f"[IO.File]::WriteAllText({quote(marker)}, [string]$PID); "
+            f"[IO.File]::WriteAllText({quote(descendant)}, [string]$child.Id); "
+            "$child.WaitForExit()"
+        )
+        encoded = base64.b64encode(body.encode("utf-16-le")).decode("ascii")
+        private = self.fixture.root / "windows-blocking-query-config"
+        private.write_text(self.fixture.ssh_config.read_text(encoding="utf-8") +
+            '\nMatch exec "powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + encoded + '"\n',
+            encoding="utf-8")
+        directory = self.fixture.config_directory("windows-query-cleanup", self.profile())
+        session = ManagerSession(self.app, self.fixture, directory, private)
+        self.sessions.append(session)
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        handles = []
+        pids = []
+        try:
+            deadline = time.monotonic() + 12
+            while not all(path.exists() and path.read_text().strip().isdecimal()
+                          for path in (marker, descendant)):
+                session.assert_alive()
+                self.assertLess(time.monotonic(), deadline, session.diagnostics())
+                time.sleep(.05)
+            pids = [int(path.read_text().strip()) for path in (marker, descendant)]
+            for pid in pids:
+                handle = kernel.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+                self.assertTrue(handle, f"Cannot observe fixture-owned child {pid}")
+                handles.append(handle)
+            started = time.monotonic()
+            session.send("quit")
+            self.assertEqual(session.wait_exit(timeout=5), 0, session.diagnostics())
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertNotIn("connected", [host["state"] for _, host in session.host_events])
+            for handle in handles:
+                self.assertEqual(kernel.WaitForSingleObject(handle, 1000), 0,
+                                 "Owned SSH configuration descendant remains alive")
+        finally:
+            for handle in handles:
+                # Retained handles identify the fixture process even if a PID is reused.
+                if kernel.WaitForSingleObject(handle, 0) == 258:
+                    kernel.TerminateProcess(handle, 1)
+                kernel.CloseHandle(handle)
+
+
+    def test_14_connected_with_no_or_all_failed_forwards(self):
+        empty = self.profile()
+        empty["hosts"][0]["forwards"] = []
+        session, _, _ = self.start("multi-no-forwards", empty)
+        session.wait_host("host-0", "connected")
+        self.assertEqual(session.snapshot("host-0")["forwards"], [])
+        session.close()
+        with socket.socket() as occupied:
+            if WINDOWS:
+                occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            config = self.profile()
+            host = config["hosts"][0]
+            host["exitOnForwardFailure"] = False
+            host["forwards"][0]["localPort"] = occupied.getsockname()[1]
+            session, _, _ = self.start("multi-all-forwards-failed", config)
+            session.wait_host("host-0", "connected")
+            state = session.snapshot("host-0")
+            self.assertEqual([rule["state"] for rule in state["forwards"]], ["failed"])
+            self.assertEqual(state["state"], "connected")
+            session.assert_alive()
+
+
+    def test_15_shared_configuration_validation_corpus(self):
+        cases = [
+            ("defaults", {}, True),
+            ("nullable", {"user": None, "identityFile": None, "port": None,
+                          "autoConnect": None, "exitOnForwardFailure": None,
+                          "retryOnConnectionRefused": None}, True),
+            ("empty-user", {"user": ""}, False),
+            ("empty-key", {"identityFile": ""}, False),
+            ("spaced-name", {"name": "  서버  "}, True),
+            ("blank-name", {"name": " \t\u00a0\u3000"}, False),
+            ("unicode-target", {"target": "server\u2009name"}, False),
+            ("format-target", {"target": "server\u200bname"}, False),
+            ("bidi-user", {"user": "user\u202ename"}, False),
+            ("bom-key", {"identityFile": "key\ufeffpath"}, False),
+            ("spaced-key", {"identityFile": "키 경로 with spaces"}, True),
+            ("port-fraction", {"port": 22.5}, False),
+            ("port-integral", {"port": 22.0}, True),
+            ("bad-option", {"autoConnect": 1}, False),
+            ("false-options", {"autoConnect": False, "exitOnForwardFailure": False,
+                               "retryOnConnectionRefused": False}, True),
+        ]
+        observed = []
+        for label, changes, accepted in cases:
+            with self.subTest(case=label):
+                config = {"version": 2.0 if label == "port-integral" else 2,
+                          "hosts": [{"id": "corpus", "name": "서버", "target": "server", "forwards": []}]}
+                config["hosts"][0].update(changes)
+                directory = self.fixture.config_directory("corpus-" + label, config)
+                original = (directory / "config.json").read_bytes()
+                session = ManagerSession(self.app, self.fixture, directory, self.fixture.ssh_config, start=False)
+                self.sessions.append(session)
+                deadline = time.monotonic() + 8
+                with session.condition:
+                    while not any(line == "LF_READY" for line in session.output):
+                        session.assert_alive()
+                        self.assertLess(time.monotonic(), deadline, session.diagnostics())
+                        session.condition.wait(.05)
+                    errors = [line for line in session.output if line.startswith("LF_ERROR ")]
+                self.assertEqual(not errors, accepted, session.diagnostics())
+                if accepted:
+                    state = session.snapshot("corpus")
+                    self.assertEqual(state["state"], "disconnected")
+                    self.assertFalse(state["intent"])
+                else:
+                    self.assertEqual(session.host_events, [])
+                self.assertEqual((directory / "config.json").read_bytes(), original)
+                session.close()
+                observed.append({"case": label, "accepted": accepted})
+        self.report["configuration_validation"] = observed
 
 
 def check_fixture(fixture: Fixture):
@@ -1438,6 +1700,11 @@ def main() -> int:
               "tests_started": [], "status": "failed", "limitations": [
                   "Headless integration does not verify native window/tray appearance or external terminal UI.",
               ]}
+    if WINDOWS:
+        report["limitations"].extend([
+            "Windows-to-POSIX authentication registration is not exercised by the native Windows sshd fixture.",
+            "Physical sleep, LAN/VPN changes, DPI and Explorer restart require separate desktop verification.",
+        ])
     fixture = None
     try:
         fixture = Fixture(options.sshd)
