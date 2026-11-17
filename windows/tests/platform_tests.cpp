@@ -31,6 +31,69 @@ void privateACL(const fs::path& path) {
  valid=valid && GetSecurityDescriptorControl(descriptor,&control,&revision) && (control&SE_DACL_PROTECTED);
  LocalFree(expected); LocalFree(descriptor); check(valid,"current user only protected ACL");
 }
+// Failure fixtures own only disposable test paths and restore their metadata
+// even when an assertion throws.
+class RestoredAttributes {
+ fs::path path_; DWORD original_;
+public:
+ explicit RestoredAttributes(const fs::path& path):path_(path),original_(GetFileAttributesW(path.c_str())) {
+   if(original_==INVALID_FILE_ATTRIBUTES) throw std::runtime_error("read test file attributes: "+winError());
+ }
+ void readOnly() {if(!SetFileAttributesW(path_.c_str(),original_|FILE_ATTRIBUTE_READONLY))throw std::runtime_error("set test readonly attribute: "+winError());}
+ void restore() {if(!SetFileAttributesW(path_.c_str(),original_))throw std::runtime_error("restore test file attributes: "+winError());}
+ ~RestoredAttributes() {SetFileAttributesW(path_.c_str(),original_);}
+};
+class RestoredDirectoryDACL {
+ fs::path path_; PSECURITY_DESCRIPTOR original_=nullptr; PACL originalACL_=nullptr;
+public:
+ explicit RestoredDirectoryDACL(const fs::path& path):path_(path) {
+   auto error=GetNamedSecurityInfoW(const_cast<LPWSTR>(path_.c_str()),SE_FILE_OBJECT,DACL_SECURITY_INFORMATION,
+       nullptr,nullptr,&originalACL_,nullptr,&original_);
+   if(error!=ERROR_SUCCESS)throw std::runtime_error("read test directory DACL: "+winError(error));
+ }
+ // No inheritance flags: deny FILE_ADD_FILE on this directory alone, leaving
+ // the already-created config and lock file readable/writable.
+ void setCreationDenied(bool denied) {
+   auto sid=currentUserSID();auto sddl=L"D:P"+(denied?L"(D;;0x2;;;"+sid+L")":L"")+L"(A;;FA;;;"+sid+L")";
+   PSECURITY_DESCRIPTOR descriptor=nullptr;
+   if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&descriptor,nullptr))throw std::runtime_error(winError());
+   BOOL present=FALSE,defaulted=FALSE;PACL acl=nullptr;
+   auto valid=GetSecurityDescriptorDacl(descriptor,&present,&acl,&defaulted);
+   auto error=valid?SetNamedSecurityInfoW(const_cast<LPWSTR>(path_.c_str()),SE_FILE_OBJECT,
+       DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,acl,nullptr):GetLastError();
+   LocalFree(descriptor);
+   if(error!=ERROR_SUCCESS)throw std::runtime_error("set test directory DACL: "+winError(error));
+ }
+ void restore() {
+   auto error=SetNamedSecurityInfoW(const_cast<LPWSTR>(path_.c_str()),SE_FILE_OBJECT,
+       DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,originalACL_,nullptr);
+   if(error!=ERROR_SUCCESS)throw std::runtime_error("restore test directory DACL: "+winError(error));
+ }
+ ~RestoredDirectoryDACL() {
+   if(original_) {SetNamedSecurityInfoW(const_cast<LPWSTR>(path_.c_str()),SE_FILE_OBJECT,
+       DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,originalACL_,nullptr);LocalFree(original_);}
+ }
+};
+class HeldConfigLock {
+ Handle file_;OVERLAPPED overlap_{};bool locked_=false;
+public:
+ explicit HeldConfigLock(const fs::path& path):file_(CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,
+     FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)) {
+   if(!file_ || !LockFileEx(file_.value,LOCKFILE_EXCLUSIVE_LOCK,0,1,0,&overlap_))throw std::runtime_error("hold test config lock: "+winError());
+   locked_=true;
+ }
+ void release() {if(locked_){UnlockFileEx(file_.value,0,1,0,&overlap_);locked_=false;}}
+ ~HeldConfigLock(){release();}
+};
+class SecurityChangeNotification {
+ HANDLE event_;
+public:
+ explicit SecurityChangeNotification(const fs::path& parent):event_(FindFirstChangeNotificationW(parent.c_str(),FALSE,FILE_NOTIFY_CHANGE_SECURITY)) {
+   if(event_==INVALID_HANDLE_VALUE)throw std::runtime_error("watch test directory security: "+winError());
+ }
+ bool wait(DWORD milliseconds){return WaitForSingleObject(event_,milliseconds)==WAIT_OBJECT_0;}
+ ~SecurityChangeNotification(){FindCloseChangeNotification(event_);}
+};
 int main(int argc,char** argv) {
  if(argc==2 && std::string(argv[1])=="--close-stdout") {
    CloseHandle(GetStdHandle(STD_OUTPUT_HANDLE));
@@ -105,6 +168,57 @@ int main(int argc,char** argv) {
    check(backups.size()==1 && readBytes(backups[0])==original,"exact original migration backup");
    check(loadConfig(root).version==2,"v2 saved");
    for(const auto& path:{root,root/L"config.json",root/L"config.lock",backups[0]}) privateACL(path);
+   stage="backup creation failure preserves original v1 bytes";
+   {
+     auto directory=root/L"backup-denied";createPrivateDirectory(directory);
+     writePrivateFile(directory/L"config.json",original);writePrivateFile(directory/L"config.lock",{});
+     HeldConfigLock held(directory/L"config.lock");
+     RestoredDirectoryDACL permissions(directory);
+     // ConfigLock reapplies the private ACL before waiting. Start with a
+     // different (non-inheriting) ACL so its security notification is observable.
+     permissions.setCreationDenied(false);
+     SecurityChangeNotification changed(root);
+     std::string failure;
+     Child saving(executablePath(),{"--save-many",utf8(directory.wstring()),"a"},
+         [&](bool ended,const std::string& bytes,DWORD){if(!ended)failure+=bytes;});
+     try {
+       check(changed.wait(5000),"save reaches directory protection before blocked config lock");
+       permissions.setCreationDenied(true);
+       held.release();
+       auto code=saving.wait(10000);
+       if(code!=1 || failure.find("설정 파일 생성 실패:")==std::string::npos ||
+           failure.find("Windows error "+std::to_string(ERROR_ACCESS_DENIED))==std::string::npos)
+         throw std::runtime_error("expected backup CreateFile access denial, exit="+std::to_string(code)+": "+failure);
+       check(readBytes(directory/L"config.json")==original,"backup failure preserves exact original v1 bytes");
+       check(loadConfig(directory).version==1 && loadHost(directory,"a").name=="A","backup failure leaves original parseable without migration");
+       size_t count=0;
+       for(const auto& entry:fs::directory_iterator(directory)) {
+         auto name=entry.path().filename();check(name==L"config.json" || name==L"config.lock","backup failure leaves no backup or temporary residue");++count;
+       }
+       check(count==2,"backup failure preserves only original config and lock");
+       permissions.restore();
+       saveHost(directory,a);
+       std::vector<fs::path> recoveredBackups;
+       for(const auto& entry:fs::directory_iterator(directory))if(entry.path().filename().wstring().rfind(L"config-v1-",0)==0)recoveredBackups.push_back(entry.path());
+       check(loadConfig(directory).version==2 && recoveredBackups.size()==1 && readBytes(recoveredBackups[0])==original,
+           "save after restoring permissions migrates with exact original backup");
+     } catch(...) {held.release();saving.stop();saving.wait(5000);throw;}
+   }
+   stage="atomic replacement failure preserves original v2 bytes";
+   {
+     auto directory=root/L"replacement-denied";createPrivateDirectory(directory);saveHost(directory,a);
+     auto path=directory/L"config.json";auto before=readBytes(path);RestoredAttributes attributes(path);attributes.readOnly();
+     auto edited=a;edited.name="Must not replace original";std::string failure;
+     try{saveHost(directory,edited);}catch(const std::exception& error){failure=error.what();}
+     if(failure.find("설정 파일 교체 실패:")==std::string::npos)
+       throw std::runtime_error("expected readonly destination atomic replacement failure: "+failure);
+     check(readBytes(path)==before,"replacement failure preserves exact original config bytes");
+     check(loadConfig(directory).version==2 && loadHost(directory,a.id).name==a.name,"replacement failure leaves original parseable");
+     for(const auto& entry:fs::directory_iterator(directory))
+       check(entry.path().filename().wstring().rfind(L".config-",0)!=0,"replacement failure removes temporary config file");
+     attributes.restore();saveHost(directory,edited);
+     check(loadHost(directory,a.id).name==edited.name,"save succeeds after restoring destination attributes");
+   }
    stage="initial config CRUD";
    saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
    check(loadConfig(root).hosts.size()==2,"merge different hosts");
