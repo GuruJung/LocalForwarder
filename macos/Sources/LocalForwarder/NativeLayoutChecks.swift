@@ -15,10 +15,29 @@ enum NativeLayoutChecks {
     static func require(_ condition: Bool, _ message: String) throws {
         if !condition { throw AppError("Native layout: " + message) }
     }
-    static func settle(_ window: NSWindow) {
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
-        window.contentView?.layoutSubtreeIfNeeded()
+    static func settle(_ window: NSWindow) throws {
+        guard let content = window.contentView else { throw AppError("Native layout: missing window content") }
+        func geometry(_ view: NSView) -> [NSRect] {
+            [view.frame, view.bounds] + view.subviews.flatMap { geometry($0) }
+        }
+        func pendingLayout(_ view: NSView) -> Bool {
+            view.needsLayout || view.needsUpdateConstraints || view.subviews.contains { pendingLayout($0) }
+        }
+        var previous: [NSRect] = []
+        var stablePasses = 0
+        // Autohiding scrollers can resize the clip/document during a layout pass;
+        // AppKit then schedules the arranged rows for a subsequent pass. Drain those
+        // passes before measuring, without changing production constraints or bounds.
+        for _ in 0..<50 {
+            content.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+            content.layoutSubtreeIfNeeded()
+            let current = geometry(content)
+            stablePasses = current == previous && !pendingLayout(content) ? stablePasses + 1 : 0
+            if stablePasses >= 3 { return }
+            previous = current
+        }
+        throw AppError("Native layout: window geometry did not settle within 50 AppKit passes (\(window.title), \(content.bounds))")
     }
     /// Enumerate arranged children, including controls AppKit could otherwise detach under pressure.
     static func leaves(_ view: NSView) -> [NSView] {

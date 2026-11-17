@@ -611,7 +611,7 @@ extension SettingsController {
             for size in sizes {
                 controller.window.setContentSize(size)
                 controller.updateResponsiveLayout()
-                NativeLayoutChecks.settle(controller.window)
+                try NativeLayoutChecks.settle(controller.window)
                 let content = controller.window.contentView!
                 let context = "settings \(Int(size.width))x\(Int(size.height))"
                 try NativeLayoutChecks.require(abs(content.bounds.width - size.width) < 1 && abs(content.bounds.height - size.height) < 1,
@@ -624,7 +624,7 @@ extension SettingsController {
                 for editing in [nil, controller.drafts[controller.selectedID!]!.host.forwards.first] as [Forward?] {
                     controller.showRuleEditor(editing: editing)
                     guard let editor = controller.ruleEditor else { throw AppError(context + " missing rule sheet") }
-                    NativeLayoutChecks.settle(editor.window)
+                    try NativeLayoutChecks.settle(editor.window)
                     try NativeLayoutChecks.require(controller.window.attachedSheet === editor.window, context + " rule editor is not modal")
                     try NativeLayoutChecks.require(editor.window.frame.width <= area.width && editor.window.frame.height <= area.height,
                                                    context + " rule sheet exceeds available work area")
@@ -633,7 +633,7 @@ extension SettingsController {
                     try NativeLayoutChecks.require(controls.count == 9, context + " missing rule controls")
                     try NativeLayoutChecks.check(controls, in: modalContent, context: context + " rule sheet")
                     editor.cancel()
-                    NativeLayoutChecks.settle(controller.window)
+                    try NativeLayoutChecks.settle(controller.window)
                     try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.drafts == before,
                                                    context + " cancelling changed the draft or left a modal open")
                 }
