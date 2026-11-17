@@ -87,8 +87,13 @@ int main(int argc,char** argv) {
        check(!targetDiagnosticLine(line,targetPid+1),"another process cannot supply target diagnostics");
      }
    }
-   if(diagnosticCode==124 || targetText.find("Connecting to 127.0.0.1")==std::string::npos)
-     throw std::runtime_error("PID-tagged system OpenSSH diagnostics missing (PID="+std::to_string(targetPid)+", exit="+std::to_string(diagnosticCode)+"): "+diagnosticText);
+   if(diagnosticCode==124 || targetText.find("Connecting to 127.0.0.1")==std::string::npos) {
+     // Preserve the production assertion; a diagnostic-only broad probe makes
+     // an unexpected vendor log format visible in the failed native test.
+     diagnosticArgs.insert(diagnosticArgs.begin(),{"-o","LogVerbose=*"});
+     auto formatProbe=capture(systemSSH(),diagnosticArgs,5000);
+     throw std::runtime_error("PID-tagged system OpenSSH diagnostics missing (PID="+std::to_string(targetPid)+", exit="+std::to_string(diagnosticCode)+"): "+diagnosticText+"\nVendor log format probe:\n"+formatProbe.text);
+   }
    stage="v1 migration and user-only permissions";
    const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
    writePrivateFile(root/L"config.json",original);

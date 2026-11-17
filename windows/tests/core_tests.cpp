@@ -133,6 +133,15 @@ int main() {
     auto failureTagged=targetDiagnosticLine("fatal: kex.c:kex_exchange_identification():1337 (pid=1234): kex_exchange_identification: read: Connection reset by peer",1234);
     check(failureTagged && isConnectionRefusal(*failureTagged),"target preauth failure classification after tag removal");
     check(targetDiagnosticLine("ssh.c:main():123 (bin=ssh.exe, pid=1234): message",1234)=="message","future Windows binary PID format");
+    check(targetDiagnosticLine(R"(debug1: C:\build\openssh\sshconnect.c:ssh_connect_direct():1 (pid=1234): Connecting to target)",1234)=="debug1: Connecting to target","Windows absolute source path");
+    check(targetDiagnosticLine(R"(debug1: .\ssh.c:main():1 (pid=1234): message)",1234)=="debug1: message","Windows relative source path");
+    check(targetDiagnosticLine(R"(C:\Program Files\build\ssh.c:main():1 (pid=1234): message)",1234)=="message","rooted Windows source path containing spaces");
+    check(targetDiagnosticLine("/build/openssh/ssh.c:main():1 (pid=1234): message",1234)=="message","POSIX source path");
+    const std::string truncatedSource=std::string("C:\\build\\")+std::string(39,'a');
+    check(truncatedSource.size()==48 && targetDiagnosticLine(truncatedSource+":main():1 (pid=1234): message",1234)=="message","48-character source truncation needs no extension");
+    check(!targetDiagnosticLine(truncatedSource+"a:main():1 (pid=1234): message",1234),"oversized source rejected");
+    check(!targetDiagnosticLine("prefix:ssh.c:main():1 (pid=1234): message",1234),"embedded source marker rejected");
+    check(!targetDiagnosticLine("ssh.c:main():1 (pid=5678): C:\\build\\ssh.c:main():1 (pid=1234): message",1234),"body cannot override wrong envelope PID");
     auto actualKex=targetDiagnosticLine("kex.c:kex_exchange_identification():1247 (pid=1234): read: Connection reset by peer",1234);
     check(actualKex && *actualKex=="kex_exchange_identification: read: Connection reset by peer" && isConnectionRefusal(*actualKex),"forced error_f logging restores retry context");
     auto kexDebug=targetDiagnosticLine("debug1: kex.c:kex_exchange_identification():1247 (pid=1234): banner line 0: Connection closed by peer",1234);
@@ -160,9 +169,10 @@ int main() {
         check(!targetDiagnosticLine(badLine,1234),"wrong, untagged, malformed or embedded PID rejected");
     check(!targetDiagnosticLine("ssh.c:main():1 (pid=1234): message",0),"missing expected PID rejected");
     check(targetDiagnosticLine("ssh.c:main():1 (pid=4294967295): message",4294967295u)=="message","maximum valid uint32 PID accepted");
-    auto selective="LogVerbose=ssh.c:*,sshconnect.c:*,sshconnect2.c:*,kex.c:*,clientloop.c:client_loop():*,channels.c:channel_setup_fwd_listener_*:*,channels.c:channel_input_open_failure():*,channels.c:channel_new():*";
+    auto selective="LogVerbose=*:main():*,*:ssh_connect_direct():*,*:ssh_userauth2():*,*:kex_exchange_identification():*,*:client_loop():*,*:ssh_confirm_remote_forward():*,*:channel_setup_fwd_listener_*:*,*:channel_input_open_failure():*,*:channel_new():*";
     auto connectionArgs=sshArguments(h),queryArgs=sshArguments(h,{},true);
-    check(std::count(connectionArgs.begin(),connectionArgs.end(),selective)==1,"normal SSH selects functional diagnostic families");
+    check(std::count(connectionArgs.begin(),connectionArgs.end(),selective)==1,"normal SSH selects source-independent functional diagnostics");
+    check(std::find(connectionArgs.begin(),connectionArgs.end(),selective)<std::find(connectionArgs.begin(),connectionArgs.end(),"--"),"diagnostic option precedes target delimiter");
     check(std::none_of(queryArgs.begin(),queryArgs.end(),[](auto& arg){return arg.starts_with("LogVerbose=");}),"configuration query does not enable verbose logging");
     Readiness isolated(0,false,"target",22);
     auto jumpLine=targetDiagnosticLine("debug1: sshconnect2.c:ssh_userauth2():449 (pid=5678): Authenticated to target ([127.0.0.1]:22).",1234);
