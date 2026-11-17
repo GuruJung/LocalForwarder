@@ -165,6 +165,15 @@ class App{
     HWND appModalWindow_=nullptr;
     std::function<void(HWND,const TASKDIALOGCONFIG&)> dialogTest_;
     struct DialogContext { App* app; const TASKDIALOGCONFIG* config; std::exception_ptr error; };
+    struct OwnerDialogProbe { std::function<void(HWND)> activate; std::exception_ptr error; };
+    static inline thread_local OwnerDialogProbe* ownerDialogProbe_=nullptr;
+    static LRESULT CALLBACK ownerDialogProbeHook(int code,WPARAM value,LPARAM data){
+        if(code==HCBT_ACTIVATE&&ownerDialogProbe_){
+            try{ownerDialogProbe_->activate(reinterpret_cast<HWND>(value));}
+            catch(...){ownerDialogProbe_->error=std::current_exception();PostMessageW(reinterpret_cast<HWND>(value),WM_CLOSE,0,0);}
+        }
+        return CallNextHookEx(nullptr,code,value,data);
+    }
     bool foregroundModal(){
         HWND modal=appModalWindow_?appModalWindow_:(ruleWindow_?ruleWindow_:status_);
         // Native message boxes and file pickers disable their owner without using
@@ -183,11 +192,14 @@ class App{
         if(modal&&IsWindowVisible(modal))SetForegroundWindow(modal);
         return blocked;
     }
-    static HRESULT CALLBACK dialogCallback(HWND hwnd,UINT notification,WPARAM,LPARAM value,LONG_PTR data){
+    static HRESULT CALLBACK dialogCallback(HWND hwnd,UINT notification,WPARAM elapsed,LPARAM value,LONG_PTR data){
         auto& context=*reinterpret_cast<DialogContext*>(data);auto& app=*context.app;
         if(notification==TDN_CREATED){
             app.appModalWindow_=hwnd;
             if(app.dialogTest_)try{app.dialogTest_(hwnd,*context.config);}catch(...){context.error=std::current_exception();PostMessageW(hwnd,TDM_CLICK_BUTTON,IDCANCEL,0);}
+        }else if(notification==TDN_TIMER&&app.dialogTest_&&elapsed>=3000){
+            if(!context.error)context.error=std::make_exception_ptr(std::runtime_error("native TaskDialog test did not complete: "+utf8(context.config->pszWindowTitle)));
+            PostMessageW(hwnd,TDM_CLICK_BUTTON,IDCANCEL,0);
         }else if(notification==TDN_DESTROYED)app.appModalWindow_=nullptr;
         else if(notification==TDN_HYPERLINK_CLICKED&&value&&std::wstring(reinterpret_cast<const wchar_t*>(value))==ProjectURL){
             if(reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd,L"open",ProjectURL,nullptr,nullptr,SW_SHOWNORMAL))<=32)
@@ -199,6 +211,7 @@ class App{
         HWND focus=GetFocus();DialogContext context{this,&config,{}};
         config.cbSize=sizeof(config);config.hwndParent=settings_.open?settingsWindow_:window_;
         config.dwFlags|=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;
+        if(dialogTest_)config.dwFlags|=TDF_CALLBACK_TIMER;
         config.pfCallback=dialogCallback;config.lpCallbackData=reinterpret_cast<LONG_PTR>(&context);
         appModal_=true;int result=IDCANCEL;auto status=TaskDialogIndirect(&config,&result,nullptr,nullptr);
         appModalWindow_=nullptr;appModal_=false;
@@ -558,41 +571,57 @@ public:
     }
     void nativeOwnerModalChecks(HWND owner){
         auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
-        struct Probe { bool active=true,ran=false,trayOpened=false; int nested=0; std::exception_ptr error; };
+        struct Probe { bool active=true,scheduled=false,ran=false,trayOpened=false; int nested=0; std::exception_ptr error; };
         auto probe=std::make_shared<Probe>();
         auto selected=settings_.selected;auto drafts=settings_.drafts;
         auto title=wide("LocalForwarder modal owner test "+newId());
-        // Auto-close any mistakenly nested TaskDialog so a regression fails
-        // deterministically instead of waiting for user interaction in CI.
+        const std::string ownerName=owner==window_?"hidden app":"settings";
         dialogTest_=[probe](HWND dialog,const TASKDIALOGCONFIG&){++probe->nested;PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);};
-        loop_->post([this,probe,owner,title,selected,check]{
-            if(!probe->active)return;
-            probe->ran=true;
-            HWND prompt=FindWindowW(L"#32770",title.c_str());
-            if(!prompt){
-                probe->error=std::make_exception_ptr(std::runtime_error("native MessageBox probe could not find its dialog"));
-                PostQuitMessage(1);return;
-            }
-            try{
-                check(!IsWindowEnabled(owner)&&!appModal_,"native prompt disables owner without app modal registration");
-                check(foregroundModal(),"disabled native owner blocks new app dialogs");
-                showAbout();confirmDisconnectAll();openSettings(selected=="a"?"b":"a");
-                SendMessageW(window_,WM_OPEN_SETTINGS,0,0);
-                loop_->post([this,probe]{if(probe->active&&menuOpen_){probe->trayOpened=true;EndMenu();}});
-                SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
-                check(!probe->nested&&!probe->trayOpened&&settings_.selected==selected,"native warning blocks About disconnect tray and followup selection changes");
-                check(!IsWindowEnabled(owner)&&IsWindow(prompt),"native warning remains the active modal");
-            }catch(...){probe->error=std::current_exception();}
-            // Always close the original warning, including after assertion failure.
-            PostMessageW(prompt,WM_COMMAND,IDOK,0);
-        });
+        // Observe the actual MessageBox activation, then run assertions through
+        // its normal message loop. No FindWindow race or guessed HWND is needed.
+        OwnerDialogProbe activation;
+        activation.activate=[this,probe,owner,title,selected,check,ownerName](HWND prompt){
+            if(probe->scheduled||GetWindow(prompt,GW_OWNER)!=owner||textOf(prompt)!=title)return;
+            probe->scheduled=true;outputLine("native owner probe activated: "+ownerName);
+            loop_->post([this,probe,owner,prompt,selected,check,ownerName]{
+                if(!probe->active)return;
+                probe->ran=true;outputLine("native owner probe callback: "+ownerName);
+                try{
+                    check(!IsWindowEnabled(owner)&&!appModal_,"native prompt disables owner without app modal registration");
+                    check(foregroundModal(),"disabled native owner blocks new app dialogs");
+                    showAbout();confirmDisconnectAll();openSettings(selected=="a"?"b":"a");
+                    SendMessageW(window_,WM_OPEN_SETTINGS,0,0);
+                    loop_->post([this,probe]{if(probe->active&&menuOpen_){probe->trayOpened=true;EndMenu();}});
+                    SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
+                    check(!probe->nested&&!probe->trayOpened&&settings_.selected==selected,"native warning blocks About disconnect tray and followup selection changes");
+                    check(!IsWindowEnabled(owner)&&IsWindow(prompt),"native warning remains the active modal");
+                    outputLine("native owner probe actions passed: "+ownerName);
+                }catch(...){probe->error=std::current_exception();}
+                // Activate and click the real button: MessageBox need not accept
+                // a fabricated WM_COMMAND without the originating child HWND.
+                SetActiveWindow(prompt);
+                if(HWND button=GetDlgItem(prompt,IDOK))SendMessageW(button,BM_CLICK,0,0);
+                else {
+                    if(!probe->error)probe->error=std::make_exception_ptr(std::runtime_error("native MessageBox has no OK control"));
+                    SendMessageW(prompt,WM_CLOSE,0,0);
+                }
+                outputLine("native owner probe dismissed: "+ownerName);
+            });
+        };
+        ownerDialogProbe_=&activation;
+        HHOOK hook=SetWindowsHookExW(WH_CBT,ownerDialogProbeHook,nullptr,GetCurrentThreadId());
+        if(!hook){ownerDialogProbe_=nullptr;dialogTest_={};throw std::runtime_error("cannot install native modal test hook");}
+        outputLine("native owner probe MessageBox start: "+ownerName);
         int result=MessageBoxW(owner,L"모달 소유 관계 회귀 검사",title.c_str(),MB_OK|MB_ICONWARNING);
-        probe->active=false;dialogTest_={};
+        outputLine("native owner probe MessageBox returned: "+ownerName);
+        UnhookWindowsHookEx(hook);ownerDialogProbe_=nullptr;probe->active=false;dialogTest_={};
+        if(activation.error)std::rethrow_exception(activation.error);
         if(probe->error)std::rethrow_exception(probe->error);
         check(probe->ran&&result==IDOK&&IsWindowEnabled(owner),"native warning closes and restores its owner");
         check(settings_.selected==selected&&settings_.drafts==drafts,"native warning probe preserves selection and drafts");
     }
     void nativeAppDialogChecks(){
+        outputLine("native app dialog checks started");
         auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
         openSettings();set(Name,L"About 모달 전 미저장 이름");capture();
         auto drafts=settings_.drafts;auto selected=settings_.selected;auto saved=loadConfig(directory_);
@@ -601,6 +630,7 @@ public:
         nativeOwnerModalChecks(window_); // Login-startup warnings use this owner even while settings is open.
         int shown=0;
         for(int dismissal=0;dismissal<3;++dismissal){
+            outputLine("native About dismissal probe "+std::to_string(dismissal));
             bool backgroundDelivered=false;
             dialogTest_=[&,dismissal](HWND dialog,const TASKDIALOGCONFIG& config){
                 ++shown;
@@ -629,6 +659,7 @@ public:
         check(GetMenuItemID(activeMenu_,GetMenuItemCount(activeMenu_)-2)==6&&GetMenuItemID(activeMenu_,GetMenuItemCount(activeMenu_)-1)==3,"About immediately precedes quit");
         check(!(GetMenuState(activeMenu_,5,MF_BYCOMMAND)&MF_GRAYED),"disconnect-all enabled for an active connection");destroyTrayMenu();
         for(int dismissal=0;dismissal<4;++dismissal){
+            outputLine("native disconnect dismissal probe "+std::to_string(dismissal));
             dialogTest_=[&,dismissal](HWND dialog,const TASKDIALOGCONFIG& config){
                 check(config.nDefaultButton==IDCANCEL&&config.cButtons==2&&!IsWindowEnabled(settingsWindow_),"disconnect confirmation defaults to cancel and is modal");
                 check(std::wstring(config.pszMainInstruction)==L"모든 호스트의 연결을 끊으시겠습니까?","disconnect confirmation instruction");
@@ -718,6 +749,7 @@ public:
         check(manager_->runtime("a")->state==ConnectionState::connected&&!manager_->runtime("b")->desiredConnected,"native startup OK applies autoConnect selection");
         openSettings();set(Name,L"cancelled edit");closeSettings(false);check(loadHost(directory_,"a").name=="A","native cancel preserves saved value");
         check(manager_->runtime("a")->state==ConnectionState::connected,"native close keeps existing connection");
+        outputLine("native existing controller checks passed");
         nativeAppDialogChecks();
         manager_->quit();outputLine("native UI controller tests passed");
     }
