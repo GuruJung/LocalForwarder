@@ -86,6 +86,8 @@ Windows 전용 UI·OS 변경은 이식 목록에 추가하지 않는다. 기존 
 
 ## 포워딩 규칙 설명 (20261117-forward-description)
 
-- 상태: 구현 진행·검증 대기. [기능 명세](specs/20261117-forward-description/spec.md)와 [검증 기록](../verification/forward-description.md)을 따른다.
+- 상태: 구현 및 네이티브 자동 검증 완료; 실기기 육안 확인 미완료. [기능 명세](specs/20261117-forward-description/spec.md)와 [검증 기록](../verification/forward-description.md)을 따른다.
 - 선택적 규칙 설명의 저장 호환성과 규칙 모달·목록 표시를 추가한다. SSH 연결·트레이·연결 상태 표시는 유지한다.
 - 필드 누락/null/빈 값, 한글 왕복 저장, 선택 저장·인증 키 갱신 보존, 설명만의 변경과 실행 설정 비교를 양쪽에서 검증한다. 이전 기능의 미검증 상태는 변경하지 않는다.
+
+- 코드 `467e4bf`의 [CI](https://github.com/GuruJung/LocalForwarder/actions/runs/44047461439)에서 macOS·Windows x64·ARM64 빌드·테스트·패키징이 모두 통과했다. 기존 플랫폼 제외 사례는 유지하고 새 설명 검사는 모두 실행했다. 직접 화면 확인은 자동 네이티브 UI 검사와 구분하여 미완료로 남긴다.
