@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CoreServices
+import ServiceManagement
 
 /// Compiled with the production adapter into a disposable, uniquely identified CI .app.
 @main
@@ -14,18 +15,20 @@ struct LoginItemFixture {
             fputs("Login-item fixture is restricted to a unique bundle on disposable GitHub-hosted CI.\n", stderr)
             exit(2)
         }
-        _ = NSApplication.shared
+        NSApplication.shared.finishLaunching()
         let mode = CommandLine.arguments[1]
         let evidenceURL = URL(fileURLWithPath: CommandLine.arguments[2])
-        let service = MacLoginItemService()
         var evidence: [String: Any] = ["bundleIdentifier": identifier, "signing": "ad-hoc",
-            "mode": mode, "actualLoginTested": false]
+            "mode": mode, "actualLoginTested": false, "launchMethod": "LaunchServices open",
+            "bundlePath": Bundle.main.bundlePath,
+            "executablePath": Bundle.main.executablePath ?? "missing"]
+        // Construct SMAppService only after LaunchServices knows this app and AppKit finishes launch.
+        let launchServicesResult = LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
+        evidence["launchServicesRegistrationStatus"] = launchServicesResult
+        let service = MacLoginItemService()
+        evidence["initialRawServiceStatus"] = SMAppService.mainApp.status.rawValue
         var failure: Error?
         do {
-            // Finder/open normally registers an app with LaunchServices before launching it.
-            // Do the same for this directly invoked executable inside its real .app bundle.
-            let launchServicesResult = LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
-            evidence["launchServicesRegistrationStatus"] = launchServicesResult
             guard launchServicesResult == noErr else {
                 throw LoginItemError("LaunchServices registration failed: \(launchServicesResult)")
             }
