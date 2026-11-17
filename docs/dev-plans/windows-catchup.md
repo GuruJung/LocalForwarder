@@ -84,3 +84,9 @@ macOS 전용 UI·OS 변경은 이식 목록에 넣지 않는다. 구현만 끝�
 - 상태: 구현 및 자동 검증 완료. 실제 재로그인·제품 트레이 직접 조작·macOS 승인 화면 수동 검증은 미수행. [명세](specs/20261117-launch-at-login/spec.md)와 [검증 기록](../verification/launch-at-login.md)을 따른다.
 - 트레이 체크 메뉴로 현재 사용자 자동 시작 등록·해제를 제공하고 기존 호스트 자동 연결 정책을 유지한다. 다른 세션의 UI 개선과 기존 미검증 항목은 이번 변경에 포함하지 않는다.
 - OS 등록 상태, 승인 필요·실패, 실행 경로와 사용자별 범위를 검증한다. 실제 재로그인·macOS 실기기 승인 화면 확인은 별도이며 자동 CI 결과와 구분한다.
+
+## 설정창·트레이 개선 (20261117-settings-tray-refinement)
+
+- 상태: 구현 진행·검증 대기. [기능 명세](specs/20261117-settings-tray-refinement/spec.md)와 [검증 절차](../verification/settings-tray-refinement.md)를 따른다.
+- Windows의 소형 설정창, 규칙 모달, description 보존과 실행 설정 비교, 아이콘·규칙별 트레이 표시를 대상으로 한다. 이전 차이 항목의 증거·미검증 상태는 그대로 유지한다.
+- 현재 UI 의도는 [현재 명세](current-spec.md)를 따른다. 이 절의 구현과 검증 상태는 이전 기능의 실기기 검증 완료를 뜻하지 않는다.

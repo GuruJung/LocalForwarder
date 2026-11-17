@@ -143,8 +143,19 @@ std::vector<std::string> settingLines(const std::string& input, bool forwards) {
 bool safeId(const std::string& value) {
     return !value.empty() && value.size() <= 128 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; });
 }
+void validateForward(const Forward& f) {
+    if (!safeId(f.id)) throw std::runtime_error("규칙 ID가 올바르지 않습니다.");
+    if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw std::runtime_error("포트는 1~65535 사이여야 합니다.");
+    if (!validToken(f.remoteHost)) throw std::runtime_error("목적지 호스트가 올바르지 않습니다.");
+}
+bool sameExecutionSettings(const Host& left, const Host& right) {
+    auto a=left,b=right;a.description.clear();b.description.clear();return a==b;
+}
 void validate(const Host& h) {
     if (!safeId(h.id)) throw std::runtime_error("호스트 ID가 올바르지 않습니다.");
+    auto descriptionScalars=scalars(h.description);
+    if (std::any_of(descriptionScalars.begin(),descriptionScalars.end(),[](auto c){return c==0 || c=='\r' || c=='\n' || c==0x85 || c==0x2028 || c==0x2029;}))
+        throw std::runtime_error("설명은 개행과 NUL이 없는 한 줄이어야 합니다.");
     auto nameScalars=scalars(h.name);
     if (std::all_of(nameScalars.begin(),nameScalars.end(),whitespace)) throw std::runtime_error("이름을 입력하세요.");
     if (h.name.find('\0')!=std::string::npos) throw std::runtime_error("이름에 NUL 문자를 사용할 수 없습니다.");
@@ -155,6 +166,7 @@ void validate(const Host& h) {
     if (std::any_of(keyScalars.begin(),keyScalars.end(),control)) throw std::runtime_error("개인키 경로에 제어문자를 사용할 수 없습니다.");
     std::set<int> ports; std::set<std::string> ids;
     for (auto& f : h.forwards) {
+        validateForward(f);
         if (!safeId(f.id) || !ids.insert(f.id).second) throw std::runtime_error("규칙 ID가 올바르지 않거나 중복됩니다.");
         if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw std::runtime_error("포트는 1~65535 사이여야 합니다.");
         if (!validToken(f.remoteHost)) throw std::runtime_error("목적지 호스트가 올바르지 않습니다.");
@@ -177,6 +189,7 @@ Config parseConfig(const std::string& text) {
         if (!yyjson_is_obj(value)) throw std::runtime_error("호스트 설정은 객체여야 합니다.");
         Host h;
         h.id = stringValue(value, "id"); h.name = stringValue(value, "name"); h.target = stringValue(value, "target");
+        h.description = stringValue(value, "description", false);
         h.user = stringValue(value, "user", false); h.identityFile = stringValue(value, "identityFile", false);
         for (auto key : {"user", "identityFile"}) {
             auto* optional=yyjson_obj_get(value,key);
@@ -220,6 +233,7 @@ std::string writeConfig(const Config& config) {
         yyjson_mut_obj_add_bool(doc.get(),obj,"autoConnect",h.autoConnect);
         yyjson_mut_obj_add_bool(doc.get(),obj,"exitOnForwardFailure",h.exitOnForwardFailure);
         yyjson_mut_obj_add_bool(doc.get(),obj,"retryOnConnectionRefused",h.retryOnConnectionRefused);
+        if (!h.description.empty()) field(doc.get(), obj, "description", h.description);
         if (!h.user.empty()) field(doc.get(), obj, "user", h.user);
         if (h.port) yyjson_mut_obj_add_int(doc.get(), obj, "port", *h.port);
         if (!h.identityFile.empty()) field(doc.get(), obj, "identityFile", h.identityFile);

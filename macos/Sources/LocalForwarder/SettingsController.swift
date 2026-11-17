@@ -34,11 +34,13 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     var onClose: ((Bool, Bool) -> Void)?
     private var window: NSWindow!
     private var statusSheet: NSWindow?
+    private var ruleEditor: RuleEditor?
     private var statusHostID: String?
     private let hostsTable = NSTableView()
     private let rulesTable = NSTableView()
     private let runtimeTable = NSTableView()
     private let nameField = NSTextField()
+    private let descriptionField = NSTextField()
     private let targetField = NSTextField()
     private let userField = NSTextField()
     private let portField = NSTextField()
@@ -49,7 +51,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private let command = NSTextView()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let statusHeading = NSTextField(wrappingLabelWithString: "")
-    private let validation = NSTextField(wrappingLabelWithString: "")
+    private var editRuleButton: NSButton!
+    private var deleteRuleButton: NSButton!
     private var connectButton: NSButton!
     private var authButton: NSButton!
     private var order: [String] = []
@@ -65,7 +68,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     func open(select id: String? = nil, startup: Bool = false) {
         if isOpen {
-            if let sheet = statusSheet {
+            if var sheet = window.attachedSheet {
+                while let child = sheet.attachedSheet { sheet = child }
                 window.makeKeyAndOrderFront(nil); sheet.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
                 return
@@ -89,8 +93,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         if order.isEmpty { addDraft() }
         hostsTable.reloadData()
         select(id.flatMap { drafts[$0] == nil ? nil : $0 } ?? order[0])
-        if let loadError { validation.stringValue = loadError + "\n원본 파일은 보존되며 이 파일로 자동 연결하지 않습니다." }
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if let loadError { showError(loadError + "\n원본 파일은 보존되며 이 파일로 자동 연결하지 않습니다.") }
     }
     func refresh() {
         guard isOpen else { return }
@@ -100,6 +104,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private func capture() {
         guard !loading, let id = selectedID, var draft = drafts[id] else { return }
         draft.host.name = nameField.stringValue
+        draft.host.description = descriptionField.stringValue
         draft.host.target = targetField.stringValue
         draft.host.user = userField.stringValue.isEmpty ? nil : userField.stringValue
         draft.portText = portField.stringValue
@@ -116,13 +121,14 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         loading = true; selectedID = id
         let host = draft.host
         nameField.stringValue = host.name; targetField.stringValue = host.target
+        descriptionField.stringValue = host.description
         userField.stringValue = host.user ?? ""; portField.stringValue = draft.portText
         keyField.stringValue = host.identityFile ?? ""
         autoConnect.state = host.autoConnect ? .on : .off
         exitOnFailure.state = host.exitOnForwardFailure ? .on : .off
         retryRefused.state = host.retryOnConnectionRefused ? .on : .off
         if let index = order.firstIndex(of: id) { hostsTable.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
-        rulesTable.reloadData(); validation.stringValue = ""
+        rulesTable.reloadData(); updateRuleButtons()
         loading = false; updateCommand(); updateStatus()
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
@@ -151,11 +157,11 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         if let runtime = manager.runtime(id) {
             if runtime.temporary {
                 status.stringValue += "\n임시 실행 설정 사용 중 — 다음 수동 연결과 자동 복구에도 적용됩니다."
-                if let execution = runtime.executionHost, let draft = drafts[id], execution != draft.host {
+                if let execution = runtime.executionHost, let draft = drafts[id], !execution.hasSameExecutionSettings(as: draft.host) {
                     status.stringValue += "\n편집값과 임시 실행 설정이 다릅니다. 변경 없이 재연결하면 임시 실행 설정을 재사용합니다. 편집값을 적용하려면 저장하세요."
                 }
             }
-            else if let execution = runtime.executionHost, let saved = manager.hosts.first(where: { $0.id == id }), execution != saved,
+            else if let execution = runtime.executionHost, let saved = manager.hosts.first(where: { $0.id == id }), !execution.hasSameExecutionSettings(as: saved),
                     runtime.state == .connected || runtime.state == .connecting {
                 status.stringValue += "\n현재 실행 설정과 저장된 설정이 다릅니다. 저장한 값은 다음 연결부터 적용됩니다."
             }
@@ -167,7 +173,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         runtimeTable.reloadData()
     }
     @objc private func showConnectionStatus() {
-        guard statusSheet == nil else { return }
+        guard window.attachedSheet == nil, statusSheet == nil, ruleEditor == nil else { return }
         finishEditing()
         guard let id = selectedID, drafts[id] != nil else { return }
         statusHostID = id
@@ -215,7 +221,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         window.endSheet(sheet)
         sheet.orderOut(nil); statusSheet = nil; statusHostID = nil
     }
-    func prepareForTermination() { closeConnectionStatus() }
+    func prepareForTermination() { ruleEditor?.cancel(); closeConnectionStatus() }
     private func addDraft() {
         let host = Host(); order.append(host.id); drafts[host.id] = HostDraft(host)
     }
@@ -232,7 +238,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             drafts[id] = nil; baseline[id] = nil; order.removeAll { $0 == id }
             if order.isEmpty { addDraft() }
             hostsTable.reloadData(); select(order[0])
-        } catch { validation.stringValue = error.localizedDescription }
+        } catch { showError(error.localizedDescription) }
     }
     private func saveSelected() throws -> Host {
         finishEditing()
@@ -241,10 +247,10 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         try store.save(host)
         manager.saved(host)
         baseline[id] = HostDraft(host); drafts[id] = HostDraft(host)
-        hostsTable.reloadData(); validation.stringValue = "저장했습니다. 변경 사항은 다음 연결부터 적용됩니다."
+        hostsTable.reloadData()
         updateStatus(); return host
     }
-    @objc private func saveClicked() { do { _ = try saveSelected() } catch { validation.stringValue = error.localizedDescription } }
+    @objc private func saveClicked() { do { _ = try saveSelected() } catch { showError(error.localizedDescription) } }
     @objc private func connectSelected() {
         finishEditing()
         guard let id = selectedID, let draft = drafts[id] else { return }
@@ -266,25 +272,51 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
                 // The manager preserves any already applied temporary execution configuration.
                 try manager.connect(id)
             }
-            validation.stringValue = ""; updateStatus()
-        } catch { validation.stringValue = error.localizedDescription }
+            updateStatus()
+        } catch { showError(error.localizedDescription) }
     }
     @objc private func chooseKey() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { keyField.stringValue = url.path; changed() }
     }
     @objc private func addRule() {
+        showRuleEditor(editing: nil)
+    }
+    @objc private func editRule() {
+        guard let id = selectedID, let draft = drafts[id], draft.host.forwards.indices.contains(rulesTable.selectedRow) else { return }
+        showRuleEditor(editing: draft.host.forwards[rulesTable.selectedRow])
+    }
+    private func showRuleEditor(editing rule: Forward?) {
+        guard window.attachedSheet == nil, ruleEditor == nil, statusSheet == nil else { return }
         finishEditing()
-        guard let id = selectedID else { return }
-        let rule = Forward(); drafts[id]?.host.forwards.append(rule)
-        drafts[id]?.rulePorts[rule.id] = ["localPort": String(rule.localPort), "remotePort": String(rule.remotePort)]
-        rulesTable.reloadData(); changed()
+        guard let id = selectedID, let draft = drafts[id] else { return }
+        let editor = RuleEditor(parent: window, rules: draft.host.forwards, editing: rule) { [weak self] rules in
+            guard let self else { return }
+            self.ruleEditor = nil
+            if let rules, var draft = self.drafts[id] {
+                draft.host.forwards = rules
+                draft.rulePorts = Dictionary(uniqueKeysWithValues: rules.map {
+                    ($0.id, ["localPort": String($0.localPort), "remotePort": String($0.remotePort)])
+                })
+                self.drafts[id] = draft; self.rulesTable.reloadData()
+                let row = rule.flatMap { edited in rules.firstIndex(where: { $0.id == edited.id }) } ?? (rules.count - 1)
+                if row >= 0 { self.rulesTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+                self.hostsTable.reloadData(); self.updateCommand()
+            }
+            self.updateRuleButtons()
+        }
+        ruleEditor = editor
+        window.beginSheet(editor.window, completionHandler: nil)
+    }
+    private func updateRuleButtons() {
+        let valid = selectedID.flatMap { drafts[$0]?.host.forwards.indices.contains(rulesTable.selectedRow) } ?? false
+        editRuleButton?.isEnabled = valid; deleteRuleButton?.isEnabled = valid
     }
     @objc private func deleteRule() {
         let row = rulesTable.selectedRow; finishEditing()
         guard let id = selectedID, let draft = drafts[id], draft.host.forwards.indices.contains(row) else { return }
         drafts[id]?.rulePorts[draft.host.forwards[row].id] = nil
-        drafts[id]?.host.forwards.remove(at: row); rulesTable.reloadData(); changed()
+        drafts[id]?.host.forwards.remove(at: row); rulesTable.reloadData(); updateRuleButtons(); changed()
     }
     @objc private func okay() {
         finishEditing()
@@ -298,6 +330,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     @objc private func cancel() { finish(accepted: false) }
     private func finish(accepted: Bool) {
+        ruleEditor?.cancel()
         closeConnectionStatus()
         window.makeFirstResponder(nil)
         window.orderOut(nil); isOpen = false
@@ -315,6 +348,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         return drafts[id]?.host.forwards.count ?? 0
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if notification.object as? NSTableView === rulesTable { updateRuleButtons(); return }
         guard !loading, let table = notification.object as? NSTableView, table === hostsTable,
               order.indices.contains(table.selectedRow) else { return }
         let next = order[table.selectedRow]
@@ -351,12 +385,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     func tableView(_ tableView: NSTableView, setObjectValue object: Any?, for tableColumn: NSTableColumn?, row: Int) {
         guard tableView === rulesTable, let id = selectedID, var draft = drafts[id], draft.host.forwards.indices.contains(row) else { return }
-        let value = String(describing: object ?? "")
         switch tableColumn?.identifier.rawValue {
         case "enabled": draft.host.forwards[row].enabled = (object as? NSNumber)?.intValue == NSControl.StateValue.on.rawValue
-        case "localPort": draft.host.forwards[row].localPort = Int(value) ?? 0; draft.rulePorts[draft.host.forwards[row].id]?["localPort"] = value
-        case "remoteHost": draft.host.forwards[row].remoteHost = value
-        case "remotePort": draft.host.forwards[row].remotePort = Int(value) ?? 0; draft.rulePorts[draft.host.forwards[row].id]?["remotePort"] = value
         default: break
         }
         drafts[id] = draft; hostsTable.reloadData(); updateCommand()
@@ -372,7 +402,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         do {
             let host = try saveSelected()
             try launchAuthentication(host)
-        } catch { validation.stringValue = error.localizedDescription }
+        } catch { showError(error.localizedDescription) }
     }
     private func launchAuthentication(_ host: Host) throws {
         guard let executable = Bundle.main.executableURL else { throw AppError("앱 실행 파일을 찾을 수 없습니다.") }
@@ -415,7 +445,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         } catch { showError(error.localizedDescription) }
     }
     private func showError(_ message: String) {
-        let alert = NSAlert(); alert.messageText = "LocalForwarder"; alert.informativeText = message; alert.alertStyle = .warning; alert.runModal()
+        let alert = NSAlert(); alert.messageText = "LocalForwarder"; alert.informativeText = message; alert.alertStyle = .warning
+        if window.isVisible { alert.beginSheetModal(for: ruleEditor?.window ?? statusSheet ?? window, completionHandler: nil) }
+        else { alert.runModal() }
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton { NSButton(title: title, target: self, action: action) }
@@ -432,7 +464,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     private func makeWindow() {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
-        let size = NSSize(width: min(1080, visible.width - 40), height: min(850, visible.height - 70))
+        let size = NSSize(width: min(900, visible.width - 40), height: min(650, visible.height - 70))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "LocalForwarder 설정"; window.delegate = self; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: min(800, size.width), height: min(430, size.height)); window.center()
@@ -484,6 +516,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             return row
         }
         add(fieldRow("이름", nameField))
+        add(fieldRow("설명 (선택)", descriptionField))
         add(fieldRow("SSH 별칭 / 주소", targetField))
         let credentials = NSStackView(views: [fieldRow("사용자명 (선택)", userField), fieldRow("SSH 포트 (선택)", portField)])
         credentials.spacing = 12
@@ -497,19 +530,20 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         let options = NSStackView(views: [autoConnect, exitOnFailure, retryRefused]); options.spacing = 12; add(options, fullWidth: false)
         add(NSTextField(labelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
         for (id, title, width) in [("enabled", "사용", 48.0), ("localPort", "로컬 포트", 90.0), ("remoteHost", "목적지 호스트", 270.0), ("remotePort", "목적지 포트", 100.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = true
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = id == "enabled"
             if id == "enabled" { let cell = NSButtonCell(); cell.setButtonType(.switch); cell.title = ""; column.dataCell = cell }
             rulesTable.addTableColumn(column)
         }
         rulesTable.dataSource = self; rulesTable.delegate = self; rulesTable.rowHeight = 24
-        add(scroll(rulesTable, height: 130))
-        add(NSStackView(views: [button("규칙 추가", #selector(addRule)), button("선택 규칙 삭제", #selector(deleteRule))]), fullWidth: false)
-        add(NSTextField(labelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 76))
+        rulesTable.target = self; rulesTable.doubleAction = #selector(editRule)
+        add(scroll(rulesTable, height: 120))
+        editRuleButton = button("규칙 편집…", #selector(editRule)); deleteRuleButton = button("규칙 삭제", #selector(deleteRule))
+        add(NSStackView(views: [button("새 규칙…", #selector(addRule)), editRuleButton, deleteRuleButton]), fullWidth: false)
+        add(NSTextField(labelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 64))
         for (id, title, width) in [("description", "포워딩", 260.0), ("source", "출처", 90.0), ("state", "상태", 90.0), ("detail", "상세", 280.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = false; runtimeTable.addTableColumn(column)
         }
         runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24
-        validation.textColor = .systemRed; add(validation)
         connectButton = button("연결·재연결", #selector(connectSelected)); authButton = button("인증 설정…", #selector(setupAuthentication))
         add(NSStackView(views: [button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton, button("연결 상태…", #selector(showConnectionStatus))]), fullWidth: false)
     }

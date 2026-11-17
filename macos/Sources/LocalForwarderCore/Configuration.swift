@@ -20,6 +20,7 @@ public struct Forward: Codable, Equatable {
 public struct Host: Codable, Equatable {
     public var id: String
     public var name: String
+    public var description: String
     public var target: String
     public var user: String?
     public var port: Int?
@@ -31,20 +32,23 @@ public struct Host: Codable, Equatable {
     public init(id: String = UUID().uuidString, name: String = "새 호스트", target: String = "",
                 user: String? = nil, port: Int? = nil, identityFile: String? = nil,
                 forwards: [Forward] = [], autoConnect: Bool = true,
-                exitOnForwardFailure: Bool = true, retryOnConnectionRefused: Bool = true) {
+                exitOnForwardFailure: Bool = true, retryOnConnectionRefused: Bool = true,
+                description: String = "") {
         self.id = id; self.name = name; self.target = target; self.user = user
+        self.description = description
         self.port = port; self.identityFile = identityFile; self.forwards = forwards
         self.autoConnect = autoConnect; self.exitOnForwardFailure = exitOnForwardFailure
         self.retryOnConnectionRefused = retryOnConnectionRefused
     }
     private enum CodingKeys: String, CodingKey {
-        case id, name, target, user, port, identityFile, forwards
+        case id, name, description, target, user, port, identityFile, forwards
         case autoConnect, exitOnForwardFailure, retryOnConnectionRefused
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         name = try values.decode(String.self, forKey: .name)
+        description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
         target = try values.decode(String.self, forKey: .target)
         user = try values.decodeIfPresent(String.self, forKey: .user)
         port = try values.decodeIfPresent(Int.self, forKey: .port)
@@ -54,7 +58,30 @@ public struct Host: Codable, Equatable {
         exitOnForwardFailure = try values.decodeIfPresent(Bool.self, forKey: .exitOnForwardFailure) ?? true
         retryOnConnectionRefused = try values.decodeIfPresent(Bool.self, forKey: .retryOnConnectionRefused) ?? true
     }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        if !description.isEmpty { try values.encode(description, forKey: .description) }
+        try values.encode(target, forKey: .target)
+        try values.encodeIfPresent(user, forKey: .user)
+        try values.encodeIfPresent(port, forKey: .port)
+        try values.encodeIfPresent(identityFile, forKey: .identityFile)
+        try values.encode(forwards, forKey: .forwards)
+        try values.encode(autoConnect, forKey: .autoConnect)
+        try values.encode(exitOnForwardFailure, forKey: .exitOnForwardFailure)
+        try values.encode(retryOnConnectionRefused, forKey: .retryOnConnectionRefused)
+    }
+    /// Description is saved metadata, not a change to an executing connection.
+    public func hasSameExecutionSettings(as other: Host) -> Bool {
+        var lhs = self, rhs = other
+        lhs.description = ""; rhs.description = ""
+        return lhs == rhs
+    }
     public func validate() throws {
+        guard !description.unicodeScalars.contains(where: { [0, 10, 13, 0x85, 0x2028, 0x2029].contains($0.value) }) else {
+            throw AppError("설명은 개행과 NUL이 없는 한 줄로 입력하세요.")
+        }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AppError("호스트 이름을 입력하세요.") }
         guard Self.validID(id) else { throw AppError("호스트 ID가 올바르지 않습니다.") }
         guard Self.validToken(target) else { throw AppError("SSH 별칭 또는 호스트 주소를 올바르게 입력하세요.") }

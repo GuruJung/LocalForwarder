@@ -10,6 +10,19 @@ int main() {
  try {
     auto h=sample(); auto json=writeConfig({{h}}); auto parsed=parseConfig(json);
     check(parsed.hosts.size()==1 && parsed.hosts[0].name==h.name,"UTF-8 round trip");
+    auto described=h;described.description="개발 DB와 웹 서비스";
+    check(parseConfig(writeConfig({{described}})).hosts[0]==described,"description UTF-8 round trip");
+    check(sshArguments(described)==sshArguments(h)&&sameExecutionSettings(described,h),"description is not an SSH setting");
+    check(described!=h,"description participates in dirty equality");
+    for(auto value:{"null","\"\""}) {
+        auto data=std::string(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],"description":)")+value+"}]}";
+        check(parseConfig(data).hosts[0].description.empty(),"empty optional description");
+    }
+    check(json.find("description")==std::string::npos,"empty description omitted");
+    for(auto value:{"1","true","[]","{}","\"a\\nb\"","\"a\\rb\"","\"a\\u0000b\"","\"a\\u2028b\""}) {
+        auto data=std::string(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],"description":)")+value+"}]}";
+        rejects([&]{parseConfig(data);});
+    }
     rejects([] {parseConfig("{bad");}); rejects([] {parseConfig("{\"version\":99,\"hosts\":[]}");});
     rejects([&] {auto bad=h;bad.target="-oProxyCommand=bad";validate(bad);});
     rejects([&] {auto bad=h;bad.target="a\nb";validate(bad);});

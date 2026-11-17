@@ -15,7 +15,7 @@ struct Forward {
     bool operator==(const Forward&) const = default;
 };
 struct Host {
-    std::string id, name, target, user, identityFile;
+    std::string id, name, target, user, identityFile, description;
     std::optional<int> port;
     std::vector<Forward> forwards;
     bool autoConnect = true, exitOnForwardFailure = true, retryOnConnectionRefused = true;
@@ -29,6 +29,8 @@ struct Config {
 Config parseConfig(const std::string& text);
 std::string writeConfig(const Config& config);
 void validate(const Host& host);
+void validateForward(const Forward& forward);
+bool sameExecutionSettings(const Host& left, const Host& right);
 bool safeId(const std::string& value);
 std::string forwarding(const Forward& rule);
 std::vector<std::string> sshArguments(const Host& host, const std::string& configFile = {}, bool query = false);

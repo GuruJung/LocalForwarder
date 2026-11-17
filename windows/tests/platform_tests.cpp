@@ -220,8 +220,9 @@ int main(int argc,char** argv) {
      check(loadHost(directory,a.id).name==edited.name,"save succeeds after restoring destination attributes");
    }
    stage="initial config CRUD";
-   saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
+   a.description="개발 DB";saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
    check(loadConfig(root).hosts.size()==2,"merge different hosts");
+   check(loadHost(root,"a").description=="개발 DB","other host save preserves description");
    a.name="Updated";saveHost(root,a);check(loadHost(root,"a").name=="Updated","fresh load");
    deleteHost(root,"b");check(loadConfig(root).hosts.size()==1,"delete");
    stage="concurrent config saves (100 per writer)";
@@ -246,11 +247,13 @@ int main(int argc,char** argv) {
    auto both=loadConfig(concurrent);
    check(both.hosts.size()==2,"distinct process writes preserve both hosts");
    check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"right").name=="right-79","all process writes retained");
+   auto describedIdentity=loadHost(concurrent,"left");describedIdentity.description="설명 보존";saveHost(concurrent,describedIdentity);
    Child identity(executablePath(),{"--identity-many",utf8(concurrent.wstring()),"left"},ignore);
    Child edit(executablePath(),{"--save-many",utf8(concurrent.wstring()),"right"},ignore);
    check(identity.wait(60000)==0 && edit.wait(60000)==0,"identity and editor processes complete");
    check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"left").identityFile=="key-79","identity mutation preserves latest other fields");
    check(loadHost(concurrent,"right").name=="right-79","identity mutation preserves other host");
+   check(loadHost(concurrent,"left").description=="설명 보존","identity mutation preserves description");
    bool emptyRejected=false;try{setIdentity(concurrent,"left","");}catch(...){emptyRejected=true;}
    check(emptyRejected && loadHost(concurrent,"left").identityFile=="key-79","empty helper key update rejected");
    deleteHost(concurrent,"left");bool deletedRejected=false;
