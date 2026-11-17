@@ -847,6 +847,65 @@ class MultiHostSSHTests(unittest.TestCase):
         wait_port_closed(config["hosts"][0]["forwards"][0]["localPort"])
         session.assert_alive()
 
+    def test_07b_disconnect_all_preserves_settings_and_blocks_recovery(self):
+        config = self.profile(2)
+        config["hosts"][1]["autoConnect"] = False
+        session, directory, _ = self.start("multi-disconnect-all", config)
+        original = (directory / "config.json").read_bytes()
+        session.wait_host("host-0", "connected")
+        session.send("connect", id="host-1")
+        session.wait_host("host-1", "connected", intent=True)
+        temporary = self.profile()["hosts"][0]
+        temporary["id"] = "temporary-new"
+        session.send("temporary", host=temporary)
+        session.wait_host("temporary-new", "connected", temporary=True)
+        hosts = config["hosts"] + [temporary]
+        for host in hosts:
+            echo(host["forwards"][0]["localPort"])
+        # Cancel an already scheduled recovery as well as later recovery events.
+        session.send("wake")
+        before = len(session.host_events)
+        session.send("disconnect-all")
+        for host in hosts:
+            session.wait_host(host["id"], "disconnected", after=before, intent=False)
+            wait_port_closed(host["forwards"][0]["localPort"])
+        deadline = time.monotonic() + 5
+        while True:
+            with self.fixture.relay.lock:
+                remaining_transports = len(self.fixture.relay.connections)
+            if not remaining_transports or time.monotonic() >= deadline:
+                break
+            time.sleep(.05)
+        self.assertEqual(remaining_transports, 0, "Stopped SSH transports remain open")
+        baseline = len(self.fixture.relay.accepted)
+        session.send("disconnect-all")
+        session.send("network", available=False)
+        session.send("network", available=True)
+        session.send("wake")
+        time.sleep(6)
+        self.assertEqual(len(self.fixture.relay.accepted), baseline)
+        for host in hosts:
+            state = session.snapshot(host["id"])
+            self.assertEqual(state["state"], "disconnected")
+            self.assertFalse(state["intent"])
+        self.assertEqual((directory / "config.json").read_bytes(), original)
+        self.assertTrue(session.snapshot("temporary-new")["temporary"])
+        # Manual connect retains the unsaved host's execution settings.
+        before = len(session.host_events)
+        session.send("connect", id="temporary-new")
+        session.wait_host("temporary-new", "connected", after=before, temporary=True)
+        echo(temporary["forwards"][0]["localPort"])
+        # Whole reconnect still applies only saved auto-connect hosts.
+        before = len(session.host_events)
+        session.send("reconnect-all")
+        session.wait_host("host-0", "connected", after=before, intent=True)
+        for host in (config["hosts"][1], temporary):
+            self.assertFalse(session.snapshot(host["id"])["intent"])
+            wait_port_closed(host["forwards"][0]["localPort"])
+        echo(config["hosts"][0]["forwards"][0]["localPort"])
+        self.assertEqual((directory / "config.json").read_bytes(), original)
+        session.assert_alive()
+
     def test_08_inherited_rules_destination_failure_and_disabled_rule(self):
         dead_destination = ports(1)[0]
         config = self.profile()

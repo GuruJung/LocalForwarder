@@ -208,6 +208,70 @@ final class ManagerTests: XCTestCase {
         XCTAssertTrue(fixture.sessions[0].starts.isEmpty)
         XCTAssertNil(manager.runtime("host-0")); XCTAssertTrue(try fixture.store.load().hosts.isEmpty)
     }
+    func testDisconnectAllPreservesSettingsAndTemporaryExecution() throws {
+        let fixture = try ManagerFixture(disabledLast: true)
+        let manager = fixture.manager!
+        XCTAssertFalse(manager.canDisconnectAll)
+        try manager.startAll(); drainMainQueue()
+        try manager.connect("host-2")
+        var temporary = try fixture.store.host("host-0"); temporary.target = "temporary"
+        try manager.connect(temporary, temporary: true)
+        try manager.connect(Host(id: "unsaved", name: "Unsaved", target: "transient"), temporary: true)
+        fixture.sessions[0].connected(); fixture.sessions[1].lost()
+        manager.wake(); let stale = try XCTUnwrap(fixture.clock.jobs.last)
+        let bytes = try Data(contentsOf: fixture.store.file)
+        let starts = fixture.sessions.map { $0.starts.count }
+        XCTAssertTrue(manager.canDisconnectAll)
+        manager.disconnectAll(); manager.disconnectAll(); drainMainQueue()
+        stale.action(); manager.wake(); manager.networkChanged(available: false)
+        manager.networkChanged(available: true); fixture.clock.advance(to: 100)
+        XCTAssertEqual(fixture.sessions.map { $0.starts.count }, starts)
+        XCTAssertTrue(manager.hosts.allSatisfy { manager.runtime($0.id)?.state == .disconnected && manager.runtime($0.id)?.desiredConnected == false })
+        XCTAssertFalse(manager.canDisconnectAll)
+        XCTAssertEqual(try Data(contentsOf: fixture.store.file), bytes)
+        XCTAssertEqual(manager.hosts.count, 4)
+        XCTAssertEqual(manager.runtime("host-0")?.temporary, true)
+        try manager.connect("host-0")
+        XCTAssertEqual(fixture.sessions[0].starts.last?.target, "temporary")
+        try manager.connect("unsaved")
+        XCTAssertEqual(fixture.sessions[3].starts.last?.target, "transient")
+        manager.disconnectAll(); drainMainQueue()
+        try manager.reconnectAll(); drainMainQueue()
+        XCTAssertEqual(fixture.sessions[0].starts.last?.target, "server-0")
+        XCTAssertFalse(manager.runtime("host-2")!.desiredConnected)
+        XCTAssertFalse(manager.runtime("unsaved")!.desiredConnected)
+    }
+    func testDisconnectAllInvalidatesFullReconnectAndPendingConnect() throws {
+        let fixture = try ManagerFixture(count: 2)
+        let manager = fixture.manager!
+        try manager.startAll(); drainMainQueue()
+        for session in fixture.sessions { session.holdStops = true }
+        try manager.reconnectAll()
+        try manager.connect("host-0")
+        manager.disconnectAll()
+        XCTAssertTrue(manager.isDisconnectingAll)
+        XCTAssertFalse(manager.canDisconnectAll)
+        fixture.sessions[0].finishStops(); drainMainQueue()
+        XCTAssertTrue(manager.isDisconnectingAll)
+        fixture.sessions[1].finishStops(); drainMainQueue()
+        XCTAssertFalse(manager.isDisconnectingAll)
+        XCTAssertEqual(fixture.sessions.map { $0.starts.count }, [1, 1])
+        var exited = false; manager.onExit = { exited = true }
+        manager.quit()
+        for session in fixture.sessions { session.finishStops() }
+        drainMainQueue(); XCTAssertTrue(exited)
+    }
+    func testDisconnectAllDoesNotReadDamagedConfigurationAndHandlesEmptyHosts() throws {
+        let empty = try ManagerFixture(count: 0)
+        empty.manager.disconnectAll()
+        XCTAssertFalse(empty.manager.isDisconnectingAll)
+        let fixture = try ManagerFixture(count: 1)
+        try fixture.manager.connect("host-0")
+        let damaged = Data("{broken".utf8); try damaged.write(to: fixture.store.file)
+        fixture.manager.disconnectAll(); drainMainQueue()
+        XCTAssertEqual(fixture.manager.runtime("host-0")?.state, .disconnected)
+        XCTAssertEqual(try Data(contentsOf: fixture.store.file), damaged)
+    }
     func testQuitAlsoWaitsForDeletedHostCleanup() throws {
         let fixture = try ManagerFixture(count: 1)
         let manager = fixture.manager!

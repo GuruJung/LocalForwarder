@@ -13,8 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version:
+    name: Product version and release checks
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate version and release behavior
+        run: |
+          python3 scripts/version.py --check
+          python3 -m unittest discover -s tests -p 'test_release*.py'
+      - name: Read product version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            python3 scripts/version.py --check --tag "$REF_NAME"
+          fi
+          echo "version=$(python3 scripts/version.py --print)" >> "$GITHUB_OUTPUT"
+
   macos:
     name: macOS 15 Apple Silicon
+    needs: version
     runs-on: macos-15
     timeout-minutes: 25
     steps:
@@ -24,8 +47,8 @@ jobs:
       - name: Upload macOS package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: LocalForwarder-macos-arm64
-          path: dist/LocalForwarder-macos-arm64.zip
+          name: LocalForwarder-${{ needs.version.outputs.version }}-macos-arm64
+          path: dist/LocalForwarder-${{ needs.version.outputs.version }}-macos-arm64.zip
           if-no-files-found: error
           retention-days: 7
       - name: Upload evaluation evidence
@@ -39,6 +62,7 @@ jobs:
 
   windows:
     name: Windows ${{ matrix.arch }}
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -60,8 +84,8 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: LocalForwarder-windows-${{ matrix.arch }}
-          path: dist/LocalForwarder-windows-${{ matrix.arch }}.zip
+          name: LocalForwarder-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}
+          path: dist/LocalForwarder-${{ needs.version.outputs.version }}-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
           retention-days: 7
       - name: Upload evaluation evidence
@@ -74,3 +98,28 @@ jobs:
             dist/windows-*-tests.xml
           if-no-files-found: warn
           retention-days: 7
+
+  release:
+    name: Publish verified version tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download this run's packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: LocalForwarder-${{ needs.version.outputs.version }}-*
+          path: dist/release
+          merge-multiple: true
+      - name: Verify packages and publish all three together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REVISION: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: >-
+          python3 scripts/release.py --artifacts dist/release
+          --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --repo "$RELEASE_REPOSITORY"

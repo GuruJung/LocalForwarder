@@ -3,6 +3,7 @@
 #include "session.hpp"
 #include "settings.hpp"
 #include "presentation.hpp"
+#include "product_version.hpp"
 #include "yyjson.h"
 #include <commctrl.h>
 #include <commdlg.h>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <set>
@@ -30,6 +32,7 @@ constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
 constexpr wchar_t FormClass[]=L"LocalForwarder.MultiHost.Form";
 constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
+constexpr wchar_t ProjectURL[]=L"https://github.com/GuruJung/LocalForwarder";
 enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleDescription,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
 RECT availableWorkArea(HMONITOR display){
@@ -158,6 +161,88 @@ class App{
     HWND window_=nullptr,settingsWindow_=nullptr,form_=nullptr,status_=nullptr,ruleWindow_=nullptr;HFONT font_=nullptr,statusFont_=nullptr,ruleFont_=nullptr;HICON icon_=nullptr;
     std::map<int,HWND> controls_;int rule_=-1,scroll_=0;UINT taskbarCreated_=0;NOTIFYICONDATAW tray_{};std::set<std::string> authPending_;
     std::optional<RuleDraft> ruleDraft_;bool creatingRule_=false;
+    bool appModal_=false;
+    HWND appModalWindow_=nullptr;
+    std::function<void(HWND,const TASKDIALOGCONFIG&)> dialogTest_;
+    struct DialogContext { App* app; const TASKDIALOGCONFIG* config; std::exception_ptr error; };
+    struct OwnerDialogProbe { std::function<void(HWND)> activate; std::exception_ptr error; };
+    static inline thread_local OwnerDialogProbe* ownerDialogProbe_=nullptr;
+    static LRESULT CALLBACK ownerDialogProbeHook(int code,WPARAM value,LPARAM data){
+        if(code==HCBT_ACTIVATE&&ownerDialogProbe_){
+            try{ownerDialogProbe_->activate(reinterpret_cast<HWND>(value));}
+            catch(...){ownerDialogProbe_->error=std::current_exception();PostMessageW(reinterpret_cast<HWND>(value),WM_CLOSE,0,0);}
+        }
+        return CallNextHookEx(nullptr,code,value,data);
+    }
+    bool foregroundModal(){
+        HWND modal=appModalWindow_?appModalWindow_:(ruleWindow_?ruleWindow_:status_);
+        // Native message boxes and file pickers disable their owner without using
+        // our dialog fields. The tray's hidden window can still receive messages.
+        if(!modal){
+            if(settings_.open&&settingsWindow_&&!IsWindowEnabled(settingsWindow_))modal=settingsWindow_;
+            else if(window_&&!IsWindowEnabled(window_))modal=window_;
+        }
+        bool blocked=appModal_||modal;
+        std::set<HWND> visited;
+        while(modal&&!IsWindowEnabled(modal)&&visited.insert(modal).second){
+            HWND popup=GetLastActivePopup(modal);
+            if(!popup||popup==modal||!IsWindow(popup))break;
+            modal=popup;
+        }
+        if(modal&&IsWindowVisible(modal))SetForegroundWindow(modal);
+        return blocked;
+    }
+    static HRESULT CALLBACK dialogCallback(HWND hwnd,UINT notification,WPARAM elapsed,LPARAM value,LONG_PTR data){
+        auto& context=*reinterpret_cast<DialogContext*>(data);auto& app=*context.app;
+        if(notification==TDN_CREATED){
+            app.appModalWindow_=hwnd;
+            if(app.dialogTest_)try{app.dialogTest_(hwnd,*context.config);}catch(...){context.error=std::current_exception();PostMessageW(hwnd,TDM_CLICK_BUTTON,IDCANCEL,0);}
+        }else if(notification==TDN_TIMER&&app.dialogTest_&&elapsed>=3000){
+            if(!context.error)context.error=std::make_exception_ptr(std::runtime_error("native TaskDialog test did not complete: "+utf8(context.config->pszWindowTitle)));
+            PostMessageW(hwnd,TDM_CLICK_BUTTON,IDCANCEL,0);
+        }else if(notification==TDN_DESTROYED)app.appModalWindow_=nullptr;
+        else if(notification==TDN_HYPERLINK_CLICKED&&value&&std::wstring(reinterpret_cast<const wchar_t*>(value))==ProjectURL){
+            if(reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd,L"open",ProjectURL,nullptr,nullptr,SW_SHOWNORMAL))<=32)
+                SendMessageW(hwnd,TDM_SET_ELEMENT_TEXT,TDE_FOOTER,reinterpret_cast<LPARAM>(L"기본 브라우저를 열 수 없습니다. GitHub 주소를 직접 열어 주세요."));
+        }
+        return S_OK;
+    }
+    int appDialog(TASKDIALOGCONFIG& config){
+        HWND focus=GetFocus();DialogContext context{this,&config,{}};
+        config.cbSize=sizeof(config);config.hwndParent=settings_.open?settingsWindow_:window_;
+        config.dwFlags|=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;
+        if(dialogTest_)config.dwFlags|=TDF_CALLBACK_TIMER;
+        config.pfCallback=dialogCallback;config.lpCallbackData=reinterpret_cast<LONG_PTR>(&context);
+        appModal_=true;int result=IDCANCEL;auto status=TaskDialogIndirect(&config,&result,nullptr,nullptr);
+        appModalWindow_=nullptr;appModal_=false;
+        if(!quitting_&&focus&&IsWindow(focus)&&IsWindowEnabled(focus))SetFocus(focus);
+        if(context.error)std::rethrow_exception(context.error);
+        if(FAILED(status))throw std::runtime_error("대화상자를 열 수 없습니다.");
+        return result;
+    }
+    void showAbout(){
+        if(quitting_||foregroundModal())return;
+        std::wstring content=L"버전 "+wide(productVersion)+L"\n개발자 GuruJung\n\n<a href=\""+ProjectURL+L"\">"+ProjectURL+L"</a>";
+        TASKDIALOG_BUTTON close{IDCANCEL,L"닫기"};TASKDIALOGCONFIG config{};
+        config.pszWindowTitle=L"About LocalForwarder";config.pszMainInstruction=L"LocalForwarder";config.pszContent=content.c_str();
+        config.dwFlags=TDF_USE_HICON_MAIN|TDF_ENABLE_HYPERLINKS;config.hMainIcon=icon_;
+        config.cButtons=1;config.pButtons=&close;config.nDefaultButton=IDCANCEL;
+        appDialog(config);
+    }
+    bool hasDisconnectTargets()const{
+        for(const auto& host:manager_->hosts())if(auto r=manager_->runtime(host.id);r&&(r->desiredConnected||r->state!=ConnectionState::disconnected))return true;
+        return false;
+    }
+    bool canDisconnectAll()const{return !quitting_&&!appModal_&&!manager_->isDisconnectingAll()&&hasDisconnectTargets();}
+    void confirmDisconnectAll(){
+        if(quitting_||foregroundModal()||!canDisconnectAll())return;
+        TASKDIALOG_BUTTON buttons[]={{1001,L"연결 끊기"},{IDCANCEL,L"취소"}};
+        TASKDIALOGCONFIG config{};config.pszWindowTitle=L"전체 연결 끊기";
+        config.pszMainInstruction=L"모든 호스트의 연결을 끊으시겠습니까?";
+        config.pszContent=L"연결 중 작업, 재시도 및 자동 복구 대기도 취소합니다. 저장된 자동 연결 옵션과 편집 내용은 유지됩니다.";
+        config.cButtons=2;config.pButtons=buttons;config.nDefaultButton=IDCANCEL;
+        if(appDialog(config)==1001&&!quitting_)manager_->disconnectAll();
+    }
     int scale(int value)const{return MulDiv(value,window_?uiDpi(settingsWindow_?settingsWindow_:window_):96,96);}
     HWND control(int id)const{auto it=controls_.find(id);return it==controls_.end()?nullptr:it->second;}
     void set(int id,const std::wstring& value){if(control(id))setText(control(id),value);}
@@ -168,7 +253,7 @@ class App{
     void label(int id,const wchar_t* text){make(form_,id,L"STATIC",text,0);}
     void updateFont(){HFONT old=font_;font_=CreateFontW(-MulDiv(10,uiDpi(settingsWindow_?settingsWindow_:window_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(auto& [id,h]:controls_)SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);if(old)DeleteObject(old);if(status_)updateStatusFont();if(ruleWindow_)updateRuleFont();}
     void updateStatusFont(){if(!status_)return;HFONT old=statusFont_;statusFont_=CreateFontW(-MulDiv(10,uiDpi(status_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(statusFont_),TRUE);if(old)DeleteObject(old);}
-    int choose(const wchar_t* title,const wchar_t* body,const std::vector<std::pair<int,const wchar_t*>>& choices,int defaultButton){std::vector<TASKDIALOG_BUTTON> buttons;for(auto& choice:choices)buttons.push_back({choice.first,choice.second});TASKDIALOGCONFIG config{};config.cbSize=sizeof(config);config.hwndParent=settingsWindow_;config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"LocalForwarder";config.pszMainInstruction=title;config.pszContent=body;config.cButtons=static_cast<UINT>(buttons.size());config.pButtons=buttons.data();config.nDefaultButton=defaultButton;int result=IDCANCEL;if(FAILED(TaskDialogIndirect(&config,&result,nullptr,nullptr)))throw std::runtime_error("확인 대화상자를 열 수 없습니다.");return result;}
+    int choose(const wchar_t* title,const wchar_t* body,const std::vector<std::pair<int,const wchar_t*>>& choices,int defaultButton){std::vector<TASKDIALOG_BUTTON> buttons;for(auto& choice:choices)buttons.push_back({choice.first,choice.second});TASKDIALOGCONFIG config{};config.cbSize=sizeof(config);config.hwndParent=settingsWindow_;config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"LocalForwarder";config.pszMainInstruction=title;config.pszContent=body;config.cButtons=static_cast<UINT>(buttons.size());config.pButtons=buttons.data();config.nDefaultButton=defaultButton;return appDialog(config);}
 public:
     App(HINSTANCE instance,fs::path directory,bool test,bool start,bool openConfig,std::string config,bool uiTest=false,bool uiPreview=false,std::shared_ptr<LoginStartup> startup={}):instance_(instance),directory_(std::move(directory)),test_(test),start_(start),openConfig_(openConfig),uiTest_(uiTest),uiPreview_(uiPreview),sshConfig_(std::move(config)),loginStartup_(startup?std::move(startup):(test?std::shared_ptr<LoginStartup>(std::make_shared<PreviewLoginStartup>()):std::make_shared<RegistryLoginStartup>(executablePath()))){}
     ~App(){lifetime_.reset();network_.stop();if(loop_)loop_->detach();manager_.reset();if(trayAdded_)Shell_NotifyIconW(NIM_DELETE,&tray_);if(ruleWindow_)DestroyWindow(ruleWindow_);if(status_)DestroyWindow(status_);if(settingsWindow_)DestroyWindow(settingsWindow_);if(window_)DestroyWindow(window_);if(font_)DeleteObject(font_);if(statusFont_)DeleteObject(statusFont_);if(ruleFont_)DeleteObject(ruleFont_);clearMenuBitmaps();if(icon_)DestroyIcon(icon_);}
@@ -180,13 +265,15 @@ public:
         auto post=loop_->poster();auto schedule=loop_->scheduler();auto directory=directory_;auto config=sshConfig_;
         manager_=std::make_unique<ConnectionManager>(StoreAccess{[directory]{return loadConfig(directory);},[directory](const std::string& id){return loadHost(directory,id);},[directory](const std::string& id){deleteHost(directory,id);}},[post,schedule,config,uiTest=uiTest_,uiPreview=uiPreview_]()->std::shared_ptr<SSHSessionProtocol>{if(uiTest)return std::make_shared<PreviewSession>(uiPreview);return std::make_shared<SSHSession>(post,schedule,config);},schedule);
         manager_->onChange=[this]{refresh();};manager_->onError=[this](const std::string&,const std::string& text){if(test_)error(text);else refresh();};manager_->onExit=[this]{finishQuit();};
-        if(!test_||uiPreview_){icon_=static_cast<HICON>(LoadImageW(instance_,MAKEINTRESOURCEW(2),IMAGE_ICON,32,32,0));if(!icon_)icon_=forwardingIcon();taskbarCreated_=RegisterWindowMessageW(L"TaskbarCreated");updateTray();try{if(!uiPreview_){std::weak_ptr<int> alive=lifetime_;network_.start(post,[this,alive](bool available){if(!alive.expired()&&!quitting_)manager_->networkChanged(available);});}}catch(const std::exception& e){error(e.what());}}
+        icon_=static_cast<HICON>(LoadImageW(instance_,MAKEINTRESOURCEW(2),IMAGE_ICON,32,32,0));if(!icon_)icon_=forwardingIcon();
+        if(!test_||uiPreview_){taskbarCreated_=RegisterWindowMessageW(L"TaskbarCreated");updateTray();try{if(!uiPreview_){std::weak_ptr<int> alive=lifetime_;network_.start(post,[this,alive](bool available){if(!alive.expired()&&!quitting_)manager_->networkChanged(available);});}}catch(const std::exception& e){error(e.what());}}
         try{manager_->reloadConfiguration();if(uiPreview_){manager_->connect("a");openSettings({},true);}else if(test_){if(start_)manager_->startAll();}else if(openConfig_||!fs::exists(directory_/L"config.json"))openSettings({},true);else manager_->startAll();}
         catch(const std::exception& e){if(!test_)openSettings({},true);error(std::string(e.what())+"\n기존 설정 파일은 보존했습니다.");}
         if(test_&&!uiTest_){snapshot();outputLine("LF_READY");startInput();}
     }
     HWND settingsWindow()const{return settingsWindow_;}HWND statusWindow()const{return status_;}
     bool preprocess(MSG& message){
+        if(appModal_)return appModalWindow_&&IsDialogMessageW(appModalWindow_,&message);
         HWND dialog=ruleWindow_?ruleWindow_:(status_?status_:(settings_.open?settingsWindow_:nullptr));
         if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_ESCAPE){if(ruleWindow_)closeRule(false);else if(status_)closeStatus();else closeSettings(false);return true;}
         if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_RETURN&&dialog==status_){closeStatus();return true;}
@@ -261,7 +348,7 @@ private:
         int row=h<260?30:36,first=h<260?36:48,footer=h-44;
         place(RuleEnabled,16,8,w-32,24);place(323,16,first+4,110,22);place(RuleDescription,136,first,w-152,26);place(320,16,first+row+4,110,22);place(LocalPort,136,first+row,w-152,26);place(321,16,first+row*2+4,110,22);place(RemoteHost,136,first+row*2,w-152,26);place(322,16,first+row*3+4,110,22);place(RemotePort,136,first+row*3,w-152,26);place(RuleOkay,w-196,footer,84,30);place(RuleCancel,w-100,footer,84,30);
     }
-    void showRule(bool creating){if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
+    void showRule(bool creating){if(appModal_){foregroundModal();return;}if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
         if(!creating&&(rule_<0||static_cast<size_t>(rule_)>=host.forwards.size()))return;
         ruleDraft_.emplace(creating?Forward{newId(),true,8080,"localhost",80}:host.forwards[rule_]);creatingRule_=creating;settings_.modalHost=settings_.selected;
         ruleWindow_=CreateWindowExW(WS_EX_CONTROLPARENT,RuleClass,creating?L"새 규칙":L"규칙 편집",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(460),scale(280),settingsWindow_,nullptr,instance_,this);
@@ -284,11 +371,11 @@ private:
     }
     void fill(){loading_=true;if(settings_.drafts.contains(settings_.selected)){auto& d=settings_.drafts.at(settings_.selected);set(Name,wide(d.host.name));set(Description,wide(d.host.description));set(Target,wide(d.host.target));set(User,wide(d.host.user));set(Port,wide(d.port));set(Key,wide(d.host.identityFile));SendMessageW(control(AutoConnect),BM_SETCHECK,d.host.autoConnect?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(control(ExitFailure),BM_SETCHECK,d.host.exitOnForwardFailure?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(control(RetryRefused),BM_SETCHECK,d.host.retryOnConnectionRefused?BST_CHECKED:BST_UNCHECKED,0);}loading_=false;rule_=-1;fillRules();fillRuleEditor();populateHosts();preview();refreshButtons();}
     void addHost(){Host host;host.id=newId();host.name="새 호스트";settings_.add(host);fill();}
-    void openSettings(const std::string& id={},bool startup=false){if(quitting_)return;if(settings_.open){if(!status_&&!ruleWindow_&&!id.empty()){capture();if(settings_.select(id))fill();}ShowWindow(settingsWindow_,SW_RESTORE);SetForegroundWindow(ruleWindow_?ruleWindow_:(status_?status_:settingsWindow_));return;}
+    void openSettings(const std::string& id={},bool startup=false){if(quitting_||foregroundModal())return;if(settings_.open){if(!status_&&!ruleWindow_&&!id.empty()){capture();if(settings_.select(id))fill();}ShowWindow(settingsWindow_,SW_RESTORE);SetForegroundWindow(ruleWindow_?ruleWindow_:(status_?status_:settingsWindow_));return;}
         if(!settingsWindow_)createSettings();Config saved;std::vector<Host> transient;std::string failure;try{manager_->reloadConfiguration();saved=loadConfig(directory_);for(auto host:manager_->hosts()){auto runtime=manager_->runtime(host.id);if(runtime&&runtime->executionHost)host=*runtime->executionHost;transient.push_back(host);}}catch(const std::exception& e){failure=e.what();}
         settings_.load(saved,transient,startup);if(settings_.order.empty())addHost();if(!id.empty())settings_.select(id);fill();ShowWindow(settingsWindow_,SW_SHOW);SetForegroundWindow(settingsWindow_);if(!failure.empty())error(failure);
     }
-    void closeSettings(bool accepted){if(!settings_.open||ruleWindow_||status_)return;capture();if(accepted&&settings_.anyDirty()){if(choose(L"저장하지 않은 편집 내용이 있습니다.",L"OK는 자동 저장하지 않습니다. 이미 저장하거나 연결에 적용한 결과는 유지됩니다.",{{1001,L"계속 편집"},{1002,L"저장하지 않고 닫기"}},1001)!=1002)return;}closeStatus();bool connect=settings_.close(accepted);ShowWindow(settingsWindow_,SW_HIDE);if(connect)try{manager_->startAll();}catch(const std::exception& e){error(e.what());}}
+    void closeSettings(bool accepted){if(appModal_||!settings_.open||ruleWindow_||status_)return;capture();if(accepted&&settings_.anyDirty()){if(choose(L"저장하지 않은 편집 내용이 있습니다.",L"OK는 자동 저장하지 않습니다. 이미 저장하거나 연결에 적용한 결과는 유지됩니다.",{{1001,L"계속 편집"},{1002,L"저장하지 않고 닫기"}},1001)!=1002)return;}closeStatus();bool connect=settings_.close(accepted);ShowWindow(settingsWindow_,SW_HIDE);if(connect)try{manager_->startAll();}catch(const std::exception& e){error(e.what());}}
     Host saveSelected(){capture();auto host=settings_.validated();saveHost(directory_,host);manager_->saved(host);settings_.saved(host);populateHosts();refreshButtons();return host;}
     void connectSelected(){capture();auto host=settings_.validated();if(settings_.dirty(host.id)){int answer=choose(L"편집한 설정으로 연결·재연결합니다.",L"저장 없이 연결한 값은 이번 앱 실행 동안 유지됩니다.",{{1001,L"저장 후 재연결"},{1002,L"저장 없이 재연결"},{IDCANCEL,L"취소"}},1001);if(answer==1001){host=saveSelected();manager_->connect(host,false);}else if(answer==1002)manager_->connect(host,true);}else manager_->connect(host.id);}
     void authenticate(){if(uiPreview_)return;capture();if(authPending_.contains(settings_.selected))return;if(choose(L"선택한 호스트의 인증을 설정합니다.",L"선택한 호스트를 저장하고 외부 터미널에서 지문과 비밀번호를 확인합니다. 앱과 다른 연결은 유지되며 완료 후 연결은 직접 요청하세요.",{{1001,L"저장 후 터미널 열기"},{IDCANCEL,L"취소"}},1001)!=1001)return;Host original=saveSelected();authPending_.insert(original.id);refreshButtons();std::weak_ptr<int> alive=lifetime_;
@@ -297,7 +384,7 @@ private:
     }
     void refreshButtons(){if(!settings_.open)return;auto runtime=manager_->runtime(settings_.selected);bool busy=runtime&&(runtime->state==ConnectionState::connecting||runtime->state==ConnectionState::stopping);EnableWindow(control(Connect),!busy&&!quitting_);EnableWindow(control(Authentication),!uiPreview_&&!quitting_&&!authPending_.contains(settings_.selected));}
     void chooseKey(){std::vector<wchar_t> file(32768,0);auto value=get(Key);std::copy_n(value.begin(),std::min(value.size(),file.size()-1),file.begin());OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);dialog.hwndOwner=settingsWindow_;dialog.lpstrFile=file.data();dialog.nMaxFile=static_cast<DWORD>(file.size());dialog.lpstrTitle=L"개인키 파일 선택";dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;if(GetOpenFileNameW(&dialog)){set(Key,file.data());capture();preview();populateHosts();}}
-    void showStatus(){if(ruleWindow_)return;capture();if(status_){SetForegroundWindow(status_);return;}settings_.showStatus();if(settings_.modalHost.empty())return;status_=CreateWindowExW(WS_EX_CONTROLPARENT,StatusClass,L"현재 연결 상태",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(760),scale(520),settingsWindow_,nullptr,instance_,this);if(!status_){settings_.closeStatus();throw std::runtime_error(winError());}centerInWorkArea(status_,760,520,settingsWindow_);
+    void showStatus(){if(appModal_){foregroundModal();return;}if(ruleWindow_)return;capture();if(status_){SetForegroundWindow(status_);return;}settings_.showStatus();if(settings_.modalHost.empty())return;status_=CreateWindowExW(WS_EX_CONTROLPARENT,StatusClass,L"현재 연결 상태",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(760),scale(520),settingsWindow_,nullptr,instance_,this);if(!status_){settings_.closeStatus();throw std::runtime_error(winError());}centerInWorkArea(status_,760,520,settingsWindow_);
         make(status_,StatusHeading,L"STATIC",L"",0);make(status_,StatusSummary,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusForwards,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP|WS_BORDER);ListView_SetExtendedListViewStyle(control(StatusForwards),LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);const wchar_t* names[]={L"규칙",L"출처",L"상태",L"상세"};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(names[i]);col.cx=scale(i==0?200:120);ListView_InsertColumn(control(StatusForwards),i,&col);}
         make(status_,StatusErrors,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusClose,L"BUTTON",L"닫기",WS_TABSTOP|BS_DEFPUSHBUTTON);EnableWindow(settingsWindow_,FALSE);updateStatusFont();layoutStatus();refreshStatus();ShowWindow(status_,SW_SHOW);SetForegroundWindow(status_);SetFocus(control(StatusClose));
     }
@@ -339,6 +426,7 @@ private:
         case MenuIcon::connect:line(2,8,14,8);line(10,4,14,8);line(14,8,10,12);break;
         case MenuIcon::disconnect:Rectangle(dc,x(4),x(4),x(13),x(13));break;
         case MenuIcon::edit:line(3,13,12,4);line(5,15,14,6);line(12,4,14,6);line(3,13,3,15);line(3,15,5,15);break;
+        case MenuIcon::about:circle();line(8,7,8,12);line(8,4,8,5);break;
         case MenuIcon::quit:line(8,1,8,8);Arc(dc,x(2),x(2),x(15),x(15),x(5),x(2),x(11),x(2));break;
         }
         SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(pen);GdiFlush();auto* values=static_cast<DWORD*>(pixels);for(int i=0;i<n*n;++i)if(values[i]&0xffffff)values[i]|=0xff000000;
@@ -368,21 +456,21 @@ private:
             if(connected||working){if(GetMenuState(menu.menu,menu.disconnect,MF_BYCOMMAND)==UINT(-1))InsertMenuW(menu.menu,menu.settings,MF_BYCOMMAND|MF_STRING,menu.disconnect,L"끊기");menuItem(menu.menu,menu.disconnect,L"끊기",MenuIcon::disconnect,!quitting_);}else DeleteMenu(menu.menu,menu.disconnect,MF_BYCOMMAND);
             menuItem(menu.menu,menu.settings,L"호스트 설정",MenuIcon::edit);
         }
-        menuItem(activeMenu_,1,L"설정",MenuIcon::settings);menuItem(activeMenu_,2,L"전체 재연결",MenuIcon::reconnect,!busy&&!quitting_);menuItem(activeMenu_,3,L"종료",MenuIcon::quit);
+        menuItem(activeMenu_,1,L"설정",MenuIcon::settings);menuItem(activeMenu_,2,L"전체 재연결",MenuIcon::reconnect,!busy&&!quitting_);menuItem(activeMenu_,5,L"전체 연결 끊기",MenuIcon::disconnect,canDisconnectAll());menuItem(activeMenu_,6,L"About...",MenuIcon::about,!quitting_);menuItem(activeMenu_,3,L"종료",MenuIcon::quit);
     }
     void createTrayMenu(){activeMenu_=CreatePopupMenu();menus_.clear();menuActions_.clear();menuNext_=100;menuDpi_=uiDpi(settingsWindow_?settingsWindow_:window_);
-        AppendMenuW(activeMenu_,MF_STRING,1,L"설정");appendLoginStartupMenu(activeMenu_,4,loginStartup_);AppendMenuW(activeMenu_,MF_STRING,2,L"전체 재연결");AppendMenuW(activeMenu_,MF_SEPARATOR,0,nullptr);
+        AppendMenuW(activeMenu_,MF_STRING,1,L"설정");appendLoginStartupMenu(activeMenu_,4,loginStartup_);AppendMenuW(activeMenu_,MF_STRING,2,L"전체 재연결");AppendMenuW(activeMenu_,MF_STRING,5,L"전체 연결 끊기");AppendMenuW(activeMenu_,MF_SEPARATOR,0,nullptr);
         for(auto& host:manager_->hosts()){HostMenu menu;menu.menu=CreatePopupMenu();menu.summary=menuNext_++;menu.connect=menuNext_++;menu.disconnect=menuNext_++;menu.settings=menuNext_++;
             AppendMenuW(menu.menu,MF_STRING|MF_GRAYED,menu.summary,L"SSH 상태");AppendMenuW(menu.menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu.menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu.menu,MF_STRING,menu.connect,L"연결");AppendMenuW(menu.menu,MF_STRING,menu.disconnect,L"끊기");AppendMenuW(menu.menu,MF_STRING,menu.settings,L"호스트 설정");menuActions_[menu.connect]={host.id,1};menuActions_[menu.disconnect]={host.id,2};menuActions_[menu.settings]={host.id,3};AppendMenuW(activeMenu_,MF_POPUP,reinterpret_cast<UINT_PTR>(menu.menu),menuText(host.name).c_str());menus_[host.id]=std::move(menu);
         }
-        AppendMenuW(activeMenu_,MF_SEPARATOR,0,nullptr);AppendMenuW(activeMenu_,MF_STRING,3,L"종료");updateMenu();
+        AppendMenuW(activeMenu_,MF_SEPARATOR,0,nullptr);AppendMenuW(activeMenu_,MF_STRING,6,L"About...");AppendMenuW(activeMenu_,MF_STRING,3,L"종료");updateMenu();
     }
     void destroyTrayMenu(){if(activeMenu_)DestroyMenu(activeMenu_);activeMenu_=nullptr;menus_.clear();clearMenuBitmaps();}
-    void trayMenu(){if(quitting_||menuOpen_)return;createTrayMenu();POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);menuOpen_=true;UINT selected=TrackPopupMenuEx(activeMenu_,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,window_,nullptr);menuOpen_=false;destroyTrayMenu();PostMessageW(window_,WM_NULL,0,0);
-        try{if(selected==1)openSettings();else if(selected==4){auto message=loginStartup_.toggle();if(!message.empty()){if(test_)error(message);else MessageBoxW(window_,wide(message).c_str(),L"로그인 자동 시작",MB_OK|MB_ICONWARNING);}}else if(selected==2)manager_->reconnectAll();else if(selected==3)quit();else if(menuActions_.contains(selected)){auto [id,operation]=menuActions_.at(selected);if(operation==1)manager_->connect(id);else if(operation==2)manager_->disconnect(id);else openSettings(id);}}catch(const std::exception& e){error(e.what());}menuActions_.clear();
+    void trayMenu(){if(quitting_||menuOpen_||foregroundModal())return;createTrayMenu();POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);menuOpen_=true;UINT selected=TrackPopupMenuEx(activeMenu_,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,window_,nullptr);menuOpen_=false;destroyTrayMenu();PostMessageW(window_,WM_NULL,0,0);
+        try{if(selected==1)openSettings();else if(selected==4){auto message=loginStartup_.toggle();if(!message.empty()){if(test_)error(message);else MessageBoxW(window_,wide(message).c_str(),L"로그인 자동 시작",MB_OK|MB_ICONWARNING);}}else if(selected==2)manager_->reconnectAll();else if(selected==5)confirmDisconnectAll();else if(selected==6)showAbout();else if(selected==3)quit();else if(menuActions_.contains(selected)){auto [id,operation]=menuActions_.at(selected);if(operation==1)manager_->connect(id);else if(operation==2)manager_->disconnect(id);else openSettings(id);}}catch(const std::exception& e){error(e.what());}menuActions_.clear();
     }
     void refresh(){if(!manager_)return;if(test_&&!uiTest_){snapshot();return;}updateTray();if(test_&&!uiPreview_&&menuOpen_)updateMenu();if(settings_.open){populateHosts();refreshButtons();refreshStatus();}}
-    void quit(){if(quitting_)return;quitting_=true;network_.stop();closeRule(false);closeStatus();for(auto& [id,cancel]:authObservers_)if(cancel)cancel();authObservers_.clear();manager_->quit();}
+    void quit(){if(quitting_)return;quitting_=true;if(appModalWindow_)SendMessageW(appModalWindow_,TDM_CLICK_BUTTON,IDCANCEL,0);network_.stop();closeRule(false);closeStatus();for(auto& [id,cancel]:authObservers_)if(cancel)cancel();authObservers_.clear();manager_->quit();}
     void finishQuit(){if(trayAdded_){Shell_NotifyIconW(NIM_DELETE,&tray_);trayAdded_=false;}loop_->detach();if(settingsWindow_)ShowWindow(settingsWindow_,SW_HIDE);PostQuitMessage(0);}
     void snapshot(const std::string& request={}){
         if(!test_||!manager_)return;for(auto& host:manager_->hosts()){auto r=manager_->runtime(host.id);if(!r)continue;
@@ -392,10 +480,10 @@ private:
     }
     void input(const std::string& line){if(quitting_)return;try{
         std::unique_ptr<yyjson_doc,decltype(&yyjson_doc_free)> doc(yyjson_read(line.data(),line.size(),0),yyjson_doc_free);if(!doc)throw std::runtime_error("명령 JSON이 올바르지 않습니다.");auto* root=yyjson_doc_get_root(doc.get());if(!yyjson_is_obj(root))throw std::runtime_error("명령은 JSON 객체여야 합니다.");auto text=[&](const char* key,bool required=true){auto* value=yyjson_obj_get(root,key);if(!yyjson_is_str(value)){if(!required)return std::string{};throw std::runtime_error(std::string("문자열 필드가 필요합니다: ")+key);}return std::string(yyjson_get_str(value),yyjson_get_len(value));};auto command=text("command");
-        if(command=="quit")quit();else if(command=="connect")manager_->connect(text("id"));else if(command=="disconnect")manager_->disconnect(text("id"));else if(command=="delete")manager_->remove(text("id"));else if(command=="saved")manager_->saved(loadHost(directory_,text("id")));else if(command=="reconnect-all")manager_->reconnectAll();else if(command=="wake")manager_->wake();else if(command=="sleep")manager_->sleep();else if(command=="network")manager_->networkChanged(yyjson_is_true(yyjson_obj_get(root,"available")));else if(command=="snapshot")snapshot(text("requestID",false));else if(command=="temporary"){auto* host=yyjson_obj_get(root,"host");if(!yyjson_is_obj(host))throw std::runtime_error("호스트 설정이 필요합니다.");char* value=yyjson_val_write(host,0,nullptr);if(!value)throw std::runtime_error("호스트 설정을 읽지 못했습니다.");std::string encoded=value;free(value);auto config=parseConfig("{\"version\":2,\"hosts\":["+encoded+"]}");manager_->connect(config.hosts.at(0),true);}else throw std::runtime_error("알 수 없는 명령: "+command);
+        if(command=="quit")quit();else if(command=="connect")manager_->connect(text("id"));else if(command=="disconnect")manager_->disconnect(text("id"));else if(command=="delete")manager_->remove(text("id"));else if(command=="saved")manager_->saved(loadHost(directory_,text("id")));else if(command=="reconnect-all")manager_->reconnectAll();else if(command=="disconnect-all")manager_->disconnectAll();else if(command=="wake")manager_->wake();else if(command=="sleep")manager_->sleep();else if(command=="network")manager_->networkChanged(yyjson_is_true(yyjson_obj_get(root,"available")));else if(command=="snapshot")snapshot(text("requestID",false));else if(command=="temporary"){auto* host=yyjson_obj_get(root,"host");if(!yyjson_is_obj(host))throw std::runtime_error("호스트 설정이 필요합니다.");char* value=yyjson_val_write(host,0,nullptr);if(!value)throw std::runtime_error("호스트 설정을 읽지 못했습니다.");std::string encoded=value;free(value);auto config=parseConfig("{\"version\":2,\"hosts\":["+encoded+"]}");manager_->connect(config.hosts.at(0),true);}else throw std::runtime_error("알 수 없는 명령: "+command);
         }catch(const std::exception& e){error(e.what());}}
     void startInput(){auto post=loop_->poster();std::weak_ptr<int> alive=lifetime_;std::thread([this,alive,post]{HANDLE handle=GetStdHandle(STD_INPUT_HANDLE);std::string line;char buffer[4096];DWORD count=0;while(ReadFile(handle,buffer,sizeof(buffer),&count,nullptr)&&count){for(DWORD i=0;i<count;++i){if(buffer[i]=='\n'){auto copy=line;line.clear();post([this,alive,copy]{if(!alive.expired())input(copy);});}else if(buffer[i]!='\r'){if(line.size()>=4*1024*1024){post([this,alive]{if(!alive.expired())quit();});return;}line+=buffer[i];}}}post([this,alive]{if(!alive.expired())quit();});}).detach();}
-    void command(int id,int notification){if(loading_||quitting_)return;try{
+    void command(int id,int notification){if(loading_||quitting_||appModal_)return;try{
         if(id==Hosts&&notification==LBN_SELCHANGE){capture();auto row=SendMessageW(control(Hosts),LB_GETCURSEL,0,0);if(row>=0&&static_cast<size_t>(row)<settings_.order.size()&&settings_.select(settings_.order[row]))fill();}
         else if(id==NewHost){capture();addHost();}
         else if(id==DeleteHost){capture();if(choose(L"이 호스트를 삭제할까요?",L"해당 호스트의 연결과 저장 설정을 제거합니다.",{{1001,L"호스트 삭제"},{IDCANCEL,L"취소"}},IDCANCEL)==1001){auto selected=settings_.selected;manager_->remove(selected);settings_.remove(selected);if(settings_.order.empty())addHost();else fill();}}
@@ -481,6 +569,116 @@ public:
         }
         previewDpi=previousDpi;updateFont();scroll_=0;SetWindowPos(settingsWindow_,nullptr,original.left,original.top,original.right-original.left,original.bottom-original.top,SWP_NOZORDER|SWP_NOACTIVATE);layoutSettings();
     }
+    void nativeOwnerModalChecks(HWND owner){
+        auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
+        struct Probe { bool active=true,scheduled=false,ran=false,trayOpened=false; int nested=0; std::exception_ptr error; };
+        auto probe=std::make_shared<Probe>();
+        auto selected=settings_.selected;auto drafts=settings_.drafts;
+        auto title=wide("LocalForwarder modal owner test "+newId());
+        const std::string ownerName=owner==window_?"hidden app":"settings";
+        dialogTest_=[probe](HWND dialog,const TASKDIALOGCONFIG&){++probe->nested;PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);};
+        // Observe the actual MessageBox activation, then run assertions through
+        // its normal message loop. No FindWindow race or guessed HWND is needed.
+        OwnerDialogProbe activation;
+        activation.activate=[this,probe,owner,title,selected,check,ownerName](HWND prompt){
+            if(probe->scheduled||GetWindow(prompt,GW_OWNER)!=owner||textOf(prompt)!=title)return;
+            probe->scheduled=true;outputLine("native owner probe activated: "+ownerName);
+            loop_->post([this,probe,owner,prompt,selected,check,ownerName]{
+                if(!probe->active)return;
+                probe->ran=true;outputLine("native owner probe callback: "+ownerName);
+                try{
+                    check(!IsWindowEnabled(owner)&&!appModal_,"native prompt disables owner without app modal registration");
+                    check(foregroundModal(),"disabled native owner blocks new app dialogs");
+                    showAbout();confirmDisconnectAll();openSettings(selected=="a"?"b":"a");
+                    SendMessageW(window_,WM_OPEN_SETTINGS,0,0);
+                    loop_->post([this,probe]{if(probe->active&&menuOpen_){probe->trayOpened=true;EndMenu();}});
+                    SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
+                    check(!probe->nested&&!probe->trayOpened&&settings_.selected==selected,"native warning blocks About disconnect tray and followup selection changes");
+                    check(!IsWindowEnabled(owner)&&IsWindow(prompt),"native warning remains the active modal");
+                    outputLine("native owner probe actions passed: "+ownerName);
+                }catch(...){probe->error=std::current_exception();}
+                // Close the real warning through its window-close path. Native
+                // MessageBox implementations need not expose an IDOK child HWND.
+                SendMessageW(prompt,WM_CLOSE,0,0);
+                outputLine("native owner probe dismissed: "+ownerName);
+            });
+        };
+        ownerDialogProbe_=&activation;
+        HHOOK hook=SetWindowsHookExW(WH_CBT,ownerDialogProbeHook,nullptr,GetCurrentThreadId());
+        if(!hook){ownerDialogProbe_=nullptr;dialogTest_={};throw std::runtime_error("cannot install native modal test hook");}
+        outputLine("native owner probe MessageBox start: "+ownerName);
+        int result=MessageBoxW(owner,L"모달 소유 관계 회귀 검사",title.c_str(),MB_OK|MB_ICONWARNING);
+        outputLine("native owner probe MessageBox returned: "+ownerName+" result="+std::to_string(result));
+        UnhookWindowsHookEx(hook);ownerDialogProbe_=nullptr;probe->active=false;dialogTest_={};
+        if(activation.error)std::rethrow_exception(activation.error);
+        if(probe->error)std::rethrow_exception(probe->error);
+        check(probe->ran&&result==IDOK&&IsWindowEnabled(owner),"native warning closes and restores its owner");
+        check(settings_.selected==selected&&settings_.drafts==drafts,"native warning probe preserves selection and drafts");
+    }
+    void nativeAppDialogChecks(){
+        outputLine("native app dialog checks started");
+        auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
+        openSettings();set(Name,L"About 모달 전 미저장 이름");capture();
+        auto drafts=settings_.drafts;auto selected=settings_.selected;auto saved=loadConfig(directory_);
+        auto execution=manager_->runtime("a")->executionHost;
+        nativeOwnerModalChecks(settingsWindow_);
+        nativeOwnerModalChecks(window_); // Login-startup warnings use this owner even while settings is open.
+        int shown=0;
+        for(int dismissal=0;dismissal<3;++dismissal){
+            outputLine("native About dismissal probe "+std::to_string(dismissal));
+            bool backgroundDelivered=false;
+            dialogTest_=[&,dismissal](HWND dialog,const TASKDIALOGCONFIG& config){
+                ++shown;
+                check(appModalWindow_==dialog&&!IsWindowEnabled(settingsWindow_),"About disables its settings owner");
+                check(config.hwndParent==settingsWindow_&&config.hMainIcon&&std::wstring(config.pszMainInstruction)==L"LocalForwarder","About has program icon and name");
+                auto content=std::wstring(config.pszContent);
+                check(content.find(wide(productVersion))!=std::wstring::npos&&content.find(L"GuruJung")!=std::wstring::npos&&content.find(ProjectURL)!=std::wstring::npos,"About has shared version developer and project link");
+                check((config.dwFlags&TDF_ENABLE_HYPERLINKS)!=0,"About project URL is clickable");
+                showAbout();confirmDisconnectAll();openSettings("b");trayMenu();
+                check(appModalWindow_==dialog&&settings_.selected==selected&&!activeMenu_,"reentrant actions retain the current modal and selection");
+                loop_->post([&,dialog,dismissal]{
+                    backgroundDelivered=true;refresh();
+                    if(dismissal==0)PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);
+                    else if(dismissal==1)PostMessageW(dialog,WM_KEYDOWN,VK_ESCAPE,0);
+                    else PostMessageW(dialog,WM_CLOSE,0,0);
+                });
+            };
+            showAbout();dialogTest_={};
+            check(backgroundDelivered&&!appModal_&&!appModalWindow_&&IsWindowEnabled(settingsWindow_),"About closes and keeps background event processing active");
+            check(settings_.drafts==drafts&&settings_.selected==selected&&manager_->runtime("a")->executionHost==execution&&manager_->runtime("a")->state==ConnectionState::connected,"About preserves drafts and existing connection");
+        }
+        check(shown==3,"About duplicate invocation creates no extra dialogs");
+        showStatus();showAbout();check(shown==3&&status_&&!IsWindowEnabled(settingsWindow_),"About does not nest over connection-status modal");closeStatus();
+        showRule(true);showAbout();check(shown==3&&ruleWindow_,"About does not nest over rule modal");closeRule(false);
+        createTrayMenu();check(GetMenuItemID(activeMenu_,2)==2&&GetMenuItemID(activeMenu_,3)==5,"disconnect-all immediately follows reconnect-all");
+        check(GetMenuItemID(activeMenu_,GetMenuItemCount(activeMenu_)-2)==6&&GetMenuItemID(activeMenu_,GetMenuItemCount(activeMenu_)-1)==3,"About immediately precedes quit");
+        check(!(GetMenuState(activeMenu_,5,MF_BYCOMMAND)&MF_GRAYED),"disconnect-all enabled for an active connection");destroyTrayMenu();
+        for(int dismissal=0;dismissal<4;++dismissal){
+            outputLine("native disconnect dismissal probe "+std::to_string(dismissal));
+            dialogTest_=[&,dismissal](HWND dialog,const TASKDIALOGCONFIG& config){
+                check(config.nDefaultButton==IDCANCEL&&config.cButtons==2&&!IsWindowEnabled(settingsWindow_),"disconnect confirmation defaults to cancel and is modal");
+                check(std::wstring(config.pszMainInstruction)==L"모든 호스트의 연결을 끊으시겠습니까?","disconnect confirmation instruction");
+                confirmDisconnectAll();
+                if(dismissal==0)PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);
+                else if(dismissal==1)PostMessageW(dialog,WM_KEYDOWN,VK_ESCAPE,0);
+                else if(dismissal==2)PostMessageW(dialog,WM_CLOSE,0,0);
+                else PostMessageW(dialog,WM_KEYDOWN,VK_RETURN,0);
+            };
+            confirmDisconnectAll();dialogTest_={};check(manager_->runtime("a")->state==ConnectionState::connected&&manager_->runtime("a")->desiredConnected,"cancel Escape and close preserve connection intent");
+        }
+        dialogTest_=[&](HWND dialog,const TASKDIALOGCONFIG&){
+            // The operation uses hosts at confirmation time, including manual OFF hosts.
+            manager_->connect("b");PostMessageW(dialog,TDM_CLICK_BUTTON,1001,0);
+        };
+        confirmDisconnectAll();dialogTest_={};
+        for(const auto& host:manager_->hosts())check(manager_->runtime(host.id)->state==ConnectionState::disconnected&&!manager_->runtime(host.id)->desiredConnected,"confirmed disconnect stops every current host");
+        check(settings_.drafts==drafts&&loadConfig(directory_)==saved,"confirmed disconnect preserves unsaved drafts and saved options");
+        createTrayMenu();check(GetMenuState(activeMenu_,5,MF_BYCOMMAND)&MF_GRAYED,"disconnect-all disabled without work or intent");destroyTrayMenu();
+        manager_->reconnectAll();check(manager_->runtime("a")->state==ConnectionState::connected&&!manager_->runtime("b")->desiredConnected,"full reconnect still uses saved auto-connect selection");
+        closeSettings(false);
+        dialogTest_=[&](HWND dialog,const TASKDIALOGCONFIG& config){check(config.hwndParent==window_&&!IsWindowEnabled(window_),"tray-only About owns the hidden application window");PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);};
+        showAbout();dialogTest_={};check(!settings_.open&&manager_->runtime("a")->state==ConnectionState::connected,"tray-only About does not open settings or stop SSH");
+    }
     void nativeChecks(const std::wstring& instanceKey){
         auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
         openSettings({},true);check(settings_.startup&&settings_.order.size()==2,"startup settings load");
@@ -546,6 +744,8 @@ public:
         check(manager_->runtime("a")->state==ConnectionState::connected&&!manager_->runtime("b")->desiredConnected,"native startup OK applies autoConnect selection");
         openSettings();set(Name,L"cancelled edit");closeSettings(false);check(loadHost(directory_,"a").name=="A","native cancel preserves saved value");
         check(manager_->runtime("a")->state==ConnectionState::connected,"native close keeps existing connection");
+        outputLine("native existing controller checks passed");
+        nativeAppDialogChecks();
         manager_->quit();outputLine("native UI controller tests passed");
     }
     LRESULT message(HWND hwnd,UINT msg,WPARAM w,LPARAM l){

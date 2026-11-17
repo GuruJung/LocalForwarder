@@ -3,7 +3,7 @@
 #include <algorithm>
 
 namespace lf {
-enum class MenuIcon { settings, reconnect, quit, connect, disconnect, edit, ready, disconnected, disabled, preparing, failed, unknown };
+enum class MenuIcon { settings, reconnect, about, quit, connect, disconnect, edit, ready, disconnected, disabled, preparing, failed, unknown };
 struct MenuForwardRow {
     std::string id, text;
     MenuIcon icon;

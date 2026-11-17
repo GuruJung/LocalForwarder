@@ -8,11 +8,13 @@ LocalForwarder is a small native app for managing SSH local forwarding on macOS 
 
 | System | CPU | Download |
 |---|---|---|
-| macOS 15 or later | Apple Silicon ARM64 | `LocalForwarder-macos-arm64.zip` |
-| Windows 11 | x64 | `LocalForwarder-windows-x64.zip` |
-| Windows 11 | ARM64 | `LocalForwarder-windows-arm64.zip` |
+| macOS 15 or later | Apple Silicon ARM64 | `LocalForwarder-<version>-macos-arm64.zip` |
+| Windows 11 | x64 | `LocalForwarder-<version>-windows-x64.zip` |
+| Windows 11 | ARM64 | `LocalForwarder-<version>-windows-arm64.zip` |
 
-Open a successful run in [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml) and download your platform's package from **Artifacts**. Downloads require a GitHub login and are retained for 7 days. Extract both the artifact archive and the distribution ZIP inside it, then run the `.app` on macOS or `.exe` on Windows. No installer is required.
+Download a published version from [GitHub Releases](https://github.com/GuruJung/LocalForwarder/releases). Replace `<version>` in the filenames above with the release version (starting at `0.1.0`). Extract the ZIP and run the `.app` or `.exe`.
+
+For development builds, open a successful run in [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml) and download your platform's package from **Artifacts**. Downloads require a GitHub login and are retained for 7 days. Extract both the artifact archive and the distribution ZIP inside it, then run the `.app` on macOS or `.exe` on Windows. No installer is required.
 
 The macOS app is ad-hoc signed and is not notarized; Windows builds do not have a signing certificate. If macOS blocks launch, verify the source before allowing the app in **System Settings → Privacy & Security**. Windows may display a SmartScreen warning. Follow your organization's policies if execution is restricted.
 
@@ -40,11 +42,15 @@ When starting through Settings, **OK** connects saved hosts with auto-connect en
 
 ## Connections and the tray
 
-The tray menu provides Settings, Launch at Login, Reconnect All, host menus, and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
+The tray menu provides Settings, Launch at Login, Reconnect All, Disconnect All, host menus, About..., and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
 
 Saving changes only the selected host and leaves active connections and other unsaved drafts intact. Changes take effect on the next connection. A connection made without saving keeps its temporary settings for manual reconnects and automatic recovery; cancelling later edits does not undo the running settings. Explicitly saving that host clears the temporary override for its next connection. A new host connected without saving exists only until the app exits.
 
 **Reconnect All** clears temporary overrides and reconnects only saved hosts with auto-connect enabled. You can manually connect hosts with auto-connect disabled. Disconnecting manually prevents automatic recovery during the current run without changing the saved auto-connect option.
+
+**Disconnect All (`전체 연결 끊기`)** asks for confirmation, then stops every managed host, including manual connections and unsaved temporary hosts, and cancels pending connection attempts, retries, and recovery. Cancel is the default. The app stays in the tray; saved auto-connect options, unsaved edits, and temporary execution settings are preserved. Connections remain off until you connect again or restart the app under its normal startup policy. The menu is disabled when there is nothing to stop.
+
+**About...** opens a modal with the app icon, name, product version, developer GuruJung, and a GitHub link. Opening it leaves connections running; the link opens your default browser only when clicked. Close it with the close button or Escape.
 
 After waking from sleep or a network transition from unavailable to available, recovery runs **5 seconds after the last event**. Only disconnected hosts that should still be connected are retried. Healthy, connecting, and manually disconnected hosts are left alone. Going offline again cancels pending recovery. Opening Settings or focusing the app does not trigger recovery. A disconnection detected after that recovery waits for another event or a manual connection.
 
@@ -132,3 +138,17 @@ These commands build, test, and package the app for the current platform. ZIPs a
 Integration tests use temporary keys, configuration, and a loopback SSH server, and take several minutes. On macOS, running the isolated test server as a non-root user requires `sudo -n` permission; the test cannot answer a password prompt. On Windows, provide `sshd.exe` through the system OpenSSH installation or `LOCALFORWARDER_TEST_SSHD`. The Windows CI server preparation script is restricted to disposable GitHub runners; it is not a local machine setup command. Real macOS login-item registration tests also run only on disposable GitHub-hosted CI. Automated tests do not replace checking real sleep/network transitions and desktop behavior.
 
 For product intent and development issues, see the [current specification](https://github.com/GuruJung/LocalForwarder/blob/main/docs/dev-plans/current-spec.md).
+
+## Versioning and releases
+
+`VERSION` is the shared macOS/Windows product version; configuration format `"version": 2` is independent. To change the product version, edit `VERSION` using `major.minor.patch`, then regenerate and check the committed Swift version constant:
+
+```sh
+python3 scripts/version.py --write
+python3 scripts/version.py --check
+python3 -m unittest discover -s tests -p 'test_release*.py'
+```
+
+Commit both `VERSION` and the generated Swift file. CMake reads `VERSION` for Windows. The native evaluation scripts verify the version and package metadata. About, OS version information, and ZIP filenames use this same version.
+
+After reviewing and committing a release, deliberately create and push its matching tag (for example `v0.1.0`). The tag must exactly match `v` plus `VERSION`. Tag CI publishes a GitHub Release with generated notes only after macOS arm64 and Windows x64/arm64 checks and packaging all pass. Branch and pull-request CI produces artifacts without publishing. A failed upload leaves a draft for retry; an existing published release is never overwritten. No version or tag is created automatically, and the app does not auto-update.

@@ -2,6 +2,12 @@ param([ValidateSet('x64','arm64')][string]$Architecture = 'x64')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+& python scripts/version.py --check
+if ($LASTEXITCODE -ne 0) { throw 'Product version check failed.' }
+& python -m unittest discover -s tests -p 'test_release*.py'
+if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
+$productVersion = & python scripts/version.py --print
+if ($LASTEXITCODE -ne 0) { throw 'Invalid product version.' }
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { throw 'Visual Studio Build Tools or Community with C++ tools is required.' }
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -34,18 +40,26 @@ New-Item -ItemType Directory -Path dist -Force | Out-Null
 & ctest --test-dir $build --output-on-failure --output-junit (Join-Path $root "dist/windows-$Architecture-tests.xml")
 if ($LASTEXITCODE -ne 0) { throw 'CTest failed.' }
 $app = Join-Path $build 'LocalForwarder.exe'
+$versionInfo = (Get-Item $app).VersionInfo
+if ($versionInfo.FileVersion -ne $productVersion -or $versionInfo.ProductVersion -ne $productVersion) { throw 'Executable string version does not match VERSION.' }
+$parts = $productVersion.Split('.')
+if ($versionInfo.FileMajorPart -ne [int]$parts[0] -or $versionInfo.FileMinorPart -ne [int]$parts[1] -or $versionInfo.FileBuildPart -ne [int]$parts[2] -or $versionInfo.FilePrivatePart -ne 0 -or
+    $versionInfo.ProductMajorPart -ne [int]$parts[0] -or $versionInfo.ProductMinorPart -ne [int]$parts[1] -or $versionInfo.ProductBuildPart -ne [int]$parts[2] -or $versionInfo.ProductPrivatePart -ne 0) { throw 'Executable numeric version does not match VERSION.' }
 $env:PYTHONIOENCODING = 'utf-8'
 & python tests/integration.py --app $app
 if ($LASTEXITCODE -ne 0) { throw 'SSH integration tests failed.' }
 New-Item -ItemType Directory -Path dist -Force | Out-Null
-$zip = Join-Path $root "dist/LocalForwarder-windows-$Architecture.zip"
+$zip = Join-Path $root "dist/LocalForwarder-$productVersion-windows-$Architecture.zip"
 $stage = Join-Path $build 'package'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item $app,LICENSE,README.md,README_ko.md $stage -Force
 Copy-Item third_party/yyjson/LICENSE (Join-Path $stage 'yyjson-LICENSE.txt') -Force
+& python scripts/package-info.py --platform windows --arch $Architecture --executable $app --output (Join-Path $stage 'build-info.json')
+if ($LASTEXITCODE -ne 0) { throw 'Package identity generation failed.' }
 Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
 Get-Item $app,$zip | Select-Object Name,Length | Format-Table
 @{
+    version = $productVersion
     architecture = $Architecture
     revision = (& git rev-parse HEAD)
     executable_bytes = (Get-Item $app).Length

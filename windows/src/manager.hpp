@@ -75,7 +75,7 @@ class ConnectionManager {
     std::vector<std::string> order_;
     Cancel recovery_;
     uint64_t recoveryGeneration_ = 0;
-    bool available_ = true, networkInitialized_ = false, sleeping_ = false, quitting_ = false, exitNotified_ = false;
+    bool available_ = true, networkInitialized_ = false, sleeping_ = false, quitting_ = false, exitNotified_ = false, disconnectingAll_ = false;
     size_t barriers_ = 0, outstandingStops_ = 0;
     std::shared_ptr<int> lifetime_ = std::make_shared<int>(0);
     std::shared_ptr<Entry> entry(const Host& host);
@@ -103,6 +103,8 @@ public:
     void connect(const Host& host, bool temporary);
     void saved(const Host& host);
     void disconnect(const std::string& id);
+    void disconnectAll();
+    bool isDisconnectingAll() const { return disconnectingAll_; }
     void remove(const std::string& id);
     void networkChanged(bool available);
     void sleep();

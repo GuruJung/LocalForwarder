@@ -37,6 +37,12 @@ public final class ConnectionManager {
     public var onChange: (() -> Void)?
     public var onError: ((String, String) -> Void)?
     public var onExit: (() -> Void)?
+    public private(set) var isDisconnectingAll = false
+    public var canDisconnectAll: Bool {
+        !quitting && !isDisconnectingAll && entries.values.contains {
+            $0.runtime.desiredConnected || $0.runtime.state != .disconnected
+        }
+    }
     private var savedHosts: [Host] = []
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
@@ -170,6 +176,26 @@ public final class ConnectionManager {
         guard !quitting, let value = entries[id] else { return }
         value.generation += 1; value.pending = nil; value.runtime.desiredConnected = false; value.runtime.state = .stopping
         stop(value) {}; onChange?()
+    }
+    /// Invalidate every operation before stopping any session: stop callbacks may run synchronously.
+    public func disconnectAll() {
+        guard !quitting, !isDisconnectingAll else { return }
+        cancelRecovery()
+        let current = Array(entries.values)
+        guard !current.isEmpty else { return }
+        isDisconnectingAll = true
+        for value in current {
+            value.generation += 1; value.pending = nil
+            value.runtime.desiredConnected = false; value.runtime.state = .stopping
+        }
+        let group = DispatchGroup()
+        for value in current {
+            group.enter(); stop(value) { group.leave() }
+        }
+        onChange?()
+        group.notify(queue: .main) { [weak self] in
+            self?.isDisconnectingAll = false; self?.onChange?()
+        }
     }
     public func delete(_ id: String) throws {
         guard !quitting else { return }

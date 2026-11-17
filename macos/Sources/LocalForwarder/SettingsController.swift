@@ -106,6 +106,11 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if let loadError { showError(loadError + "\n원본 파일은 보존되며 이 파일로 자동 연결하지 않습니다.") }
     }
+    var activeSheet: NSWindow? {
+        var sheet = window.attachedSheet
+        while let child = sheet?.attachedSheet { sheet = child }
+        return sheet
+    }
     func refresh() {
         guard isOpen else { return }
         updateStatus(); hostsTable.reloadData()
@@ -600,6 +605,18 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
 
 extension SettingsController {
     /// Exercise production windows and constraints, including resize back to the normal sidebar.
+    func checkDraftPreserved(during action: () throws -> Void) throws {
+        open()
+        defer { finish(accepted: false) }
+        nameField.stringValue = "미저장 About 확인"
+        capture()
+        let before = drafts
+        let selected = selectedID
+        try action()
+        capture()
+        try NativeLayoutChecks.require(isOpen && drafts == before && selectedID == selected,
+                                       "application modal preserves unsaved settings draft and selection")
+    }
     static func checkNativeLayout(store: ConfigurationStore, manager: ConnectionManager) throws {
         for (area, sizes) in [
             (NSSize(width: 940, height: 720), [NSSize(width: 900, height: 650), NSSize(width: 800, height: 430), NSSize(width: 900, height: 650)]),
