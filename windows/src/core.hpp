@@ -44,7 +44,8 @@ bool isConnectionRefusal(const std::string& targetDiagnostic, const std::string&
 std::string describeFailure(const std::string& text);
 // Only standard OpenSSH version banners at or above the supported baseline.
 bool supportedOpenSSHVersion(const std::string& output);
-// Accept only an anchored OpenSSH LogVerbose envelope from the actual child PID.
+// Accept anchored OpenSSH LogVerbose envelopes from the actual child PID.
+// Peer-echoing kex messages remain auxiliary diagnostics, never state evidence.
 std::optional<std::string> targetDiagnosticLine(const std::string& line, uint32_t expectedPid);
 
 // Feed only target diagnostics when requireForwards is false. Proxy stderr must be separate.

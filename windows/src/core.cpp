@@ -354,6 +354,13 @@ std::optional<uint32_t> unsignedDecimal(std::string_view text, bool positive=fal
     if(result.ec!=std::errc{} || result.ptr!=text.data()+text.size() || (positive && number==0)) return {};
     return number;
 }
+std::string withoutSeverity(const std::string& input) {
+    std::string_view text(input);
+    for(std::string_view prefix:{"debug1: ","debug2: ","debug3: ","error: ","fatal: ","internal error: "}) {
+        if(text.starts_with(prefix)) {text.remove_prefix(prefix.size());break;}
+    }
+    return std::string(text);
+}
 bool consumePrefix(std::string_view& text,std::string_view prefix) {
     if(!text.starts_with(prefix)) return false;
     text.remove_prefix(prefix.size());return true;
@@ -393,8 +400,18 @@ std::optional<std::string> targetDiagnosticLine(const std::string& line,uint32_t
     // the function delimiter after the source, which may include a drive colon.
     auto functionEnd=text.find("():"); if(functionEnd==std::string_view::npos) return {};
     auto sourceEnd=text.rfind(':',functionEnd); if(sourceEnd==std::string_view::npos) return {};
-    auto source=text.substr(0,sourceEnd);
-    if(source.empty() || source.size()>48 || (!source.ends_with(".c") && source.size()!=48)) return {};
+    auto encodedSource=text.substr(0,sourceEnd);
+    // log.c truncates __FILE__ before strnvis doubles Windows backslashes.
+    // Bound both representations and decode only paired backslashes, preserving
+    // older/plain source paths and never interpreting escapes in message bodies.
+    if(encodedSource.empty() || encodedSource.size()>96) return {};
+    std::string decodedSource;
+    for(size_t i=0;i<encodedSource.size();++i) {
+        decodedSource+=encodedSource[i];
+        if(encodedSource[i]=='\\' && i+1<encodedSource.size() && encodedSource[i+1]=='\\') ++i;
+    }
+    std::string_view source(decodedSource);
+    if(source.size()>48 || (!source.ends_with(".c") && source.size()!=48)) return {};
     bool drive=source.size()>=3 && ((source[0]>='a' && source[0]<='z') || (source[0]>='A' && source[0]<='Z')) &&
         source[1]==':' && (source[2]=='\\' || source[2]=='/');
     bool rooted=drive || source.starts_with("/") || source.starts_with("\\") ||
@@ -417,32 +434,37 @@ std::optional<std::string> targetDiagnosticLine(const std::string& line,uint32_t
     auto pid=unsignedDecimal(text.substr(0,pidEnd),true);
     if(!pid || *pid!=expectedPid) return {};
     text.remove_prefix(pidEnd+3);
-    // Forced LogVerbose replaces OpenSSH's error_f function prefix. Restore only
-    // known transport-error forms, never banner/debug text supplied by a peer.
-    if(function=="kex_exchange_identification" &&
-       (severity.empty() || severity=="error: " || severity=="fatal: ") &&
-       (text.starts_with("read: ") || text.starts_with("Connection closed by ") || text.starts_with("Connection reset by ")))
+    // Kex logs echo arbitrary peer banners/software strings. Preserve those as
+    // auxiliary diagnostics, never as target state evidence. Only canonical
+    // transport errors may leave this function on the target channel.
+    if(function=="kex_exchange_identification") {
+        if(!severity.empty() && severity!="error: " && severity!="fatal: ") return {};
+        consumePrefix(text,"kex_exchange_identification: ");
+        if(!text.starts_with("read: ") && !text.starts_with("Connection closed by ") && !text.starts_with("Connection reset by ")) return {};
         return std::string(severity)+"kex_exchange_identification: "+std::string(text);
+    }
     return std::string(severity)+std::string(text);
 }
 Readiness::Readiness(int expected,bool requireForwards,std::string expectedTarget,int expectedPort)
     :expectedTarget_(std::move(expectedTarget)),remoteExpected_(expected),expectedPort_(expectedPort),requireForwards_(requireForwards) {}
 void Readiness::consume(const std::string& input) {
-    auto line=input; if(!line.empty() && line.back()=='\r') line.pop_back();
-    if(containsAny(line,{"channel_connect_stdio_fwd:","new stdio-forward [stdio-forward]"})) {
+    auto line=withoutSeverity(input); if(!line.empty() && line.back()=='\r') line.pop_back();
+    static const std::regex stdioChannel(R"(^channel [0-9]+: new stdio-forward \[stdio-forward\])");
+    if(line.starts_with("channel_connect_stdio_fwd:") || std::regex_search(line,stdioChannel)) {
         targetScope_=authenticated_=entered_=localListening_=false; remoteConfirmed_=0; return;
     }
-    if(containsAny(line,{"Authenticated to ","Authentication succeeded"})) {
-        targetScope_=expectedTarget_.empty() || line.find("Authenticated to "+expectedTarget_+" ")!=std::string::npos || line.ends_with("Authenticated to "+expectedTarget_);
+    if(line.starts_with("Authenticated to ") || line.starts_with("Authentication succeeded")) {
+        targetScope_=expectedTarget_.empty() || line.starts_with("Authenticated to "+expectedTarget_+" ") || line=="Authenticated to "+expectedTarget_;
         if(expectedPort_ && line.find("]:")!=std::string::npos)
             targetScope_=targetScope_ && line.find("]:"+std::to_string(expectedPort_)+")")!=std::string::npos;
         authenticated_=targetScope_; entered_=localListening_=false; remoteConfirmed_=0;
     }
     if(!targetScope_) return;
-    if(line.find("Local forwarding listening on ")!=std::string::npos) localListening_=true;
-    if(line.find("Entering interactive session")!=std::string::npos) entered_=true;
-    if(line.find("remote forward success for:")!=std::string::npos) ++remoteConfirmed_;
-    if(containsAny(line,{"Could not request local forwarding","remote port forwarding failed","Could not request remote forwarding","cannot listen to port"})) failed_=true;
+    if(line.starts_with("Local forwarding listening on ")) localListening_=true;
+    if(line=="Entering interactive session.") entered_=true;
+    if(line.starts_with("remote forward success for:")) ++remoteConfirmed_;
+    if(line.starts_with("Could not request local forwarding") || line.starts_with("remote port forwarding failed") ||
+       line.starts_with("Could not request remote forwarding") || line.starts_with("cannot listen to port")) failed_=true;
 }
 bool Readiness::feed(const std::string& chunk) {
     pending_+=chunk;
@@ -519,16 +541,19 @@ void ForwardTracker::mark(bool remote,int port,std::optional<std::string> addres
     }
     f.state=state; f.detail=state==ForwardState::ready ? "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음" : line;
 }
-void ForwardTracker::consume(const std::string& line,const std::string& timestamp) {
-    static const std::regex listening(R"(Local forwarding listening on (.+) port ([0-9]+)\.)");
-    static const std::regex bindFailure(R"((?:bind|listen) \[([^\]]+)\]:([0-9]+):)");
-    static const std::regex cannotListen(R"(cannot listen to port: ([0-9]+))");
-    static const std::regex remotePort(R"(listen (?:.*:)?([0-9]+),)");
-    static const std::regex remoteFailure(R"(remote port forwarding failed for listen port ([0-9]+))");
+void ForwardTracker::consume(const std::string& input,const std::string& timestamp) {
+    const auto line=withoutSeverity(input);
+    static const std::regex listening(R"(^Local forwarding listening on (.+) port ([0-9]+)\.)");
+    static const std::regex bindFailure(R"(^(?:bind|listen) \[([^\]]+)\]:([0-9]+):)");
+    static const std::regex cannotListen(R"(^cannot listen to port: ([0-9]+))");
+    static const std::regex remotePort(R"(^remote forward (?:success|failure) for: listen (?:.*:)?([0-9]+),)");
+    static const std::regex remoteFailure(R"(^remote port forwarding failed for listen port ([0-9]+))");
+    static const std::regex created(R"(^channel [0-9]+: new port-listener \[port listener\])");
+    static const std::regex destinationFailure(R"(^channel [0-9]+: open failed:)");
     std::smatch match;
     if(std::regex_search(line,match,listening)) {
         if(auto port=portNumber(match[2])) pendingListener_=std::pair{match[1].str(),*port}; else pendingListener_.reset();
-    } else if(line.find(": new port-listener [port listener]")!=std::string::npos && pendingListener_) {
+    } else if(std::regex_search(line,created) && pendingListener_) {
         mark(false,pendingListener_->second,pendingListener_->first,ForwardState::ready,line); pendingListener_.reset();
     } else if(std::regex_search(line,match,bindFailure)) {
         if(auto port=portNumber(match[2])) mark(false,*port,match[1].str(),ForwardState::failed,line);
@@ -536,17 +561,17 @@ void ForwardTracker::consume(const std::string& line,const std::string& timestam
     } else if(std::regex_search(line,match,cannotListen)) {
         if(auto port=portNumber(match[1])) mark(false,*port,{},ForwardState::failed,line);
         pendingListener_.reset();
-    } else if(line.find("remote forward success for:")!=std::string::npos && std::regex_search(line,match,remotePort)) {
+    } else if(line.starts_with("remote forward success for:") && std::regex_search(line,match,remotePort)) {
         if(auto port=portNumber(match[1])) mark(true,*port,{},ForwardState::ready,line);
     } else if(std::regex_search(line,match,remoteFailure)) {
         if(auto port=portNumber(match[1])) mark(true,*port,{},ForwardState::failed,line);
-    } else if(line.find("remote forward failure for:")!=std::string::npos && std::regex_search(line,match,remotePort)) {
+    } else if(line.starts_with("remote forward failure for:") && std::regex_search(line,match,remotePort)) {
         if(auto port=portNumber(match[1])) mark(true,*port,{},ForwardState::failed,line);
     }
-    if(containsAny(line,{"open failed:","connect failed:"})) {
-        size_t begin=line.size()>2048 ? line.size()-2048 : 0;
-        while(begin<line.size() && (static_cast<unsigned char>(line[begin])&0xc0)==0x80) ++begin;
-        recentErrors.push_back({timestamp.empty() ? nowISO() : timestamp,line.substr(begin)});
+    if(std::regex_search(line,destinationFailure) || line.starts_with("connect failed:")) {
+        size_t begin=input.size()>2048 ? input.size()-2048 : 0;
+        while(begin<input.size() && (static_cast<unsigned char>(input[begin])&0xc0)==0x80) ++begin;
+        recentErrors.push_back({timestamp.empty() ? nowISO() : timestamp,input.substr(begin)});
         if(recentErrors.size()>10) recentErrors.erase(recentErrors.begin(),recentErrors.end()-10);
     }
 }

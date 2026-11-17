@@ -34,6 +34,7 @@ New-Item -ItemType Directory -Path dist -Force | Out-Null
 & ctest --test-dir $build --output-on-failure --output-junit (Join-Path $root "dist/windows-$Architecture-tests.xml")
 if ($LASTEXITCODE -ne 0) { throw 'CTest failed.' }
 $app = Join-Path $build 'LocalForwarder.exe'
+$env:PYTHONIOENCODING = 'utf-8'
 & python tests/integration.py --behavior multi-host-v2 --app $app
 if ($LASTEXITCODE -ne 0) { throw 'SSH integration tests failed.' }
 New-Item -ItemType Directory -Path dist -Force | Out-Null

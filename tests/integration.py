@@ -156,6 +156,7 @@ class Relay:
         self.connections: set[socket.socket] = set()
         self.enabled = True
         self.reject_count = 0
+        self.reject_gracefully = False
         self.accepted: list[float] = []
         self.closed = False
         threading.Thread(target=self._accept, daemon=True).start()
@@ -171,7 +172,23 @@ class Relay:
                 allowed = self.enabled and self.reject_count == 0
                 if self.reject_count:
                     self.reject_count -= 1
+                graceful = self.reject_gracefully
             if not allowed:
+                if graceful:
+                    # Consume the client identification before sending FIN. Closing
+                    # with unread data can produce a reset whose Windows OpenSSH
+                    # errno is only "Unknown error", not classifiable evidence.
+                    incoming.settimeout(2)
+                    with contextlib.suppress(OSError):
+                        banner = b""
+                        while not banner.endswith(b"\n") and len(banner) < 1024:
+                            data = incoming.recv(1)
+                            if not data:
+                                break
+                            banner += data
+                        incoming.shutdown(socket.SHUT_WR)
+                        while incoming.recv(1024):
+                            pass
                 incoming.close()
                 continue
             try:
@@ -1085,6 +1102,12 @@ class MultiHostSSHTests(unittest.TestCase):
 
     def test_04_retry_only_once_and_option_off(self):
         relay = self.fixture.relay
+        with relay.lock:
+            relay.reject_gracefully = True
+        def restore_rejection():
+            with relay.lock:
+                relay.reject_gracefully = False
+        self.addCleanup(restore_rejection)
         for retry in (True, False):
             with self.subTest(retry=retry):
                 config = self.profile()
@@ -1218,7 +1241,14 @@ class MultiHostSSHTests(unittest.TestCase):
             state = session.snapshot("host-0")
             if state.get("recentErrors"):
                 break
-            self.assertLess(time.monotonic(), deadline, state)
+            if time.monotonic() >= deadline:
+                # Preserve the actual collected SSH diagnostics on failure. A
+                # normal relay disconnect makes the app report its final log;
+                # do not weaken the destination-error assertion.
+                before = len(session.host_events)
+                self.fixture.relay.disconnect(block=False)
+                session.wait_host("host-0", "disconnected", after=before)
+                self.fail(f"Destination error was not recorded: {state}\n{session.diagnostics()}")
             time.sleep(.1)
         self.assertEqual(state["state"], "connected")
         self.assertIn("time", state["recentErrors"][-1])

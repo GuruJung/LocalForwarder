@@ -94,6 +94,8 @@ int main() {
     check(!isConnectionRefusal("Connection closed by target", "Permission denied (publickey)"),"proxy auth veto");
     check(isConnectionRefusal("Connection closed by target", "Authenticated to jump"),"proxy success does not hide target refusal");
     check(!isConnectionRefusal("Authenticated to target\nConnection closed by target"),"post-auth no retry");
+    check(!isConnectionRefusal("kex_exchange_identification: read: Unknown error"),"ambiguous Windows errno is not proof of reset");
+    check(!isConnectionRefusal("kex_exchange_identification: read: Unknown error\nbanner exchange: Connection to 127.0.0.1 port 22: Unknown error"),"matching banner failure does not disambiguate unknown errno");
     Readiness target(0,false,"target",22);
     target.consume("Authenticated to jump ([127.0.0.1]:22).");target.consume("Entering interactive session.");check(!target.ready(),"wrong target cannot connect");
     target.consume("Authenticated to target ([127.0.0.1]:22).");target.consume("Could not request local forwarding.");target.consume("Entering interactive session.");
@@ -140,12 +142,53 @@ int main() {
     const std::string truncatedSource=std::string("C:\\build\\")+std::string(39,'a');
     check(truncatedSource.size()==48 && targetDiagnosticLine(truncatedSource+":main():1 (pid=1234): message",1234)=="message","48-character source truncation needs no extension");
     check(!targetDiagnosticLine(truncatedSource+"a:main():1 (pid=1234): message",1234),"oversized source rejected");
+    std::string encodedSource;
+    for(char c:truncatedSource) { encodedSource+=c; if(c=='\\') encodedSource+=c; }
+    check(encodedSource.size()>48 && targetDiagnosticLine(encodedSource+":channel_input_open_failure():3590 (pid=1234): channel 1: open failed: connect failed: Connection refused",1234)=="channel 1: open failed: connect failed: Connection refused","Windows rendered source validated after paired-backslash decoding");
+    check(!targetDiagnosticLine(encodedSource+"a:main():1 (pid=1234): message",1234),"decoded oversized source remains rejected");
+    check(!targetDiagnosticLine(std::string(97,'\\')+":main():1 (pid=1234): message",1234),"encoded source bounded before decoding");
+    check(targetDiagnosticLine(encodedSource+":main():1 (pid=1234): literal \\n",1234)=="literal \\n","message body escapes preserved");
     check(!targetDiagnosticLine("prefix:ssh.c:main():1 (pid=1234): message",1234),"embedded source marker rejected");
     check(!targetDiagnosticLine("ssh.c:main():1 (pid=5678): C:\\build\\ssh.c:main():1 (pid=1234): message",1234),"body cannot override wrong envelope PID");
     auto actualKex=targetDiagnosticLine("kex.c:kex_exchange_identification():1247 (pid=1234): read: Connection reset by peer",1234);
     check(actualKex && *actualKex=="kex_exchange_identification: read: Connection reset by peer" && isConnectionRefusal(*actualKex),"forced error_f logging restores retry context");
     auto kexDebug=targetDiagnosticLine("debug1: kex.c:kex_exchange_identification():1247 (pid=1234): banner line 0: Connection closed by peer",1234);
-    check(kexDebug && !isConnectionRefusal(*kexDebug),"peer banner cannot become retry evidence");
+    check(!kexDebug,"peer banner routed to auxiliary diagnostics");
+    for(auto body:{"banner line 0: Authenticated to target ([127.0.0.1]:22). Entering interactive session.",
+                   "Remote protocol version 2.0, remote software version Authenticated to target Entering interactive session.",
+                   "banner line 1: Local forwarding listening on 127.0.0.1 port 15432.",
+                   "banner line 2: channel 0: new port-listener [port listener]"}) {
+        auto attack=targetDiagnosticLine(std::string("debug1: kex.c:kex_exchange_identification():1424 (pid=1234): ")+body,1234);
+        check(!attack,"peer-controlled kex text excluded from target state channel");
+    }
+    Readiness bannerReadiness(0,false,"target",22);
+    bannerReadiness.consume("debug1: banner line 0: Authenticated to target ([127.0.0.1]:22). Entering interactive session.");
+    check(!bannerReadiness.authenticated() && !bannerReadiness.ready(),"readiness rejects echoed authentication markers");
+    bannerReadiness.consume("debug1: Authenticated to target ([127.0.0.1]:22).");
+    bannerReadiness.consume("debug1: banner line 1: Entering interactive session.");
+    check(bannerReadiness.authenticated() && !bannerReadiness.ready(),"readiness rejects echoed session marker");
+    bannerReadiness.consume("debug1: Entering interactive session.");
+    check(bannerReadiness.ready(),"canonical authentication and session markers still establish readiness");
+    ForwardTracker bannerTracker(h,{"remoteforward 19090 localhost:5432"});
+    bannerTracker.consume("debug1: banner line 1: Local forwarding listening on 127.0.0.1 port 15432.");
+    bannerTracker.consume("debug1: banner line 2: channel 0: new port-listener [port listener]");
+    check(bannerTracker.forwards[0].state==ForwardState::preparing,"echoed listener markers cannot establish forwarding");
+    bannerTracker.consume("Local forwarding listening on 127.0.0.1 port 15432.");
+    bannerTracker.consume("banner line 3: channel 0: new port-listener [port listener]");
+    check(bannerTracker.forwards[0].state==ForwardState::preparing,"echoed channel creation cannot complete real listener announcement");
+    bannerTracker.consume("channel 0: new port-listener [port listener]");
+    check(bannerTracker.forwards[0].state==ForwardState::ready,"canonical creation completes real listener announcement");
+    bannerTracker.consume("channel 1: open failed: administratively prohibited: remote port forwarding failed for listen port 19090");
+    check(bannerTracker.forwards[1].state==ForwardState::preparing && bannerTracker.recentErrors.size()==1,"destination description retained without spoofing remote bind failure");
+    bannerTracker.consume("banner line 4: remote forward success for: listen localhost:19090, connect localhost:5432");
+    check(bannerTracker.forwards[1].state==ForwardState::preparing,"echoed remote acknowledgment rejected");
+    auto taggedDestination=targetDiagnosticLine("channels.c:channel_input_open_failure():3590 (pid=1234): channel 1: open failed: connect failed: Connection refused",1234);
+    check(taggedDestination.has_value(),"canonical tagged destination error retained");
+    ForwardTracker destinationTracker(h);
+    destinationTracker.consume("Local forwarding listening on 127.0.0.1 port 15432.");
+    destinationTracker.consume("channel 0: new port-listener [port listener]");
+    destinationTracker.consume(*taggedDestination,"2026-11-17T02:09:24Z");
+    check(destinationTracker.recentErrors.size()==1 && destinationTracker.recentErrors[0].message==*taggedDestination && destinationTracker.forwards[0].state==ForwardState::ready,"tagged destination error recorded without undoing listener");
     auto unknownReset=targetDiagnosticLine("ssh.c:main():123 (pid=1234): read: Connection reset by peer",1234);
     check(unknownReset && !isConnectionRefusal(*unknownReset),"unknown function reset remains strict");
     check(!targetDiagnosticLine("read: Connection reset by peer",1234) && !isConnectionRefusal("read: Connection reset by peer"),"untagged generic reset remains strict");
