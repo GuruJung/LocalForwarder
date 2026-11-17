@@ -155,7 +155,7 @@ public final class ConfigurationStore {
         let data = try Data(contentsOf: file)
         struct Header: Decodable { let version: Int }
         let version = try JSONDecoder().decode(Header.self, from: data).version
-        guard version == 1 || version == 2 else { throw AppError("지원하지 않는 설정 버전입니다. 기존 파일은 변경하지 않았습니다.") }
+        guard version == 2 else { throw AppError("지원하지 않는 설정 버전입니다. 기존 파일은 변경하지 않았습니다.") }
         let result = try JSONDecoder().decode(Configuration.self, from: data)
         var ids = Set<String>()
         for host in result.hosts {
@@ -203,16 +203,10 @@ public final class ConfigurationStore {
         }
         defer { _ = flock(descriptor, LOCK_UN) }
         var configuration = try load()
-        let original = configuration.version == 1 ? try Data(contentsOf: file) : nil
         try change(&configuration)
         configuration.version = 2
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(configuration)
-        if let original {
-            // A unique, exclusively created backup can never overwrite an earlier migration backup.
-            let backup = directory.appendingPathComponent("config-v1-\(UUID().uuidString).json")
-            try writeExclusive(original, to: backup)
-        }
         let temporary = directory.appendingPathComponent(".config-\(UUID().uuidString).tmp")
         try writeExclusive(data, to: temporary)
         defer { try? FileManager.default.removeItem(at: temporary) }

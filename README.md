@@ -1,73 +1,77 @@
 # LocalForwarder
 
-시스템 OpenSSH를 사용하는 작은 네이티브 SSH local forwarding GUI입니다. macOS는 Swift/AppKit, Windows는 C++/Win32로 구현합니다. SSH 프로토콜과 실제 데이터 전송은 OS의 `ssh`가 담당합니다.
+English · [한국어](README_ko.md)
 
-**개발 상태 (2026-11-17):** Windows 동결과 macOS 우선 개발 제한을 해제했습니다. macOS·Windows 모두 소스, 빌드 설정, 리소스, 테스트, 스크립트와 CI를 필요에 따라 수정할 수 있습니다. 두 플랫폼의 빌드·테스트·패키징 지원은 유지합니다. 제한 해제가 기존 기능 차이의 해결을 의미하지는 않으며, 플랫폼별 CI 통과·실제 기기 수동 검증·기능 동등성은 구분합니다. 플랫폼별 반영 상태와 차이는 [Windows 반영 대기](docs/dev-plans/windows-catchup.md)와 [macOS 반영 대기·차이 기록](docs/dev-plans/macos-catchup.md)에 기록합니다.
+LocalForwarder is a small native app for managing SSH local forwarding on macOS and Windows. Keep several hosts connected from one menu bar or system tray icon. Your operating system's OpenSSH handles authentication and traffic; LocalForwarder provides the settings and connection controls.
 
-## 지원 환경과 다운로드
+## Download and run
 
-| OS | CPU | 파일 |
+| System | CPU | Download |
 |---|---|---|
-| macOS 15 이상 | Apple Silicon ARM64 | `LocalForwarder-macos-arm64.zip` |
+| macOS 15 or later | Apple Silicon ARM64 | `LocalForwarder-macos-arm64.zip` |
 | Windows 11 | x64 | `LocalForwarder-windows-x64.zip` |
 | Windows 11 | ARM64 | `LocalForwarder-windows-arm64.zip` |
 
-[GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml)의 성공한 실행을 열고 **Artifacts**에서 해당 CPU의 파일을 다운로드하세요. Actions 결과물 다운로드에는 GitHub 로그인이 필요하며 결과물은 7일간 보관됩니다. Artifact ZIP 안의 배포 ZIP도 풀어 macOS에서는 `.app`, Windows에서는 `.exe`를 실행합니다.
+Open a successful run in [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml) and download your platform's package from **Artifacts**. Downloads require a GitHub login and are retained for 7 days. Extract both the artifact archive and the distribution ZIP inside it, then run the `.app` on macOS or `.exe` on Windows. No installer is required.
 
-첫 버전은 무료 배포를 위해 macOS ad-hoc 서명과 Windows 인증서 없는 실행 파일을 사용합니다. macOS가 앱 실행을 차단하면 출처를 확인한 뒤 시스템 설정의 개인정보 보호 및 보안에서 허용할 수 있습니다. Windows에서는 SmartScreen 경고가 나타날 수 있습니다. 조직 정책이 실행을 금지한다면 관리자의 정책을 따르세요.
+The macOS app is ad-hoc signed and is not notarized; Windows builds do not have a signing certificate. If macOS blocks launch, verify the source before allowing the app in **System Settings → Privacy & Security**. Windows may display a SmartScreen warning. Follow your organization's policies if execution is restricted.
 
-Windows에는 **OpenSSH Client 9.5 이상** 선택적 기능이 필요합니다. 앱은 Windows 시스템 OpenSSH를 사용하며 Git for Windows의 SSH나 별도의 SSH 구현을 설치하지 않습니다. macOS에서는 `/usr/bin/ssh`를 사용합니다.
+macOS uses `/usr/bin/ssh`. Windows requires the system **OpenSSH Client 9.5 or later**, which you can check in PowerShell:
 
-Windows에서는 시스템 OpenSSH Client **9.5 이상**을 사용합니다. PowerShell에서 `& "$env:WINDIR\System32\OpenSSH\ssh.exe" -V`로 확인할 수 있습니다. 구버전은 Windows Update 또는 [Microsoft의 OpenSSH 업데이트 안내](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/upgrade-in-box-openssh-to-latest-openssh-release)에 따라 사용자가 업데이트합니다. 앱은 자동 설치·관리자 권한 요청·서비스 설정 변경을 하지 않습니다. 원격 Linux/macOS 서버에 같은 최소 버전을 요구하지 않습니다.
+```powershell
+& "$env:WINDIR\System32\OpenSSH\ssh.exe" -V
+```
 
-## 사용 방법
+Update older Windows clients through Windows Update or [Microsoft's OpenSSH update instructions](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/upgrade-in-box-openssh-to-latest-openssh-release). The app does not install SSH, request administrator access, or change services. It does not use Git for Windows' SSH. Remote servers do not need to meet this Windows client version requirement.
 
-앱 하나에서 여러 호스트를 관리합니다. 실행하면 메뉴 막대 아이콘이 항상 표시됩니다. 설정 파일이 없거나 `--open-config`로 실행하면 먼저 설정 창을 엽니다. 시작 설정의 OK는 저장된 자동 연결 ON 호스트를 연결하고, Cancel은 연결 없이 트레이 모드로 들어갑니다. 기존 설정으로 실행하면 자동 연결 ON 호스트들이 연결됩니다. 중복 실행은 기존 앱의 설정 창을 엽니다.
+## Quick start
 
-1. 새 호스트를 만들고 이름과 SSH 별칭 또는 주소를 입력합니다. 이름 아래의 선택 설명란에는 연결 용도를 한 줄로 적을 수 있습니다. `~/.ssh/config`의 별칭도 사용할 수 있습니다.
-2. 필요한 경우 사용자명, SSH 포트, 개인키 경로를 지정합니다. 빈 접속 항목은 SSH 설정을 따릅니다. `새 규칙…`에서 포워딩을 작성하고, `규칙 편집…`이나 행 더블클릭으로 수정합니다. 모달의 `설명 (선택)`에는 규칙의 용도를 한 줄로 적을 수 있고, 설정창 목록의 마지막 설명 열에서 확인합니다. 모달 확인은 초안만 바꾸며 취소는 기존 규칙을 유지합니다.
-3. 자동 연결, `ExitOnForwardFailure`, 연결 거부 시 재시도는 기본 ON입니다.
-4. 저장은 선택한 호스트만 저장합니다. 현재 연결과 다른 호스트의 미저장 편집은 유지합니다.
-5. 재연결은 선택한 호스트의 편집값을 사용합니다. 미저장이 있으면 저장 후 재연결 / 저장 없이 재연결 / 취소 중 선택합니다. OK는 자동 저장하지 않습니다.
+The app stays in the menu bar or system tray. On first launch, or when launched with `--open-config`, it opens Settings. Launching it again opens the existing app's Settings.
 
-`15432 → 127.0.0.1:5432`는 내 컴퓨터의 `127.0.0.1:15432`를 **SSH 서버에서 보는** `127.0.0.1:5432`로 연결합니다. 앱 규칙은 IPv4 루프백에만 바인딩합니다. 기존 SSH의 `LocalForward`, `RemoteForward`, `DynamicForward`는 원래 설정대로 함께 실행합니다.
+1. Create a host and enter its name and SSH alias or address. Aliases from `~/.ssh/config` work. An optional one-line description can help you identify the host.
+2. Set a username, SSH port, or private key path if needed. Blank connection fields use your SSH configuration.
+3. Choose **New rule (`새 규칙…`)** and enter a local port, destination host, and destination port. Add an optional description. Edit with **Edit rule (`규칙 편집…`)** or a double-click; disable a rule with its checkbox. Confirming the rule updates the draft, not the saved file.
+4. **Save** the selected host. Auto-connect, `ExitOnForwardFailure`, and retry on connection refusal are enabled by default.
+5. Connect the host. Reconnecting with unsaved edits offers save and reconnect, reconnect without saving, or cancel. The Settings **OK** button does not save automatically.
 
-설정창은 약 900×650의 작은 기본 크기로 열리며 작은 화면에서는 폼을 스크롤할 수 있습니다. 하단 상시 메시지 영역은 없고 작업 실패 시 경고가 표시됩니다. 저장 성공은 호스트의 미저장 표시가 사라지는 것으로 확인합니다.
+For example, `15432 → 127.0.0.1:5432` makes `127.0.0.1:15432` on your computer reach `127.0.0.1:5432` **as seen by the SSH server**. Point your database client at the local address. App-defined rules listen only on IPv4 loopback (`127.0.0.1`). Existing SSH `LocalForward`, `RemoteForward`, and `DynamicForward` directives also run with their original binding addresses.
 
-트레이 메뉴는 설정, 로그인 자동 시작, 전체 재연결, 호스트별 메뉴, 종료로 구성됩니다. 호스트 상태는 아이콘으로 표시하며 하위 메뉴에는 SSH 요약, 규칙별 정보와 준비 상태, 연결 동작이 차례로 나타납니다. 비활성 규칙도 별도 아이콘으로 표시합니다. 현재·마지막 실행 규칙을 표시하므로 편집값이나 새 저장값과 다를 수 있습니다. 자세한 오류와 실행 설정 차이는 `연결 상태…`에서 확인합니다. 자동 연결 OFF인 호스트도 수동 연결할 수 있습니다. 수동 끊기는 이번 실행의 연결 의도만 OFF로 바꾸며 자동 연결 설정은 바꾸지 않습니다. 설정 창 닫기와 개별 실패는 앱을 종료하지 않습니다.
+When starting through Settings, **OK** connects saved hosts with auto-connect enabled; **Cancel** enters tray mode without connecting. Normal startup with an existing valid configuration connects auto-connect hosts. Closing Settings or a connection failure does not exit the app. Use **Quit** in the tray menu to stop all connections and exit.
 
-저장 없이 적용한 설정은 수동 재연결과 자동 복구에도 사용합니다. 편집을 취소해도 이미 적용한 실행값은 유지합니다. 명시적 저장은 다음 연결부터 저장값을 사용하게 하며 현재 연결은 유지합니다. **전체 재연결**은 임시 실행값을 해제하고 저장된 자동 연결 ON 호스트만 다시 연결합니다. 저장 없이 연결한 신규 호스트는 현재 실행 동안만 유지됩니다.
+## Connections and the tray
 
-## 로그인 자동 시작
+The tray menu provides Settings, Launch at Login, Reconnect All, host menus, and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
 
-트레이의 **로그인 자동 시작**을 체크하면 현재 사용자의 로그인 때 앱이 실행되도록 등록하고, 체크를 해제하면 등록을 제거합니다. 기본값은 미등록이며 앱 설치·실행·업데이트만으로 켜지지 않습니다. 호스트별 자동 연결 옵션과 별개이고 호스트 설정 JSON에는 저장하지 않습니다.
+Saving changes only the selected host and leaves active connections and other unsaved drafts intact. Changes take effect on the next connection. A connection made without saving keeps its temporary settings for manual reconnects and automatic recovery; cancelling later edits does not undo the running settings. Explicitly saving that host clears the temporary override for its next connection. A new host connected without saving exists only until the app exits.
 
-정상 설정이 있으면 로그인 때 설정창 없이 트레이로 시작하고 자동 연결 ON인 호스트만 연결합니다. 설정이 없거나 손상됐으면 기존처럼 설정창과 안내를 표시합니다. 체크를 바꾸어도 현재 연결은 유지되고 앱을 종료해도 자동 시작 등록은 유지됩니다.
+**Reconnect All** clears temporary overrides and reconnects only saved hosts with auto-connect enabled. You can manually connect hosts with auto-connect disabled. Disconnecting manually prevents automatic recovery during the current run without changing the saved auto-connect option.
 
-- macOS: 아직 OS 등록 기록이 없으면 `로그인 자동 시작 (등록 필요)`로 표시하며 직접 체크하여 등록할 수 있습니다. 시스템 승인이 필요하면 체크된 **로그인 자동 시작 (승인 필요)**로 표시하고 로그인 항목 설정을 여는 버튼을 안내합니다. 승인 대기와 실행 가능 상태는 다릅니다. 체크를 해제하면 승인 대기 등록도 제거합니다.
-- Windows: 체크는 현재 사용자에 대한 앱의 자동 시작 등록 여부입니다. 작업 관리자나 Windows 설정에서 별도로 사용 중지했거나 정책으로 차단했다면 해당 OS 설정을 확인해야 합니다. 앱은 이를 강제로 변경하지 않습니다.
+After waking from sleep or a network transition from unavailable to available, recovery runs **5 seconds after the last event**. Only disconnected hosts that should still be connected are retried. Healthy, connecting, and manually disconnected hosts are left alone. Going offline again cancels pending recovery. Opening Settings or focusing the app does not trigger recovery. A disconnection detected after that recovery waits for another event or a manual connection.
 
-앱을 계속 사용할 폴더에 둔 뒤 켜세요. 실행 파일 또는 `.app`을 이동·삭제하면 자동 시작이 깨질 수 있습니다. 이동한 앱에서 체크를 해제하고 다시 체크하면 현재 위치로 등록합니다. 자동 복사·설치나 관리자 권한은 사용하지 않으며, 로그인 후 실행 시점은 OS가 결정합니다. 등록·해제 실패는 오류로 안내하고 메뉴를 다시 열 때 등록 상태를 재조회합니다.
+With retry on connection refusal enabled, an explicit refusal, early close, or reset before connection establishment gets **one retry after 1 second**. Authentication errors, host key errors, port collisions, and ordinary timeouts do not trigger that retry.
 
-## 연결과 포워딩 상태
+Forwarding states are preparing, ready, failed to open, disconnected, or unknown. **Ready means the forwarding was opened; it does not guarantee the destination database or web service is healthy.** The app does not poll destination services. Observed failures appear in recent errors. With `ExitOnForwardFailure` disabled, SSH can remain connected even when some or all forwarding rules fail.
 
-절전·시스템 중단 복귀 또는 네트워크 사용 불가→사용 가능 전환 후 **마지막 이벤트부터 5초 뒤** 복구합니다. 연결 의도 ON이며 실제로 끊긴 호스트만 대상입니다. 정상 연결·연결 시도 중·수동 단절 호스트는 건드리지 않습니다. 대기 중 다시 오프라인이 되면 예약을 취소합니다. 일반 포커스 복귀와 설정 열기는 복구 계기가 아닙니다.
+## Launch at login
 
-복구 시점 뒤 늦게 감지된 단절은 다음 복구 이벤트나 수동 연결을 기다립니다. 연결 거부 시 재시도 ON이면 연결 전 명시적 접속 거부·조기 종료·리셋에 한해 **1초 뒤 한 번** 재시도합니다. 인증·호스트 키 오류·포트 충돌·일반 타임아웃에는 재시도하지 않습니다. 60초 자동 재연결과 실패 후 자동 종료는 제거되었습니다.
+Check **Launch at Login (`로그인 자동 시작`)** in the tray menu to register the app for your current user; uncheck it to remove the registration. It is off by default and separate from each host's auto-connect option. Changing it does not interrupt current connections, and quitting the app keeps the registration.
 
-현재 연결 상태 표는 실제 실행 규칙과 상속 규칙의 준비 중 / 준비됨 / 개설 실패 / 연결 끊김 / 확인 불가를 표시합니다. `ExitOnForwardFailure=OFF`이면 포워딩 일부가 실패해도 살아 있는 SSH는 connected로 표시하고 경고합니다. **준비됨은 포워딩 개설 성공이며 목적지 DB·웹 서비스의 정상 동작을 보장하지 않습니다.** 목적지 서비스를 주기적으로 검사하지 않으며 사용 중 관측한 실패는 최근 오류에 남깁니다.
+- **macOS:** `등록 필요` means registration is needed. `승인 필요` means the registration is checked but needs system approval; selecting it opens the login item settings. Unchecking also removes a pending registration.
+- **Windows:** the checkmark shows the app's registration. If Task Manager, Windows settings, or system policy disables startup separately, check those settings; the app does not override them.
 
-## 설정 파일과 구버전 호환성
+Put the app in its intended folder before enabling this option. Moving or deleting it can break startup. After moving it, uncheck and recheck the option from the new location. With a valid configuration, login starts the app in the tray and connects auto-connect hosts. Missing or damaged configuration receives the usual setup or error handling. The OS determines when login startup occurs.
 
-두 OS 모두 실제 사용자 홈의 `.LocalForwarder/config.json`을 사용합니다. 양쪽 플랫폼 모두 버전 2를 저장하고 v1 설정도 읽습니다.
+## Configuration file
+
+Both platforms use `.LocalForwarder/config.json` in your actual user home directory. **Only configuration version 2 is supported.** For example:
 
 ```json
 {
   "version": 2,
   "hosts": [{
     "id": "development",
-    "name": "개발 서버",
-    "description": "개발 데이터베이스 접속",
+    "name": "Development server",
+    "description": "Development database access",
     "target": "dev-server",
     "autoConnect": true,
     "exitOnForwardFailure": true,
@@ -77,59 +81,54 @@ Windows에서는 시스템 OpenSSH Client **9.5 이상**을 사용합니다. Pow
       "enabled": true,
       "localPort": 15432,
       "remoteHost": "127.0.0.1",
-      "remotePort": 5432
+      "remotePort": 5432,
+      "description": "PostgreSQL"
     }]
   }]
 }
 ```
 
-호스트의 선택 필드는 `user`, `port`, `identityFile`, `description`입니다. 각 포워딩 규칙에도 선택 문자열 `description`을 저장할 수 있습니다. 호스트·규칙 설명은 한 줄 텍스트이며 SSH 명령에는 사용하지 않습니다. 규칙 설명은 설정창 목록과 편집 팝업에서만 표시하며 트레이·연결 상태의 포워딩 표시는 유지합니다. 설명 변경만으로 현재 연결을 재시작하거나 실행 설정 차이 경고를 표시하지 않습니다. 설명의 누락·null·빈 문자열은 설명 없음으로 읽고 빈 값은 저장 시 생략합니다. 개행과 NUL은 허용하지 않습니다. description을 지원하지 않는 구버전 v2 앱에서 다시 저장하면 설명이 유실될 수 있습니다. 호스트와 규칙 ID는 고유한 영문·숫자·하이픈·밑줄 식별자입니다. 새 옵션이 없는 기존 호스트는 세 옵션을 모두 ON으로 읽습니다. 개인키 내용과 비밀번호는 JSON에 저장하지 않습니다.
+Optional host fields are `user`, `port`, `identityFile`, and `description`. Rules also accept `description`. Descriptions are single-line text without line breaks or NUL; missing, `null`, or empty descriptions mean no description, and empty values are omitted when saving. Rule descriptions appear in Settings and the rule editor. Descriptions are never SSH arguments and do not change connection behavior. Older v2 apps without description support may discard them when saving.
 
-v1은 읽기만 하면 변경하지 않습니다. 최초 저장 때 원본을 같은 폴더의 `config-v1-<고유 ID>.json`에 보존하고 v2로 저장합니다. **v1 기반 구버전 Windows 앱과 구버전 앱은 v2 설정을 읽지 못합니다.** 구버전으로 돌아가려면 모든 앱·인증 도우미를 종료하고, 현재 `config.json`을 별도 보관한 뒤 v1 백업을 `config.json`으로 복사하세요. v2 저장 이후 변경은 v1 백업에 포함되지 않습니다. 버전 숫자만 바꾸는 방식은 새 옵션과 동작을 보존하지 못합니다.
+Host IDs must be unique, and rule IDs must be unique within a host; use letters, digits, hyphens, and underscores. Omitted `autoConnect`, `exitOnForwardFailure`, and `retryOnConnectionRefused` options default to enabled. Passwords and private key contents are not stored in this JSON file.
 
-창을 새로 열 때 파일을 읽고 열린 창에서는 편집값을 유지합니다. 저장은 잠금 안에서 최신 파일의 선택 호스트만 원자적으로 갱신합니다. 같은 항목은 마지막 저장을 따릅니다. 손상되거나 지원하지 않는 파일은 덮어쓰지 않으며 복구 후 다시 열어야 합니다.
+Settings reloads the file when the window opens and preserves drafts while switching hosts. Saves lock and atomically update the latest file, changing only the selected host. For edits to the same item, the last save wins. Damaged or unsupported files are preserved and are not used for automatic connections.
 
-## 인증 준비와 복구
+A v1 file is rejected without conversion or a new migration backup. To start fresh, quit the app and any authentication helpers, move the old `config.json` to a safe backup location, then reopen the app and recreate the settings. Existing backups are left untouched.
 
-일반 연결은 콘솔과 입력 없이 실행됩니다. 설정 창에서 선택한 호스트의 인증 준비를 명시적으로 요청하면 외부 터미널 도우미를 엽니다. 앱과 다른 연결은 유지합니다. 완료 후 해당 호스트의 저장 변경만 반영하며 연결은 직접 요청합니다.
+## Authentication and troubleshooting
 
-도우미는 기존 키를 우선 사용하고 필요하면 `.LocalForwarder/keys/`에 암호 없는 Ed25519 키를 생성합니다. 일반 Linux/macOS 계정의 `~/.ssh/authorized_keys`에 기존 키와 제한 옵션을 보존하며 중복 없이 등록합니다. 비밀번호·기존 키 암호는 터미널에서만 입력합니다. 서버 인증 정책과 변경된 호스트 키 검증을 자동 우회하지 않습니다. 원격 Windows 계정 자동 등록은 지원 범위 밖이며 이미 인증된 Windows SSH 서버에는 연결할 수 있습니다.
+Normal connections do not prompt for input. Use the selected host's authentication setup action in Settings to open an external terminal helper. It leaves the app and other connections running. After setup, connect the host yourself.
 
-## Windows 플랫폼 안내
+The helper prefers existing keys. If a new key is needed, it creates an unencrypted Ed25519 key under `.LocalForwarder/keys/`. For ordinary Linux/macOS accounts, it registers the public key in `~/.ssh/authorized_keys` while preserving existing keys and restrictions and avoiding duplicates. Passwords and existing key passphrases are entered only in the terminal. Server authentication policy and changed host keys are not bypassed. Automatic key registration for remote Windows accounts is not supported; connections to already configured Windows SSH servers are supported.
 
-Windows도 앱 하나에서 여러 호스트를 관리하고 설정 v2를 사용합니다. 설정창은 macOS와 같은 좌우 구성, 하단 고정 OK/Cancel과 별도 연결 상태 팝업을 Windows 네이티브 UI로 제공합니다. 인스턴스는 사용자·로그인 세션마다 하나이며, 같은 세션에서 다시 실행하면 기존 설정창을 엽니다. 세션 간 설정 저장은 파일 잠금으로 보호합니다.
+- **Authentication fails:** check the selected host's SSH alias, username, key, and host key message. On Windows, encrypted keys need a working `ssh-agent`; the terminal helper explains setup if it is unavailable. The app does not remove passphrases or silently replace your key.
+- **SSH is connected but the service is unreachable:** inspect Connection Status, then check the destination address and service from the server's side. With `ExitOnForwardFailure` off, check for failed rules even when SSH is connected.
+- **Port conflicts:** use distinct local ports for different hosts. Duplicate active ports within a host are rejected. Across hosts the app follows SSH's result; Windows OpenSSH may allow port reuse, so the destination receiving traffic is not guaranteed when ports overlap.
+- **Recovery does not run after changing adapters:** Windows uses overall internal-network or Internet availability. An adapter change while the network remains available is not a recovery event. Reconnect manually if necessary.
 
-네트워크 복구는 내부망 또는 인터넷 사용 가능 상태를 기준으로 합니다. 앱은 외부 웹사이트를 직접 검사하지 않습니다. 전체 네트워크 상태가 계속 사용 가능이면 개별 어댑터 변경만으로 복구를 예약하지 않습니다. 실제 SSH 성공 여부는 해당 서버의 접속 결과를 따릅니다.
+## License
 
-암호화된 기존 키를 사용하려는데 `ssh-agent`가 준비되지 않았으면 인증 터미널에 설정 방법을 안내합니다. 앱은 관리자 권한을 요청하거나 서비스를 변경하지 않습니다. 사용자가 필요한 서비스를 준비한 뒤 인증 설정을 다시 실행합니다. 기존 키의 암호를 제거하거나 새 키로 임의 대체하지 않습니다.
+[MIT License](LICENSE). Windows JSON parsing uses [yyjson](https://github.com/ibireme/yyjson); its license is included in Windows packages as `yyjson-LICENSE.txt`.
 
-Windows OpenSSH는 포트 재사용을 허용할 수 있습니다. 한 호스트 내부의 활성 규칙 중복은 차단하지만, 호스트 간 포트 점유는 미리 검사하지 않고 시스템 SSH 결과를 따릅니다. 다른 호스트에는 서로 다른 로컬 포트를 사용하세요. 중복 바인딩된 포트의 트래픽 전달 대상은 보장되지 않습니다. [Windows 소켓 재사용 동작](https://learn.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse)
+## Build and test
 
-소스 구현, 아키텍처별 CI, 실제 데스크톱 검증은 서로 다른 범위입니다. 최신 결과는 [Windows 반영 기록](docs/dev-plans/windows-catchup.md)과 [수동 검증 안내](docs/verification/windows-parity.md)를 확인하세요.
-
-## 빌드와 테스트
-
-GitHub 공개 저장소의 표준 macOS·Windows 러너를 사용합니다. 사용자의 Windows PC에 MSVC나 CMake를 설치할 필요 없이 Actions에서 빌드 결과를 받을 수 있습니다.
-
-Mac에 Xcode가 있다면 저장소 루트에서 다음 명령으로 빌드·테스트합니다.
+Clone or download the source repository and run commands from its root. macOS requires Xcode, Python 3.11 or later, and system OpenSSH tools, including `sshd` for integration tests:
 
 ```sh
 bash scripts/eval-macos.sh
 ```
 
-Windows에서 로컬 빌드를 원한다면 C++ 데스크톱 개발 도구가 포함된 Visual Studio/Build Tools와 CMake, Ninja, Python, 테스트용 OpenSSH Server가 필요합니다. 개인 개발자는 Visual Studio Community를 사용할 수 있습니다.
+Windows requires PowerShell 7, Visual Studio or Build Tools with C++ desktop tools for the target architecture, CMake 3.24 or later, Ninja, Python 3.11 or later, OpenSSH Client 9.5 or later, and OpenSSH Server tools for integration tests:
 
 ```powershell
 pwsh -NoProfile -File scripts/eval-windows.ps1 -Architecture x64
-# ARM64 Windows에서는 -Architecture arm64
+# On ARM64 Windows:
+pwsh -NoProfile -File scripts/eval-windows.ps1 -Architecture arm64
 ```
 
-실제 SSH 통합 테스트는 임시 키·설정·루프백 서버만 사용합니다. macOS에서는 격리된 테스트 sshd 실행을 위해 sudo 권한이 필요할 수 있습니다. Windows CI의 테스트용 SSH 서버 준비 스크립트는 일회성 GitHub 러너에서만 동작하며 앱에 SSH 서버를 포함하지 않습니다.
+These commands build, test, and package the app for the current platform. ZIPs are written to `dist/` using the filenames in the download table; macOS also leaves `dist/LocalForwarder.app`, and Windows builds under `build/windows-<architecture>/`. Test reports are written under `dist/`.
 
-양쪽 평가 스크립트는 `--behavior multi-host-v2`를 지정하여 실제 연결 관리자의 다중 호스트·5초 복구·제한 재시도·정리와 65초 유휴 중 무재연결/무종료를 검사합니다. 기본 `legacy-v1`은 구버전 시나리오 재현용입니다. Windows의 설정·연결 관리자·편집 모델 검증은 CTest로도 실행합니다. 전체 평가에는 몇 분이 걸립니다. CI의 evidence 결과물에 실행 결과와 측정값을 기록합니다. 실제 데스크톱의 시각적 확인 여부는 자동 테스트 성공과 별도로 보고합니다.
+Integration tests use temporary keys, configuration, and a loopback SSH server, and take several minutes. On macOS, running the isolated test server as a non-root user requires `sudo -n` permission; the test cannot answer a password prompt. On Windows, provide `sshd.exe` through the system OpenSSH installation or `LOCALFORWARDER_TEST_SSHD`. The Windows CI server preparation script is restricted to disposable GitHub runners; it is not a local machine setup command. Real macOS login-item registration tests also run only on disposable GitHub-hosted CI. Automated tests do not replace checking real sleep/network transitions and desktop behavior.
 
-## 라이선스와 명세
-
-[MIT License](LICENSE). Windows JSON 처리는 [yyjson](third_party/yyjson/README.md)을 사용하며 해당 라이선스를 보존합니다.
-
-[현재 기능 명세](docs/dev-plans/current-spec.md) · [승인된 다중 호스트 명세](docs/dev-plans/specs/20261115-multi-host-tray/spec.md) · [이전 v1 명세](docs/dev-plans/specs/20261111-localforwarder-v1/spec.md)
+For product intent and development issues, see the [current specification](https://github.com/GuruJung/LocalForwarder/blob/main/docs/dev-plans/current-spec.md).

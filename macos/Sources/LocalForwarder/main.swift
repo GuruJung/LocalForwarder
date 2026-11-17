@@ -7,16 +7,12 @@ func writeLine(_ message: String) {
 }
 
 /// GUI-independent entry points share the same manager used by the menu bar application.
-func runTestManager(directory: String, configuration: String, start: Bool, singleID: String? = nil) {
+func runTestManager(directory: String, configuration: String, start: Bool) {
     let store = ConfigurationStore(directory: URL(fileURLWithPath: directory))
     let manager = ConnectionManager(store: store, sshConfiguration: configuration)
-    var previous: ConnectionState?
     func snapshot(requestID: String? = nil) {
         for host in manager.hosts {
             guard let runtime = manager.runtime(host.id) else { continue }
-            if let singleID, singleID == host.id, previous != runtime.state {
-                previous = runtime.state; writeLine("LF_STATE " + runtime.state.rawValue)
-            }
             var value: [String: Any] = ["id": host.id, "state": runtime.state.rawValue, "intent": runtime.desiredConnected,
                                         "temporary": runtime.temporary, "error": runtime.lastError,
                                         "recentErrors": runtime.recentErrors.map { ["time": ISO8601DateFormatter().string(from: $0.time), "message": $0.message] },
@@ -37,22 +33,13 @@ func runTestManager(directory: String, configuration: String, start: Bool, singl
     terminate.resume(); interrupt.resume()
     do {
         try manager.reloadConfiguration()
-        if let singleID { try manager.connect(singleID) }
-        else if start { try manager.startAll() }
+        if start { try manager.startAll() }
     } catch { writeLine("LF_ERROR " + error.localizedDescription.replacingOccurrences(of: "\n", with: " | ")) }
     snapshot(); writeLine("LF_READY")
     DispatchQueue.global().async {
         while let line = readLine() {
             DispatchQueue.main.async {
                 do {
-                    if singleID != nil && !line.hasPrefix("{") {
-                        if line == "quit" { manager.quit() }
-                        else if line == "reconnect", let singleID { try manager.connect(singleID) }
-                        else if line == "disconnect", let singleID { manager.disconnect(singleID) }
-                        else if line == "wake" { manager.wake() }
-                        else if line == "sleep" { manager.sleep() }
-                        return
-                    }
                     guard let data = line.data(using: .utf8),
                           let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           let command = value["command"] as? String else { throw AppError("명령 JSON이 올바르지 않습니다.") }
@@ -102,8 +89,6 @@ if arguments.count == 2 && arguments[1] == "--test-ui" {
 } else if arguments.count == 5 && arguments[1] == "--test-setup-auth" {
     do { try AuthenticationSetup.run(store: ConfigurationStore(directory: URL(fileURLWithPath: arguments[2])), profileID: arguments[3], configuration: arguments[4]); exit(0) }
     catch { writeLine("LF_ERROR " + error.localizedDescription); exit(1) }
-} else if arguments.count == 5 && arguments[1] == "--test-session" {
-    runTestManager(directory: arguments[2], configuration: arguments[4], start: false, singleID: arguments[3])
 } else if (arguments.count == 4 || (arguments.count == 5 && arguments[4] == "--no-start")) && arguments[1] == "--test-manager" {
     runTestManager(directory: arguments[2], configuration: arguments[3], start: arguments.count == 4)
 } else if arguments.count == 1 || (arguments.count == 2 && arguments[1] == "--open-config") {

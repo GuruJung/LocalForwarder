@@ -130,7 +130,7 @@ int main(int argc,char** argv) {
  try {
    CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
    Host a; a.id="a";a.name="A";a.target="localhost";a.forwards.push_back({"f",true,15555,"localhost",80});
-   stage="v1 migration and user-only permissions";
+   stage="user-only test directory";
    createPrivateDirectory(root);
    stage="supported system OpenSSH and PID-tagged diagnostics";
    auto version=capture(systemSSH(),{"-V"},5000);
@@ -157,20 +157,42 @@ int main(int argc,char** argv) {
      auto formatProbe=capture(systemSSH(),diagnosticArgs,5000);
      throw std::runtime_error("PID-tagged system OpenSSH diagnostics missing (PID="+std::to_string(targetPid)+", exit="+std::to_string(diagnosticCode)+"): "+diagnosticText+"\nVendor log format probe:\n"+formatProbe.text);
    }
-   stage="v1 migration and user-only permissions";
-   const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
-   writePrivateFile(root/L"config.json",original);
-   check(loadConfig(root).version==1,"v1 read supported");
-   check(readBytes(root/L"config.json")==original,"v1 read does not migrate");
-   saveHost(root,a);
-   std::vector<fs::path> backups;
-   for(const auto& entry:fs::directory_iterator(root)) if(entry.path().filename().wstring().rfind(L"config-v1-",0)==0) backups.push_back(entry.path());
-   check(backups.size()==1 && readBytes(backups[0])==original,"exact original migration backup");
-   check(loadConfig(root).version==2,"v2 saved");
-   for(const auto& path:{root,root/L"config.json",root/L"config.lock",backups[0]}) privateACL(path);
-   stage="backup creation failure preserves original v1 bytes";
+   stage="unsupported config preserves original and existing backup";
    {
-     auto directory=root/L"backup-denied";createPrivateDirectory(directory);
+     auto directory=root/L"unsupported";createPrivateDirectory(directory);
+     const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
+     const std::string backup="previous user backup\n";
+     writePrivateFile(directory/L"config.json",original);
+     writePrivateFile(directory/L"config-v1-existing.json",backup);
+     auto rejectsUnsupported=[&](auto operation) {
+       std::string failure;
+       try{operation();}catch(const std::exception& error){failure=error.what();}
+       check(failure.find("지원하지 않는 설정 버전")!=std::string::npos,"unsupported version rejected");
+       check(readBytes(directory/L"config.json")==original,"unsupported original bytes preserved");
+       check(readBytes(directory/L"config-v1-existing.json")==backup,"existing backup bytes preserved");
+     };
+     rejectsUnsupported([&]{loadConfig(directory);});
+     rejectsUnsupported([&]{saveHost(directory,a);});
+     rejectsUnsupported([&]{deleteHost(directory,a.id);});
+     rejectsUnsupported([&]{setIdentity(directory,a.id,"new-key");});
+     size_t count=0;
+     for(const auto& entry:fs::directory_iterator(directory)) {
+       auto name=entry.path().filename();
+       check(name==L"config.json" || name==L"config.lock" || name==L"config-v1-existing.json","unsupported config creates no backup or temporary file");++count;
+     }
+     check(count==3,"unsupported config preserves only original backup and lock");
+   }
+   stage="v2 read and user-only permissions";
+   const std::string original="{ \"version\": 2, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
+   writePrivateFile(root/L"config.json",original);
+   check(loadConfig(root).version==2,"v2 read supported");
+   check(readBytes(root/L"config.json")==original,"v2 read preserves original bytes");
+   saveHost(root,a);
+   check(loadConfig(root).version==2,"v2 saved");
+   for(const auto& path:{root,root/L"config.json",root/L"config.lock"}) privateACL(path);
+   stage="temporary creation failure preserves original v2 bytes";
+   {
+     auto directory=root/L"temporary-denied";createPrivateDirectory(directory);
      writePrivateFile(directory/L"config.json",original);writePrivateFile(directory/L"config.lock",{});
      HeldConfigLock held(directory/L"config.lock");
      RestoredDirectoryDACL permissions(directory);
@@ -188,20 +210,20 @@ int main(int argc,char** argv) {
        auto code=saving.wait(10000);
        if(code!=1 || failure.find("설정 파일 생성 실패:")==std::string::npos ||
            failure.find("Windows error "+std::to_string(ERROR_ACCESS_DENIED))==std::string::npos)
-         throw std::runtime_error("expected backup CreateFile access denial, exit="+std::to_string(code)+": "+failure);
-       check(readBytes(directory/L"config.json")==original,"backup failure preserves exact original v1 bytes");
-       check(loadConfig(directory).version==1 && loadHost(directory,"a").name=="A","backup failure leaves original parseable without migration");
+         throw std::runtime_error("expected temporary CreateFile access denial, exit="+std::to_string(code)+": "+failure);
+       check(readBytes(directory/L"config.json")==original,"temporary creation failure preserves exact original v2 bytes");
+       check(loadConfig(directory).version==2 && loadHost(directory,"a").name=="A","temporary creation failure leaves original parseable");
        size_t count=0;
        for(const auto& entry:fs::directory_iterator(directory)) {
-         auto name=entry.path().filename();check(name==L"config.json" || name==L"config.lock","backup failure leaves no backup or temporary residue");++count;
+         auto name=entry.path().filename();check(name==L"config.json" || name==L"config.lock","temporary creation failure leaves no residue");++count;
        }
-       check(count==2,"backup failure preserves only original config and lock");
+       check(count==2,"temporary creation failure preserves only original config and lock");
        permissions.restore();
        saveHost(directory,a);
-       std::vector<fs::path> recoveredBackups;
-       for(const auto& entry:fs::directory_iterator(directory))if(entry.path().filename().wstring().rfind(L"config-v1-",0)==0)recoveredBackups.push_back(entry.path());
-       check(loadConfig(directory).version==2 && recoveredBackups.size()==1 && readBytes(recoveredBackups[0])==original,
-           "save after restoring permissions migrates with exact original backup");
+       check(loadConfig(directory).version==2 && loadHost(directory,a.id)==a,
+           "save after restoring permissions succeeds");
+       for(const auto& entry:fs::directory_iterator(directory))
+         check(entry.path().filename()==L"config.json" || entry.path().filename()==L"config.lock","successful save leaves no backup or temporary residue");
      } catch(...) {held.release();saving.stop();saving.wait(5000);throw;}
    }
    stage="atomic replacement failure preserves original v2 bytes";
