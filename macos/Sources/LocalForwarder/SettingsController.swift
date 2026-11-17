@@ -619,6 +619,7 @@ extension SettingsController {
                 try NativeLayoutChecks.require(controller.rootStack.orientation == (size.width < 720 ? .vertical : .horizontal), context + " wrong pane orientation")
                 try NativeLayoutChecks.check(expectedSidebar + expectedFooter + [controller.formScrollView!], in: content, context: context)
                 try NativeLayoutChecks.require(controller.formScrollView.contentView.bounds.height >= 60, context + " form viewport unusable")
+                writeLine("LF_UI_GEOMETRY \(context): clip \(controller.formScrollView.contentView.bounds), document \(controller.formDocumentView.bounds), form \(controller.formStack.frame)")
                 try NativeLayoutChecks.check(expectedForm, in: controller.formDocumentView, scroll: controller.formScrollView, context: context)
                 let before = controller.drafts
                 for editing in [nil, controller.drafts[controller.selectedID!]!.host.forwards.first] as [Forward?] {

@@ -59,7 +59,8 @@ enum NativeLayoutChecks {
             // optical outsets (for example x=-2, width=116 for a 112pt label) that
             // contain no clipped text. Ask the control for its native content geometry
             // instead of treating those frame outsets as lost content.
-            let rect = view.superview!.convert(view.alignmentRect(forFrame: view.frame), to: container)
+            func alignedRect() -> NSRect { view.superview!.convert(view.alignmentRect(forFrame: view.frame), to: container) }
+            var rect = alignedRect()
             try require(rect.width > 0 && rect.height > 0, label + " zero size \(rect)")
             try require(rect.minX >= -1 && rect.maxX <= container.bounds.width + 1,
                         label + " horizontal clipping \(rect) in \(container.bounds)")
@@ -70,10 +71,27 @@ enum NativeLayoutChecks {
             }
             if let scroll {
                 let clip = scroll.contentView
+                if container.bounds.height <= clip.bounds.height {
+                    let visible = clip.convert(clip.bounds, to: container)
+                    try require(rect.minY >= visible.minY - 1 && rect.maxY <= visible.maxY + 1,
+                                label + " outside fully fitting document viewport")
+                    continue
+                }
                 // Check both ends of tall scroll widgets, and full access for each button/field.
                 for edge in [rect.minY, rect.maxY - clip.bounds.height] {
                     let y = max(0, min(edge, container.bounds.height - clip.bounds.height))
+                    let before = container.bounds
                     clip.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(clip)
+                    if let window = scroll.window { try settle(window) }
+                    // Scroller visibility can change the document width during the probe.
+                    // Measure the resulting layout rather than mixing pre-scroll row frames
+                    // with post-scroll container bounds on the next control.
+                    rect = alignedRect()
+                    if before.size != container.bounds.size {
+                        writeLine("LF_UI_SCROLL_LAYOUT \(label): document \(before) -> \(container.bounds), clip \(clip.bounds), control \(rect)")
+                    }
+                    try require(rect.minX >= -1 && rect.maxX <= container.bounds.width + 1,
+                                label + " horizontal clipping after scrolling \(rect) in \(container.bounds)")
                     let visible = clip.convert(clip.bounds, to: container)
                     try require(visible.intersects(rect), label + " unreachable by scrolling")
                     if rect.height <= visible.height {
