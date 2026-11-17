@@ -167,8 +167,21 @@ class App{
     struct DialogContext { App* app; const TASKDIALOGCONFIG* config; std::exception_ptr error; };
     bool foregroundModal(){
         HWND modal=appModalWindow_?appModalWindow_:(ruleWindow_?ruleWindow_:status_);
-        if(modal)SetForegroundWindow(modal);
-        return appModal_||modal;
+        // Native message boxes and file pickers disable their owner without using
+        // our dialog fields. The tray's hidden window can still receive messages.
+        if(!modal){
+            if(settings_.open&&settingsWindow_&&!IsWindowEnabled(settingsWindow_))modal=settingsWindow_;
+            else if(window_&&!IsWindowEnabled(window_))modal=window_;
+        }
+        bool blocked=appModal_||modal;
+        std::set<HWND> visited;
+        while(modal&&!IsWindowEnabled(modal)&&visited.insert(modal).second){
+            HWND popup=GetLastActivePopup(modal);
+            if(!popup||popup==modal||!IsWindow(popup))break;
+            modal=popup;
+        }
+        if(modal&&IsWindowVisible(modal))SetForegroundWindow(modal);
+        return blocked;
     }
     static HRESULT CALLBACK dialogCallback(HWND hwnd,UINT notification,WPARAM,LPARAM value,LONG_PTR data){
         auto& context=*reinterpret_cast<DialogContext*>(data);auto& app=*context.app;
@@ -345,7 +358,7 @@ private:
     }
     void fill(){loading_=true;if(settings_.drafts.contains(settings_.selected)){auto& d=settings_.drafts.at(settings_.selected);set(Name,wide(d.host.name));set(Description,wide(d.host.description));set(Target,wide(d.host.target));set(User,wide(d.host.user));set(Port,wide(d.port));set(Key,wide(d.host.identityFile));SendMessageW(control(AutoConnect),BM_SETCHECK,d.host.autoConnect?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(control(ExitFailure),BM_SETCHECK,d.host.exitOnForwardFailure?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(control(RetryRefused),BM_SETCHECK,d.host.retryOnConnectionRefused?BST_CHECKED:BST_UNCHECKED,0);}loading_=false;rule_=-1;fillRules();fillRuleEditor();populateHosts();preview();refreshButtons();}
     void addHost(){Host host;host.id=newId();host.name="새 호스트";settings_.add(host);fill();}
-    void openSettings(const std::string& id={},bool startup=false){if(quitting_)return;if(appModal_){foregroundModal();return;}if(settings_.open){if(!status_&&!ruleWindow_&&!id.empty()){capture();if(settings_.select(id))fill();}ShowWindow(settingsWindow_,SW_RESTORE);SetForegroundWindow(ruleWindow_?ruleWindow_:(status_?status_:settingsWindow_));return;}
+    void openSettings(const std::string& id={},bool startup=false){if(quitting_||foregroundModal())return;if(settings_.open){if(!status_&&!ruleWindow_&&!id.empty()){capture();if(settings_.select(id))fill();}ShowWindow(settingsWindow_,SW_RESTORE);SetForegroundWindow(ruleWindow_?ruleWindow_:(status_?status_:settingsWindow_));return;}
         if(!settingsWindow_)createSettings();Config saved;std::vector<Host> transient;std::string failure;try{manager_->reloadConfiguration();saved=loadConfig(directory_);for(auto host:manager_->hosts()){auto runtime=manager_->runtime(host.id);if(runtime&&runtime->executionHost)host=*runtime->executionHost;transient.push_back(host);}}catch(const std::exception& e){failure=e.what();}
         settings_.load(saved,transient,startup);if(settings_.order.empty())addHost();if(!id.empty())settings_.select(id);fill();ShowWindow(settingsWindow_,SW_SHOW);SetForegroundWindow(settingsWindow_);if(!failure.empty())error(failure);
     }
@@ -543,11 +556,49 @@ public:
         }
         previewDpi=previousDpi;updateFont();scroll_=0;SetWindowPos(settingsWindow_,nullptr,original.left,original.top,original.right-original.left,original.bottom-original.top,SWP_NOZORDER|SWP_NOACTIVATE);layoutSettings();
     }
+    void nativeOwnerModalChecks(HWND owner){
+        auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
+        struct Probe { bool active=true,ran=false,trayOpened=false; int nested=0; std::exception_ptr error; };
+        auto probe=std::make_shared<Probe>();
+        auto selected=settings_.selected;auto drafts=settings_.drafts;
+        auto title=wide("LocalForwarder modal owner test "+newId());
+        // Auto-close any mistakenly nested TaskDialog so a regression fails
+        // deterministically instead of waiting for user interaction in CI.
+        dialogTest_=[probe](HWND dialog,const TASKDIALOGCONFIG&){++probe->nested;PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);};
+        loop_->post([this,probe,owner,title,selected,check]{
+            if(!probe->active)return;
+            probe->ran=true;
+            HWND prompt=FindWindowW(L"#32770",title.c_str());
+            if(!prompt){
+                probe->error=std::make_exception_ptr(std::runtime_error("native MessageBox probe could not find its dialog"));
+                PostQuitMessage(1);return;
+            }
+            try{
+                check(!IsWindowEnabled(owner)&&!appModal_,"native prompt disables owner without app modal registration");
+                check(foregroundModal(),"disabled native owner blocks new app dialogs");
+                showAbout();confirmDisconnectAll();openSettings(selected=="a"?"b":"a");
+                SendMessageW(window_,WM_OPEN_SETTINGS,0,0);
+                loop_->post([this,probe]{if(probe->active&&menuOpen_){probe->trayOpened=true;EndMenu();}});
+                SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
+                check(!probe->nested&&!probe->trayOpened&&settings_.selected==selected,"native warning blocks About disconnect tray and followup selection changes");
+                check(!IsWindowEnabled(owner)&&IsWindow(prompt),"native warning remains the active modal");
+            }catch(...){probe->error=std::current_exception();}
+            // Always close the original warning, including after assertion failure.
+            PostMessageW(prompt,WM_COMMAND,IDOK,0);
+        });
+        int result=MessageBoxW(owner,L"모달 소유 관계 회귀 검사",title.c_str(),MB_OK|MB_ICONWARNING);
+        probe->active=false;dialogTest_={};
+        if(probe->error)std::rethrow_exception(probe->error);
+        check(probe->ran&&result==IDOK&&IsWindowEnabled(owner),"native warning closes and restores its owner");
+        check(settings_.selected==selected&&settings_.drafts==drafts,"native warning probe preserves selection and drafts");
+    }
     void nativeAppDialogChecks(){
         auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
         openSettings();set(Name,L"About 모달 전 미저장 이름");capture();
         auto drafts=settings_.drafts;auto selected=settings_.selected;auto saved=loadConfig(directory_);
         auto execution=manager_->runtime("a")->executionHost;
+        nativeOwnerModalChecks(settingsWindow_);
+        nativeOwnerModalChecks(window_); // Login-startup warnings use this owner even while settings is open.
         int shown=0;
         for(int dismissal=0;dismissal<3;++dismissal){
             bool backgroundDelivered=false;
