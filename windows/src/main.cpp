@@ -30,7 +30,7 @@ constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
 constexpr wchar_t FormClass[]=L"LocalForwarder.MultiHost.Form";
 constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
-enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleOkay,RuleCancel,RuleError,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
+enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
 RECT availableWorkArea(HMONITOR display){
     if(previewWorkArea)return *previewWorkArea;
@@ -201,7 +201,7 @@ private:
         if(!settingsWindow_)throw std::runtime_error(winError());centerInWorkArea(settingsWindow_,900,650);updateFont();SendMessageW(settingsWindow_,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(icon_));
         make(settingsWindow_,NewHost,L"BUTTON",L"새로 만들기",WS_TABSTOP);make(settingsWindow_,DeleteHost,L"BUTTON",L"호스트 삭제…",WS_TABSTOP);
         make(settingsWindow_,Hosts,L"LISTBOX",L"",LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|WS_VSCROLL|WS_TABSTOP|WS_BORDER);
-        make(settingsWindow_,CancelButton,L"BUTTON",L"Cancel",WS_TABSTOP);make(settingsWindow_,Okay,L"BUTTON",L"OK",WS_TABSTOP|BS_DEFPUSHBUTTON);
+        make(settingsWindow_,Okay,L"BUTTON",L"OK",WS_TABSTOP|BS_DEFPUSHBUTTON);make(settingsWindow_,CancelButton,L"BUTTON",L"Cancel",WS_TABSTOP);
         form_=CreateWindowExW(WS_EX_CONTROLPARENT,FormClass,L"",WS_CHILD|WS_VISIBLE|WS_VSCROLL,0,0,1,1,settingsWindow_,nullptr,instance_,this);if(!form_)throw std::runtime_error(winError());
         label(300,L"이름");label(310,L"설명 (선택)");label(301,L"SSH 별칭 / 주소");label(302,L"사용자명 (선택)");label(303,L"SSH 포트 (선택)");label(304,L"개인키 (선택)");
         for(int id:{Name,Description,Target,User,Port,Key})make(form_,id,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP);
@@ -221,7 +221,7 @@ private:
         if(stacked){place(NewHost,12,12,sidebar,30);place(DeleteHost,12,48,sidebar,30);}
         else{place(NewHost,12,12,102,30);place(DeleteHost,120,12,108,30);}
         int listTop=stacked?86:50;place(Hosts,12,listTop,sidebar,std::max(24,h-listTop-68));
-        place(CancelButton,w-190,h-44,82,30);place(Okay,w-96,h-44,82,30);
+        place(Okay,w-190,h-44,82,30);place(CancelButton,w-96,h-44,82,30);
         int formLeft=sidebar+24;MoveWindow(form_,scale(formLeft),scale(12),scale(std::max(1,w-formLeft-12)),scale(std::max(32,h-70)),TRUE);layoutForm();
     }
     void layoutForm(){if(!form_)return;RECT rect{};GetClientRect(form_,&rect);int w=MulDiv(rect.right,96,uiDpi(settingsWindow_)),h=MulDiv(rect.bottom,96,uiDpi(settingsWindow_));
@@ -255,27 +255,29 @@ private:
         loading_=false;
     }
     void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);}
-    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
+    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
     void layoutRule(){if(!ruleWindow_||!control(RuleOkay))return;RECT rect{};GetClientRect(ruleWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(ruleWindow_)),h=MulDiv(rect.bottom,96,uiDpi(ruleWindow_));
-        int row=h<230?30:36,first=h<230?36:48,errorTop=first+row*3,footer=h-44;
-        place(RuleEnabled,16,8,w-32,24);place(320,16,first+4,110,22);place(LocalPort,136,first,w-152,26);place(321,16,first+row+4,110,22);place(RemoteHost,136,first+row,w-152,26);place(322,16,first+row*2+4,110,22);place(RemotePort,136,first+row*2,w-152,26);place(RuleError,16,errorTop,w-32,std::max(20,footer-errorTop-8));place(RuleCancel,w-196,footer,84,30);place(RuleOkay,w-100,footer,84,30);
+        int row=h<230?30:36,first=h<230?36:48,footer=h-44;
+        place(RuleEnabled,16,8,w-32,24);place(320,16,first+4,110,22);place(LocalPort,136,first,w-152,26);place(321,16,first+row+4,110,22);place(RemoteHost,136,first+row,w-152,26);place(322,16,first+row*2+4,110,22);place(RemotePort,136,first+row*2,w-152,26);place(RuleOkay,w-196,footer,84,30);place(RuleCancel,w-100,footer,84,30);
     }
     void showRule(bool creating){if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
         if(!creating&&(rule_<0||static_cast<size_t>(rule_)>=host.forwards.size()))return;
         ruleDraft_.emplace(creating?Forward{newId(),true,8080,"localhost",80}:host.forwards[rule_]);creatingRule_=creating;settings_.modalHost=settings_.selected;
-        ruleWindow_=CreateWindowExW(WS_EX_CONTROLPARENT,RuleClass,creating?L"새 규칙":L"규칙 편집",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(460),scale(300),settingsWindow_,nullptr,instance_,this);
+        ruleWindow_=CreateWindowExW(WS_EX_CONTROLPARENT,RuleClass,creating?L"새 규칙":L"규칙 편집",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(460),scale(250),settingsWindow_,nullptr,instance_,this);
         if(!ruleWindow_){settings_.modalHost.clear();ruleDraft_.reset();throw std::runtime_error(winError());}
-        centerInWorkArea(ruleWindow_,460,300,settingsWindow_);
+        RECT desiredClient{0,0,0,scale(200)};
+        AdjustWindowRectExForDpi(&desiredClient,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_EXSTYLE)),GetDpiForWindow(ruleWindow_));
+        centerInWorkArea(ruleWindow_,460,MulDiv(desiredClient.bottom-desiredClient.top,96,uiDpi(ruleWindow_)),settingsWindow_);
         make(ruleWindow_,RuleEnabled,L"BUTTON",L"사용",BS_AUTOCHECKBOX|WS_TABSTOP);SendMessageW(control(RuleEnabled),BM_SETCHECK,ruleDraft_->rule.enabled?BST_CHECKED:BST_UNCHECKED,0);
         make(ruleWindow_,320,L"STATIC",L"로컬 포트",0);make(ruleWindow_,321,L"STATIC",L"목적지 호스트",0);make(ruleWindow_,322,L"STATIC",L"목적지 포트",0);
         for(int id:{LocalPort,RemoteHost,RemotePort})make(ruleWindow_,id,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP);
         set(LocalPort,wide(ruleDraft_->localPort));set(RemoteHost,wide(ruleDraft_->rule.remoteHost));set(RemotePort,wide(ruleDraft_->remotePort));
-        make(ruleWindow_,RuleError,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL);make(ruleWindow_,RuleCancel,L"BUTTON",L"취소",WS_TABSTOP);make(ruleWindow_,RuleOkay,L"BUTTON",L"확인",WS_TABSTOP|BS_DEFPUSHBUTTON);
+        make(ruleWindow_,RuleOkay,L"BUTTON",L"확인",WS_TABSTOP|BS_DEFPUSHBUTTON);make(ruleWindow_,RuleCancel,L"BUTTON",L"취소",WS_TABSTOP);
         EnableWindow(settingsWindow_,FALSE);updateRuleFont();layoutRule();ShowWindow(ruleWindow_,SW_SHOW);SetForegroundWindow(ruleWindow_);SetFocus(control(LocalPort));
     }
     void closeRule(bool accepted){if(!ruleWindow_)return;
-        if(accepted){try{ruleDraft_->rule.enabled=SendMessageW(control(RuleEnabled),BM_GETCHECK,0,0)==BST_CHECKED;ruleDraft_->rule.remoteHost=utf8(get(RemoteHost));ruleDraft_->localPort=utf8(get(LocalPort));ruleDraft_->remotePort=utf8(get(RemotePort));settings_.applyRule(settings_.modalHost,*ruleDraft_,creatingRule_);}catch(const std::exception& e){set(RuleError,nativeLines(e.what()));return;}}
-        auto selectedID=ruleDraft_->rule.id;HWND old=ruleWindow_;ruleWindow_=nullptr;ruleDraft_.reset();for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322})controls_.erase(id);DestroyWindow(old);if(ruleFont_){DeleteObject(ruleFont_);ruleFont_=nullptr;}settings_.modalHost.clear();EnableWindow(settingsWindow_,TRUE);
+        if(accepted){try{ruleDraft_->rule.enabled=SendMessageW(control(RuleEnabled),BM_GETCHECK,0,0)==BST_CHECKED;ruleDraft_->rule.remoteHost=utf8(get(RemoteHost));ruleDraft_->localPort=utf8(get(LocalPort));ruleDraft_->remotePort=utf8(get(RemotePort));settings_.applyRule(settings_.modalHost,*ruleDraft_,creatingRule_);}catch(const std::exception& e){error(e.what());return;}}
+        auto selectedID=ruleDraft_->rule.id;HWND old=ruleWindow_;ruleWindow_=nullptr;ruleDraft_.reset();for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322})controls_.erase(id);DestroyWindow(old);if(ruleFont_){DeleteObject(ruleFont_);ruleFont_=nullptr;}settings_.modalHost.clear();EnableWindow(settingsWindow_,TRUE);
         if(accepted){fillRules();auto& rules=settings_.drafts.at(settings_.selected).host.forwards;for(size_t i=0;i<rules.size();++i)if(rules[i].id==selectedID){rule_=static_cast<int>(i);ListView_SetItemState(control(Rules),rule_,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);ListView_EnsureVisible(control(Rules),rule_,FALSE);break;}populateHosts();preview();}
         fillRuleEditor();if(settings_.open){SetForegroundWindow(settingsWindow_);SetFocus(control(Rules));}
     }
@@ -418,6 +420,7 @@ public:
             RECT client{},formClient{};GetClientRect(settingsWindow_,&client);GetClientRect(form_,&formClient);
             auto okay=bounds(control(Okay),settingsWindow_),cancel=bounds(control(CancelButton),settingsWindow_),form=bounds(form_,settingsWindow_);
             check(inside(okay,client)&&inside(cancel,client),"settings footer remains visible");
+            check(okay.right<=cancel.left,"settings OK precedes Cancel");
             check(form.bottom<=std::min(okay.top,cancel.top),"scrolling form cannot cover footer");
             check(inside(bounds(control(Hosts),settingsWindow_),client),"host list remains inside settings");
             disjoint({NewHost,DeleteHost,Hosts,CancelButton,Okay},settingsWindow_);
@@ -456,11 +459,12 @@ public:
             showRule(true);
             GetWindowRect(ruleWindow_,&actual);check(inside(actual,*previewWorkArea),"rule modal initial size fits narrow work area");
             RECT ruleClient{};GetClientRect(ruleWindow_,&ruleClient);
-            std::vector<int> ruleControls={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322};
+            check(bounds(control(RuleOkay),ruleWindow_).right<=bounds(control(RuleCancel),ruleWindow_).left,"rule modal OK precedes Cancel");
+            std::vector<int> ruleControls={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322};
             disjoint(ruleControls,ruleWindow_);for(int id:ruleControls)check(inside(bounds(control(id),ruleWindow_),ruleClient),"clamped rule modal controls remain accessible");
-            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,260},{400,240}}){
+            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,220},{400,190}}){
                 resizeClient(ruleWindow_,logicalSize.first,logicalSize.second,dpi);layoutRule();
-                RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322};
+                RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322};
                 disjoint(ids,ruleWindow_);for(int id:ids)check(inside(bounds(control(id),ruleWindow_),client),"rule modal controls fit within client area");
             }
             closeRule(false);showStatus();
@@ -479,7 +483,7 @@ public:
         nativeLayoutChecks();
         auto originalRules=settings_.drafts.at("a").host.forwards;
         showRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&settings_.modalHost=="a","rule modal blocks owner");
-        set(LocalPort,L"invalid");closeRule(true);check(ruleWindow_&&!get(RuleError).empty()&&settings_.drafts.at("a").host.forwards==originalRules,"invalid modal stays open without mutation");
+        set(LocalPort,L"invalid");closeRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&get(LocalPort)==L"invalid"&&settings_.drafts.at("a").host.forwards==originalRules,"invalid modal warns and stays open with input and draft preserved");
         openSettings("b");check(settings_.selected=="a"&&ruleWindow_,"second open preserves rule modal target");
         closeRule(false);check(IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a").host.forwards==originalRules,"cancel new rule preserves draft");
         showRule(true);set(LocalPort,L"18080");closeRule(true);check(!ruleWindow_&&ListView_GetItemCount(control(Rules))==2,"new modal inserts confirmed rule");
@@ -524,7 +528,7 @@ public:
     }
     LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
     LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),600,390);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,280);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,240);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
     void caught(const std::exception& exception){error(exception.what());}
 };
 template<class F>LRESULT dispatchWindow(HWND hwnd,UINT msg,WPARAM w,LPARAM l,F&& invoke){auto* app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));if(msg==WM_NCCREATE){app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));}if(app){try{return invoke(*app);}catch(const std::exception& e){app->caught(e);return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
