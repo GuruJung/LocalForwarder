@@ -1096,7 +1096,10 @@ class MultiHostSSHTests(unittest.TestCase):
         echo(temporary["forwards"][0]["localPort"])
         before = len(session.host_events)
         session.send("connect", id="host-0")
-        session.wait_host("host-0", "connected", after=before, temporary=False)
+        # Late diagnostics can still report the old connected session after our
+        # event cursor. Require the new attempt before accepting connected.
+        connecting, _, _ = session.wait_host("host-0", "connecting", after=before, temporary=False)
+        session.wait_host("host-0", "connected", after=connecting + 1, temporary=False)
         echo(original)
         wait_port_closed(temporary["forwards"][0]["localPort"])
 
