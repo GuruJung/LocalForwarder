@@ -209,6 +209,62 @@ void setIdentity(const fs::path& directory,const std::string& id,const std::stri
 static std::wstring commandLine(const fs::path& executable,const std::vector<std::string>& args) {
     auto out=quoteWindowsArgument(executable.wstring()); for(auto& arg:args) out+=L" "+quoteWindowsArgument(wide(arg)); return out;
 }
+// Win32 OpenSSH opens -E using FILE_APPEND_DATA and FILE_SHARE_WRITE: a
+// regular file cannot have a live read handle. A named pipe transports the same
+// target-only stream without file sharing or disk growth, including ProxyJump.
+DiagnosticPipe::DiagnosticPipe(std::function<void(const std::string&)> output) {
+    path_=L"\\\\.\\pipe\\LocalForwarder-diagnostics-"+wide(newId());
+    PrivateSecurity security;
+    pipe_.reset(CreateNamedPipeW(path_.c_str(),PIPE_ACCESS_INBOUND|FILE_FLAG_OVERLAPPED|FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE|PIPE_READMODE_BYTE|PIPE_WAIT|PIPE_REJECT_REMOTE_CLIENTS,1,65536,65536,0,&security.attributes));
+    cancel_.reset(CreateEventW(nullptr,TRUE,FALSE,nullptr)); event_.reset(CreateEventW(nullptr,TRUE,FALSE,nullptr));
+    if(!pipe_ || !cancel_ || !event_) throw std::runtime_error("SSH 진단 파이프 생성 실패: "+winError());
+    // Install the connection request before returning to the caller (and before
+    // CreateProcess). The shared OVERLAPPED remains alive until its completion.
+    auto connection=std::make_shared<OVERLAPPED>(); connection->hEvent=event_.value;
+    bool connected=ConnectNamedPipe(pipe_.value,connection.get())!=FALSE;
+    if(!connected) {
+        auto error=GetLastError();
+        if(error==ERROR_PIPE_CONNECTED) connected=true;
+        else if(error!=ERROR_IO_PENDING) throw std::runtime_error("SSH 진단 파이프 연결 실패: "+winError(error));
+    }
+    try {
+        reader_=std::thread([this,output=std::move(output),connection,connected] {
+            auto complete=[this](OVERLAPPED& operation,DWORD& count) {
+                HANDLE handles[]={event_.value,cancel_.value};
+                auto result=WaitForMultipleObjects(2,handles,FALSE,INFINITE);
+                if(result!=WAIT_OBJECT_0) CancelIoEx(pipe_.value,&operation);
+                return GetOverlappedResult(pipe_.value,&operation,&count,TRUE)!=FALSE;
+            };
+            DWORD count=0;
+            if(!connected && !complete(*connection,count)) return;
+            char buffer[8192];
+            for(;;) {
+                ResetEvent(event_.value); OVERLAPPED operation{}; operation.hEvent=event_.value;
+                bool read=ReadFile(pipe_.value,buffer,sizeof(buffer),&count,&operation)!=FALSE;
+                if(!read && GetLastError()==ERROR_IO_PENDING) read=complete(operation,count);
+                if(!read) {
+                    auto error=GetLastError();
+                    if(error!=ERROR_BROKEN_PIPE && error!=ERROR_OPERATION_ABORTED && error!=ERROR_PIPE_NOT_CONNECTED)
+                        output("LocalForwarder diagnostic error: "+winError(error)+"\n");
+                    break;
+                }
+                if(!count) break;
+                output(std::string(buffer,count));
+                // Completed reads win over cancellation, so buffered final bytes
+                // are drained after the writer exits before a pending read stops.
+            }
+        });
+    } catch(...) {
+        if(!connected) { CancelIoEx(pipe_.value,connection.get()); DWORD ignored=0; GetOverlappedResult(pipe_.value,connection.get(),&ignored,TRUE); }
+        throw;
+    }
+}
+void DiagnosticPipe::finish() {
+    if(reader_.joinable()) { SetEvent(cancel_.value); reader_.join(); }
+}
+DiagnosticPipe::~DiagnosticPipe() { finish(); }
+
 Child::Child(const fs::path& exe,const std::vector<std::string>& args,Callback callback) {
     SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE}; HANDLE readRaw=nullptr,writeRaw=nullptr;
     if(!CreatePipe(&readRaw,&writeRaw,&sa,0)) throw std::runtime_error(winError());

@@ -40,73 +40,7 @@ std::string timestamp() {
     std::snprintf(text,sizeof(text),"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds);
     return text;
 }
-// OpenSSH's -E file receives only the target process log. A directory notification
-// wakes the reader on append; EOF is drained again after SSH/descendants exit.
-class DiagnosticFile {
-    fs::path directory_,path_;
-    Handle directoryHandle_,file_,cancel_,event_;
-    std::thread worker_;
-    std::function<void(const std::string&)> output_;
-    OVERLAPPED overlap_{};
-    unsigned char changes_[4096]{};
-    bool armed_=false;
-    void arm() {
-        ResetEvent(event_.value);
-        if(!ReadDirectoryChangesW(directoryHandle_.value,changes_,sizeof(changes_),FALSE,
-            FILE_NOTIFY_CHANGE_SIZE|FILE_NOTIFY_CHANGE_LAST_WRITE,nullptr,&overlap_,nullptr))
-            throw std::runtime_error("SSH 진단 알림을 시작할 수 없습니다: "+winError());
-        armed_=true;
-    }
-    void drain() {
-        char buffer[8192]; DWORD count=0;
-        for(;;) {
-            if(!ReadFile(file_.value,buffer,sizeof(buffer),&count,nullptr)) {
-                output_("LocalForwarder diagnostic error: "+winError()+"\n"); break;
-            }
-            if(!count) break;
-            output_(std::string(buffer,count));
-        }
-    }
-public:
-    explicit DiagnosticFile(std::function<void(const std::string&)> output):output_(std::move(output)) {
-        directory_=fs::temp_directory_path()/wide("LocalForwarder-diagnostics-"+newId());
-        createPrivateDirectory(directory_); path_=directory_/L"target.log";
-        try {
-            writePrivateFile(path_,{});
-            file_.reset(CreateFileW(path_.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-            directoryHandle_.reset(CreateFileW(directory_.c_str(),FILE_LIST_DIRECTORY,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED,nullptr));
-            cancel_.reset(CreateEventW(nullptr,TRUE,FALSE,nullptr)); event_.reset(CreateEventW(nullptr,TRUE,FALSE,nullptr));
-            if(!file_ || !directoryHandle_ || !cancel_ || !event_) throw std::runtime_error(winError());
-            overlap_.hEvent=event_.value;
-            arm(); // Subscribe before SSH can write its first byte.
-            worker_=std::thread([this] {
-                HANDLE handles[]={cancel_.value,event_.value};
-                while(WaitForMultipleObjects(2,handles,FALSE,INFINITE)==WAIT_OBJECT_0+1) {
-                    DWORD count=0;
-                    if(!GetOverlappedResult(directoryHandle_.value,&overlap_,&count,FALSE)) {
-                        output_("LocalForwarder diagnostic error: "+winError()+"\n"); break;
-                    }
-                    armed_=false;
-                    try { arm(); } catch(const std::exception& error) { output_(std::string("LocalForwarder diagnostic error: ")+error.what()+"\n"); break; }
-                    drain();
-                }
-                if(armed_) {
-                    CancelIoEx(directoryHandle_.value,&overlap_); DWORD ignored=0;
-                    GetOverlappedResult(directoryHandle_.value,&overlap_,&ignored,TRUE); armed_=false;
-                }
-                drain();
-            });
-        } catch(...) {
-            if(armed_) { CancelIoEx(directoryHandle_.value,&overlap_); DWORD ignored=0; GetOverlappedResult(directoryHandle_.value,&overlap_,&ignored,TRUE); }
-            file_.reset(); directoryHandle_.reset(); std::error_code ignored; fs::remove_all(directory_,ignored); throw;
-        }
-    }
-    const fs::path& path() const { return path_; }
-    void finish() { if(worker_.joinable()) { SetEvent(cancel_.value); worker_.join(); } }
-    ~DiagnosticFile() {
-        finish(); file_.reset(); directoryHandle_.reset(); std::error_code ignored; fs::remove_all(directory_,ignored);
-    }
-};
+
 }
 struct SSHSession::Operation {
     std::atomic<bool> cancelled=false;
@@ -246,7 +180,7 @@ void SSHSession::launch() {
                     self->readiness_=Readiness(0,false,target,port);
                     self->tracker_=std::make_unique<ForwardTracker>(host,inheritedForwards(effective)); self->changed();
                 });
-                DiagnosticFile diagnostic([self,post,token](const std::string& bytes) {
+                DiagnosticPipe diagnostic([self,post,token](const std::string& bytes) {
                     post([self,bytes,token] { self->consume(bytes,true,token); });
                 });
                 if(!operation->cancelled) {

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <barrier>
 #include <exception>
+#include <chrono>
 #include <shellapi.h>
 #include <aclapi.h>
 #include <sddl.h>
@@ -68,6 +69,33 @@ int main(int argc,char** argv) {
    Host a; a.id="a";a.name="A";a.target="localhost";a.forwards.push_back({"f",true,15555,"localhost",80});
    stage="v1 migration and user-only permissions";
    createPrivateDirectory(root);
+   stage="diagnostic pipe cancellation without writer";
+   auto cancelStarted=std::chrono::steady_clock::now();
+   { DiagnosticPipe unused([](const std::string&){}); unused.finish(); }
+   check(std::chrono::steady_clock::now()-cancelStarted<std::chrono::seconds(2),"no-client diagnostic cancellation is prompt");
+   stage="diagnostic pipe drains final bytes after early writer exit";
+   std::string finalBytes;
+   {
+     DiagnosticPipe early([&](const std::string& bytes){finalBytes+=bytes;});
+     Handle writer(CreateFileW(early.path().c_str(),GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr));
+     check(static_cast<bool>(writer),"diagnostic writer connects");
+     const std::string chunk(4096,'x');
+     for(int index=0;index<40;++index) {
+       DWORD count=0;check(WriteFile(writer.value,chunk.data(),static_cast<DWORD>(chunk.size()),&count,nullptr) && count==chunk.size(),"diagnostic writer writes");
+     }
+     writer.reset();early.finish();
+   }
+   check(finalBytes==std::string(4096*40,'x'),"diagnostic final drain retains every buffered byte");
+   stage="real OpenSSH target diagnostic pipe";
+   std::cout<<"Testing system OpenSSH -E diagnostic pipe\n"<<std::flush;
+   std::string targetLog;
+   DiagnosticPipe diagnostic([&](const std::string& bytes){targetLog+=bytes;});
+   auto diagnosticConfig=root/L"diagnostic-config";writePrivateFile(diagnosticConfig,"Host *\n  BatchMode yes\n");
+   auto diagnosticResult=capture(systemSSH(),{"-vv","-E",utf8(diagnostic.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),"-G","localhost"},5000);
+   diagnostic.finish();
+   if(diagnosticResult.code!=0) throw std::runtime_error("OpenSSH -E pipe failed: "+diagnosticResult.text);
+   check(targetLog.find("Reading configuration data")!=std::string::npos,"target diagnostics arrive through real OpenSSH -E");
+   check(diagnosticResult.text.find("Reading configuration data")==std::string::npos,"target diagnostics stay separate from inherited stderr");
    const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
    writePrivateFile(root/L"config.json",original);
    check(loadConfig(root).version==1,"v1 read supported");

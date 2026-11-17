@@ -45,6 +45,18 @@ struct Handle {
     void reset(HANDLE h=nullptr) { if(value && value!=INVALID_HANDLE_VALUE) CloseHandle(value); value=h; }
     explicit operator bool() const { return value && value!=INVALID_HANDLE_VALUE; }
 };
+// A private target-only -E stream. finish() is called after the writer exits.
+class DiagnosticPipe {
+    fs::path path_;
+    Handle pipe_, cancel_, event_;
+    std::thread reader_;
+public:
+    explicit DiagnosticPipe(std::function<void(const std::string&)> output);
+    ~DiagnosticPipe();
+    const fs::path& path() const { return path_; }
+    void finish();
+    DiagnosticPipe(const DiagnosticPipe&) = delete;
+};
 class Child {
     Handle process_, job_, pipe_, completion_;
     void waitForJob();

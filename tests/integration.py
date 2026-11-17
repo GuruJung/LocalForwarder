@@ -988,12 +988,12 @@ class MultiHostSSHTests(unittest.TestCase):
         # Shared inherited listeners would make independently valid hosts conflict.
         # Test inheritance separately with one host, and leave the fixture itself unchanged.
         private = directory / "ssh_config"
-        lines = self.fixture.ssh_config.read_text().splitlines()
+        lines = self.fixture.ssh_config.read_text(encoding="utf-8").splitlines()
         if not inherited:
             lines = [line for line in lines if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
         if dynamic_port is not None:
             lines.append(f"  DynamicForward 127.0.0.1:{dynamic_port}")
-        private.write_text("\n".join(lines) + "\n")
+        private.write_text("\n".join(lines) + "\n", encoding="utf-8")
         session = ManagerSession(self.app, self.fixture, directory, private, start=start)
         self.sessions.append(session)
         return session, directory, config
@@ -1063,7 +1063,7 @@ class MultiHostSSHTests(unittest.TestCase):
         session.wait_host("host-0", "connected", after=before, temporary=True)
         echo(temporary["forwards"][0]["localPort"])
         wait_port_closed(original)
-        self.assertEqual(json.loads((directory / "config.json").read_text()), config)
+        self.assertEqual(json.loads((directory / "config.json").read_text(encoding="utf-8")), config)
         before = len(session.host_events)
         self.fixture.relay.disconnect(block=False)
         lost, _, _ = session.wait_host("host-0", "disconnected", after=before)
@@ -1373,7 +1373,7 @@ class MultiHostSSHTests(unittest.TestCase):
                 config = self.profile()
                 directory = fixture.config_directory("multi-" + failure, config)
                 private = directory / "ssh_config"
-                lines = [line for line in fixture.ssh_config.read_text().splitlines()
+                lines = [line for line in fixture.ssh_config.read_text(encoding="utf-8").splitlines()
                          if not line.strip().startswith(("LocalForward ", "RemoteForward "))]
                 contents = "\n".join(lines) + "\n"
                 if failure == "authentication":
@@ -1384,7 +1384,7 @@ class MultiHostSSHTests(unittest.TestCase):
                     empty = directory / "empty-known-hosts"
                     empty.write_text("")
                     contents = contents.replace(ssh_path(fixture.known_hosts), ssh_path(empty))
-                private.write_text(contents)
+                private.write_text(contents, encoding="utf-8")
                 before = len(fixture.relay.accepted)
                 session = ManagerSession(self.app, fixture, directory, private)
                 self.sessions.append(session)
