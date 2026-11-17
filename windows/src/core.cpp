@@ -143,19 +143,26 @@ std::vector<std::string> settingLines(const std::string& input, bool forwards) {
 bool safeId(const std::string& value) {
     return !value.empty() && value.size() <= 128 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; });
 }
+static void validateDescription(const std::string& description) {
+    auto values=scalars(description);
+    if (std::any_of(values.begin(),values.end(),[](auto c){return c==0 || c=='\r' || c=='\n' || c==0x85 || c==0x2028 || c==0x2029;}))
+        throw std::runtime_error("설명은 개행과 NUL이 없는 한 줄이어야 합니다.");
+}
 void validateForward(const Forward& f) {
+    validateDescription(f.description);
     if (!safeId(f.id)) throw std::runtime_error("규칙 ID가 올바르지 않습니다.");
     if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw std::runtime_error("포트는 1~65535 사이여야 합니다.");
     if (!validToken(f.remoteHost)) throw std::runtime_error("목적지 호스트가 올바르지 않습니다.");
 }
 bool sameExecutionSettings(const Host& left, const Host& right) {
-    auto a=left,b=right;a.description.clear();b.description.clear();return a==b;
+    auto a=left,b=right;a.description.clear();b.description.clear();
+    for (auto& rule:a.forwards) rule.description.clear();
+    for (auto& rule:b.forwards) rule.description.clear();
+    return a==b;
 }
 void validate(const Host& h) {
     if (!safeId(h.id)) throw std::runtime_error("호스트 ID가 올바르지 않습니다.");
-    auto descriptionScalars=scalars(h.description);
-    if (std::any_of(descriptionScalars.begin(),descriptionScalars.end(),[](auto c){return c==0 || c=='\r' || c=='\n' || c==0x85 || c==0x2028 || c==0x2029;}))
-        throw std::runtime_error("설명은 개행과 NUL이 없는 한 줄이어야 합니다.");
+    validateDescription(h.description);
     auto nameScalars=scalars(h.name);
     if (std::all_of(nameScalars.begin(),nameScalars.end(),whitespace)) throw std::runtime_error("이름을 입력하세요.");
     if (h.name.find('\0')!=std::string::npos) throw std::runtime_error("이름에 NUL 문자를 사용할 수 없습니다.");
@@ -207,6 +214,7 @@ Config parseConfig(const std::string& text) {
             if (!yyjson_is_obj(entry)) throw std::runtime_error("포워딩 규칙은 객체여야 합니다.");
             Forward f;
             f.id = stringValue(entry, "id"); f.remoteHost = stringValue(entry, "remoteHost");
+            f.description = stringValue(entry, "description", false);
             f.localPort = numberValue(entry, "localPort"); f.remotePort = numberValue(entry, "remotePort");
             auto* enabled = yyjson_obj_get(entry, "enabled");
             if (!yyjson_is_bool(enabled)) throw std::runtime_error("enabled 필드는 boolean이어야 합니다.");
@@ -241,6 +249,7 @@ std::string writeConfig(const Config& config) {
         for (auto& f : h.forwards) {
             auto* rule = yyjson_mut_obj(doc.get()); yyjson_mut_arr_add_val(forwards, rule);
             field(doc.get(), rule, "id", f.id); field(doc.get(), rule, "remoteHost", f.remoteHost);
+            if (!f.description.empty()) field(doc.get(), rule, "description", f.description);
             yyjson_mut_obj_add_bool(doc.get(), rule, "enabled", f.enabled);
             yyjson_mut_obj_add_int(doc.get(), rule, "localPort", f.localPort);
             yyjson_mut_obj_add_int(doc.get(), rule, "remotePort", f.remotePort);

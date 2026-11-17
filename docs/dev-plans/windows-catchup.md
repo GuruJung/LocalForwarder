@@ -90,3 +90,9 @@ macOS 전용 UI·OS 변경은 이식 목록에 넣지 않는다. 구현만 끝�
 - 상태: 구현 완료·x64/ARM64 네이티브 CI 및 Windows 사용자 화면 확인 완료. 실제 OS 배율 변경 검사는 미수행이며 모의 DPI 검사와 구분한다. [기능 명세](specs/20261117-settings-tray-refinement/spec.md)와 [검증 절차](../verification/settings-tray-refinement.md)를 따른다.
 - Windows의 소형 설정창, 규칙 모달, description 보존과 실행 설정 비교, 아이콘·규칙별 트레이 표시를 대상으로 한다. 이전 차이 항목의 증거·미검증 상태는 그대로 유지한다.
 - 현재 UI 의도는 [현재 명세](current-spec.md)를 따른다. 이 절의 구현과 검증 상태는 이전 기능의 실기기 검증 완료를 뜻하지 않는다.
+
+## 포워딩 규칙 설명 (20261117-forward-description)
+
+- 상태: 구현 진행·검증 대기. [기능 명세](specs/20261117-forward-description/spec.md)와 [검증 기록](../verification/forward-description.md)을 따른다.
+- 선택적 규칙 설명의 저장 호환성과 규칙 모달·목록 표시를 추가한다. SSH 연결·트레이·연결 상태 표시는 유지한다.
+- 필드 누락/null/빈 값, 한글 왕복 저장, 선택 저장·인증 키 갱신 보존, 설명만의 변경과 실행 설정 비교를 양쪽에서 검증한다. 이전 기능의 미검증 상태는 변경하지 않는다.

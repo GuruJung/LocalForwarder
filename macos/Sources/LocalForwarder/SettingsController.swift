@@ -390,6 +390,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         case "enabled": return rule.enabled ? NSControl.StateValue.on.rawValue : NSControl.StateValue.off.rawValue
         case "localPort", "remotePort": return draft.rulePorts[rule.id]?[column] ?? ""
         case "remoteHost": return rule.remoteHost
+        case "description": return rule.description
         default: return nil
         }
     }
@@ -563,7 +564,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         for control in [autoConnect, exitOnFailure, retryRefused] { control.target = self; control.action = #selector(changed) }
         add(adaptive([autoConnect, exitOnFailure, retryRefused], spacing: 12))
         add(NSTextField(wrappingLabelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
-        for (id, title, width) in [("enabled", "사용", 48.0), ("localPort", "로컬 포트", 90.0), ("remoteHost", "목적지 호스트", 270.0), ("remotePort", "목적지 포트", 100.0)] {
+        for (id, title, width) in [("enabled", "사용", 48.0), ("localPort", "로컬 포트", 90.0), ("remoteHost", "목적지 호스트", 270.0), ("remotePort", "목적지 포트", 100.0), ("description", "설명", 220.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = id == "enabled"
             if id == "enabled" { let cell = NSButtonCell(); cell.setButtonType(.switch); cell.title = ""; column.dataCell = cell }
             rulesTable.addTableColumn(column)
