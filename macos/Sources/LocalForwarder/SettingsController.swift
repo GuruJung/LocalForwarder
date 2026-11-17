@@ -492,7 +492,11 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         let hostScroll = NSScrollView(); hostScroll.documentView = hostsTable; hostScroll.hasVerticalScroller = true; hostScroll.borderType = .bezelBorder
         sidebar.addArrangedSubview(hostScroll)
         hostScroll.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true
-        let formScroll = NSScrollView(); formScroll.hasVerticalScroller = true; formScroll.autohidesScrollers = true
+        let formScroll = NSScrollView(); formScroll.hasVerticalScroller = true
+        // Reserve legacy scrollbar space while rows reflow. Auto-hiding can resize
+        // the document independently of its constraints when returning to a wide
+        // layout, leaving its width smaller than both the clip view and the form.
+        formScroll.autohidesScrollers = false
         formScrollView = formScroll
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; formScroll.documentView = document
         formDocumentView = document
@@ -620,6 +624,8 @@ extension SettingsController {
                 try NativeLayoutChecks.check(expectedSidebar + expectedFooter + [controller.formScrollView!], in: content, context: context)
                 try NativeLayoutChecks.require(controller.formScrollView.contentView.bounds.height >= 60, context + " form viewport unusable")
                 writeLine("LF_UI_GEOMETRY \(context): clip \(controller.formScrollView.contentView.bounds), document \(controller.formDocumentView.bounds), form \(controller.formStack.frame)")
+                try NativeLayoutChecks.require(abs(controller.formDocumentView.bounds.width - controller.formScrollView.contentView.bounds.width) < 1,
+                                               context + " document width differs from the scroll viewport")
                 try NativeLayoutChecks.check(expectedForm, in: controller.formDocumentView, scroll: controller.formScrollView, context: context)
                 let before = controller.drafts
                 for editing in [nil, controller.drafts[controller.selectedID!]!.host.forwards.first] as [Forward?] {
