@@ -88,14 +88,42 @@ int main(int argc,char** argv) {
    check(finalBytes==std::string(4096*40,'x'),"diagnostic final drain retains every buffered byte");
    stage="real OpenSSH target diagnostic pipe";
    std::cout<<"Testing system OpenSSH -E diagnostic pipe\n"<<std::flush;
+   {
+     std::string appendBytes;
+     DiagnosticPipe appendPipe([&](const std::string& bytes){appendBytes+=bytes;});
+     Handle appendWriter(CreateFileW(appendPipe.path().c_str(),FILE_APPEND_DATA,FILE_SHARE_WRITE,nullptr,
+         OPEN_ALWAYS,FILE_FLAG_OVERLAPPED|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+     std::cout<<"OpenSSH-compatible pipe open: "<<(appendWriter?"success":winError())<<"\n";
+     if(appendWriter) {
+       Handle completed(CreateEventW(nullptr,TRUE,FALSE,nullptr));OVERLAPPED operation{};operation.hEvent=completed.value;
+       DWORD count=0;const char marker[]="append-probe\n";
+       bool written=WriteFile(appendWriter.value,marker,sizeof(marker)-1,&count,&operation)!=FALSE;
+       if(!written && GetLastError()==ERROR_IO_PENDING) {
+         if(WaitForSingleObject(completed.value,1000)!=WAIT_OBJECT_0) CancelIoEx(appendWriter.value,&operation);
+         written=GetOverlappedResult(appendWriter.value,&operation,&count,TRUE)!=FALSE;
+       }
+       std::cout<<"OpenSSH-compatible pipe write: "<<(written?std::to_string(count)+" bytes":winError())<<"\n";
+       appendWriter.reset();
+     }
+     appendPipe.finish();std::cout<<"OpenSSH-compatible pipe received: ["<<appendBytes<<"]\n"<<std::flush;
+   }
+   auto diagnosticConfig=root/L"diagnostic-config";writePrivateFile(diagnosticConfig,"Host *\n  BatchMode yes\n");
+   std::string queryLog;
+   {
+     DiagnosticPipe query([&](const std::string& bytes){queryLog+=bytes;});
+     auto result=capture(systemSSH(),{"-vv","-E",utf8(query.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),"-G","localhost"},5000);
+     query.finish();
+     std::cout<<"OpenSSH query exit="<<result.code<<" target=["<<queryLog<<"] auxiliary=["<<result.text<<"]\n"<<std::flush;
+   }
    std::string targetLog;
    DiagnosticPipe diagnostic([&](const std::string& bytes){targetLog+=bytes;});
-   auto diagnosticConfig=root/L"diagnostic-config";writePrivateFile(diagnosticConfig,"Host *\n  BatchMode yes\n");
-   auto diagnosticResult=capture(systemSSH(),{"-vv","-E",utf8(diagnostic.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),"-G","localhost"},5000);
+   auto diagnosticResult=capture(systemSSH(),{"-vv","-E",utf8(diagnostic.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),
+       "-o","ConnectTimeout=1","-o","ConnectionAttempts=1","-p","1","127.0.0.1"},5000);
    diagnostic.finish();
-   if(diagnosticResult.code!=0) throw std::runtime_error("OpenSSH -E pipe failed: "+diagnosticResult.text);
-   check(targetLog.find("Reading configuration data")!=std::string::npos,"target diagnostics arrive through real OpenSSH -E");
-   check(diagnosticResult.text.find("Reading configuration data")==std::string::npos,"target diagnostics stay separate from inherited stderr");
+   std::cout<<"OpenSSH connection exit="<<diagnosticResult.code<<" target=["<<targetLog<<"] auxiliary=["<<diagnosticResult.text<<"]\n"<<std::flush;
+   check(diagnosticResult.code!=124,"OpenSSH diagnostic probe completes before timeout");
+   check(targetLog.find("Connecting to 127.0.0.1")!=std::string::npos,"target diagnostics arrive through real OpenSSH -E");
+   check(diagnosticResult.text.find("Connecting to 127.0.0.1")==std::string::npos,"target diagnostics stay separate from inherited stderr");
    const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
    writePrivateFile(root/L"config.json",original);
    check(loadConfig(root).version==1,"v1 read supported");
