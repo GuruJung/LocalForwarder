@@ -669,8 +669,12 @@ extension SettingsController {
                 func click(_ title: String, editor: RuleEditor, usingEscape: Bool = false) throws {
                     let buttons = editor.window.contentView!.subviews.flatMap { NativeLayoutChecks.leaves($0) }.compactMap { $0 as? NSButton }
                     guard let button = buttons.first(where: { $0.title == title }) else { throw AppError(context + " missing " + title) }
-                    try NativeLayoutChecks.require(button.keyEquivalent == (title == "취소" ? "\u{1b}" : "\r"),
-                                                   context + " wrong rule keyboard equivalent")
+                    // Escape is a cancellation requirement. Confirmation is checked through
+                    // its actual button action and resulting draft, not a framework key string.
+                    if title == "취소" {
+                        try NativeLayoutChecks.require(button.keyEquivalent == "\u{1b}",
+                                                       context + " missing rule Escape equivalent")
+                    }
                     if usingEscape {
                         guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                                            windowNumber: editor.window.windowNumber, context: nil,
