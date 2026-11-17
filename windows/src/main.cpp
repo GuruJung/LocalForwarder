@@ -383,9 +383,67 @@ private:
         }catch(const std::exception& e){error(e.what());}}
     void ruleChanged(NMLISTVIEW* event){if(loading_||event->iItem<0||!settings_.drafts.contains(settings_.selected))return;auto& draft=settings_.drafts.at(settings_.selected);if(static_cast<size_t>(event->iItem)>=draft.host.forwards.size())return;draft.host.forwards[event->iItem].enabled=ListView_GetCheckState(control(Rules),event->iItem)!=FALSE;if((event->uNewState&LVIS_SELECTED)&&!(event->uOldState&LVIS_SELECTED)){capture();rule_=event->iItem;fillRuleEditor();}populateHosts();preview();}
 public:
+    void nativeLayoutChecks(){
+        auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
+        auto bounds=[](HWND child,HWND parent){RECT rect{};GetWindowRect(child,&rect);MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&rect),2);return rect;};
+        auto inside=[](const RECT& inner,const RECT& outer){return inner.left>=outer.left&&inner.top>=outer.top&&inner.right<=outer.right&&inner.bottom<=outer.bottom&&inner.right>inner.left&&inner.bottom>inner.top;};
+        auto disjoint=[&](const std::vector<int>& ids,HWND parent){
+            for(size_t i=0;i<ids.size();++i){check(control(ids[i])!=nullptr,"layout test control exists");auto a=bounds(control(ids[i]),parent);
+                for(size_t j=i+1;j<ids.size();++j){auto b=bounds(control(ids[j]),parent);RECT overlap{};if(IntersectRect(&overlap,&a,&b))throw std::runtime_error("native controls overlap: "+std::to_string(ids[i])+" / "+std::to_string(ids[j])+" at simulated DPI "+std::to_string(previewDpi));}
+            }
+        };
+        auto verifySettings=[&]{
+            RECT client{},formClient{};GetClientRect(settingsWindow_,&client);GetClientRect(form_,&formClient);
+            auto okay=bounds(control(Okay),settingsWindow_),cancel=bounds(control(CancelButton),settingsWindow_),form=bounds(form_,settingsWindow_);
+            check(inside(okay,client)&&inside(cancel,client),"settings footer remains visible");
+            check(form.bottom<=std::min(okay.top,cancel.top),"scrolling form cannot cover footer");
+            check(inside(bounds(control(Hosts),settingsWindow_),client),"host list remains inside settings");
+            disjoint({NewHost,DeleteHost,Hosts,CancelButton,Okay},settingsWindow_);
+            std::vector<int> ids={Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,CommandPreview,Save,Connect,Authentication,ConnectionStatus,300,301,302,303,304,305,309,310};
+            disjoint(ids,form_);
+            for(int id:ids){auto rect=bounds(control(id),form_);check(rect.left>=formClient.left&&rect.right<=formClient.right,"form controls fit horizontally");}
+            SetFocus(control(ConnectionStatus));ensureFocusVisible();check(inside(bounds(control(ConnectionStatus),form_),formClient),"keyboard focus scrolls final action into view");
+            SetFocus(control(Name));ensureFocusVisible();check(inside(bounds(control(Name),form_),formClient),"keyboard focus scrolls first input into view");
+        };
+        auto resizeClient=[](HWND window,int width,int height,UINT dpi){
+            RECT outer{0,0,MulDiv(width,dpi,96),MulDiv(height,dpi,96)};
+            AdjustWindowRectExForDpi(&outer,static_cast<DWORD>(GetWindowLongPtrW(window,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtrW(window,GWL_EXSTYLE)),GetDpiForWindow(window));
+            SetWindowPos(window,nullptr,0,0,outer.right-outer.left,outer.bottom-outer.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        };
+        UINT previousDpi=previewDpi;RECT original{};GetWindowRect(settingsWindow_,&original);
+        for(UINT dpi:{96u,144u,192u}){
+            previewDpi=dpi;updateFont();
+            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{900,650},{800,430}}){
+                resizeClient(settingsWindow_,logicalSize.first,logicalSize.second,dpi);
+                scroll_=0;layoutSettings();verifySettings();
+            }
+            // Exercise the actual work-area clamping path, without changing monitor DPI.
+            centerInWorkArea(settingsWindow_,900,650);layoutSettings();
+            RECT clampedClient{},clampedViewport{};GetClientRect(settingsWindow_,&clampedClient);GetClientRect(form_,&clampedViewport);
+            check(inside(bounds(control(Okay),settingsWindow_),clampedClient)&&inside(bounds(control(CancelButton),settingsWindow_),clampedClient),"work-area clamp preserves fixed footer");
+            // A headless runner's physical screen need not accommodate the synthetic
+            // minimum width at 200%; supported-width fit was checked above. Clamping
+            // must still leave the vertically scrolled action reachable.
+            SetFocus(control(ConnectionStatus));ensureFocusVisible();auto lastAction=bounds(control(ConnectionStatus),form_);
+            check(lastAction.top>=clampedViewport.top&&lastAction.bottom<=clampedViewport.bottom,"work-area height clamp preserves vertical action access");
+            MONITORINFO monitor{sizeof(monitor)};check(GetMonitorInfoW(MonitorFromWindow(settingsWindow_,MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE,"layout monitor information");
+            RECT actual{};GetWindowRect(settingsWindow_,&actual);check(inside(actual,monitor.rcWork),"settings initial size fits available work area");
+            auto before=settings_.drafts.at(settings_.selected);
+            showRule(true);
+            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,260},{400,240}}){
+                resizeClient(ruleWindow_,logicalSize.first,logicalSize.second,dpi);layoutRule();
+                RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322};
+                disjoint(ids,ruleWindow_);for(int id:ids)check(inside(bounds(control(id),ruleWindow_),client),"rule modal controls fit within client area");
+            }
+            closeRule(false);check(settings_.drafts.at(settings_.selected)==before,"layout probes leave draft unchanged");
+            outputLine("native layout checks passed at simulated DPI "+std::to_string(dpi));
+        }
+        previewDpi=previousDpi;updateFont();scroll_=0;SetWindowPos(settingsWindow_,nullptr,original.left,original.top,original.right-original.left,original.bottom-original.top,SWP_NOZORDER|SWP_NOACTIVATE);layoutSettings();
+    }
     void nativeChecks(const std::wstring& instanceKey){
         auto check=[](bool value,const char* why){if(!value)throw std::runtime_error(why);};
         openSettings({},true);check(settings_.startup&&settings_.order.size()==2,"startup settings load");
+        nativeLayoutChecks();
         auto originalRules=settings_.drafts.at("a").host.forwards;
         showRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&settings_.modalHost=="a","rule modal blocks owner");
         set(LocalPort,L"invalid");closeRule(true);check(ruleWindow_&&!get(RuleError).empty()&&settings_.drafts.at("a").host.forwards==originalRules,"invalid modal stays open without mutation");
