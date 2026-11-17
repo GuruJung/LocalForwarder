@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test "$(uname -s)" = Darwin
+# Probe the actual ad-hoc registration path before the longer native test suite.
+if [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]; then
+    bash scripts/test-macos-login-item.sh
+else
+    echo "Skipping real login-item registration outside disposable GitHub-hosted CI (unit tests still run)."
+fi
 swift test --package-path macos -c release
 swift build --package-path macos -c release --arch arm64
 binary_dir=$(swift build --package-path macos -c release --arch arm64 --show-bin-path)

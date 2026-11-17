@@ -2,6 +2,7 @@ import AppKit
 import Network
 import LocalForwarderCore
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let store = ConfigurationStore()
     lazy var manager = ConnectionManager(store: store)
@@ -12,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var trayMenu = NSMenu()
     private var hostMenuItems: [String: NSMenuItem] = [:]
     private var allReconnectItem: NSMenuItem?
+    private let loginItem = LoginItemController(service: MacLoginItemService())
+    private var loginMenuItem: NSMenuItem?
+    private var loginOperationPending = false
     private let monitor = NWPathMonitor()
     private var menuOpen = false
     private var terminationReady = false
@@ -51,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
             source.setEventHandler { [weak self] in self?.quit() }; source.resume(); signals.append(source)
         }
+        loginItem.refresh()
         launchReady = true; refresh()
         do {
             try manager.reloadConfiguration()
@@ -100,6 +105,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let id = sender.representedObject as? String else { return }
         settings.open(select: id)
     }
+    @objc private func toggleLoginItem() {
+        guard !terminating, !loginOperationPending, loginItem.canToggle else { return }
+        loginOperationPending = true
+        updateMenuPresentation()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.loginOperationPending = false; self.updateMenuPresentation() }
+            do {
+                let changed = try await self.loginItem.toggle()
+                if changed, self.loginItem.status == .requiresApproval, !self.terminating {
+                    let alert = NSAlert()
+                    alert.messageText = "로그인 자동 시작 승인 필요"
+                    alert.informativeText = "로그인 항목은 등록되었지만 아직 자동 시작할 수 없습니다. 시스템 설정의 로그인 항목에서 LocalForwarder를 허용해 주세요."
+                    alert.addButton(withTitle: "시스템 설정 열기")
+                    alert.addButton(withTitle: "나중에")
+                    if alert.runModal() == .alertFirstButtonReturn { MacLoginItemService.openSystemSettings() }
+                }
+            } catch {
+                if !self.terminating { self.showError("로그인 자동 시작 설정을 변경하지 못했습니다.\n" + error.localizedDescription) }
+            }
+        }
+    }
     @objc private func reconnectAll() {
         do { try manager.reconnectAll() } catch { showError(error.localizedDescription) }
     }
@@ -118,7 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if menuOpen { updateMenuPresentation() } else { populateMenu(trayMenu) }
         settings.refresh()
     }
-    func menuWillOpen(_ menu: NSMenu) { populateMenu(menu); menuOpen = true }
+    func menuWillOpen(_ menu: NSMenu) {
+        loginItem.refresh()
+        populateMenu(menu); menuOpen = true
+    }
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
         DispatchQueue.main.async { [weak self] in
@@ -133,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self; item.representedObject = id; item.tag = tag; return item
         }
         _ = item("설정", #selector(openSettings), in: menu)
+        loginMenuItem = item("로그인 자동 시작", #selector(toggleLoginItem), in: menu)
         allReconnectItem = item("전체 재연결", #selector(reconnectAll), in: menu)
         menu.addItem(.separator())
         for host in manager.hosts {
@@ -153,6 +184,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     /// While tracking, mutate existing rows so status changes do not dismiss or rebuild the user's menu.
     private func updateMenuPresentation() {
+        loginMenuItem?.title = loginOperationPending ? "로그인 자동 시작 (변경 중…)" : loginItem.menuTitle
+        loginMenuItem?.state = loginItem.status == nil ? .mixed : (loginItem.isChecked ? .on : .off)
+        loginMenuItem?.isEnabled = !terminating && !loginOperationPending && loginItem.canToggle
+        loginMenuItem?.toolTip = loginItem.errorMessage
         let hosts = Dictionary(uniqueKeysWithValues: manager.hosts.map { ($0.id, $0) })
         allReconnectItem?.isEnabled = !terminating && !manager.hosts.contains {
             let state = manager.runtime($0.id)?.state
