@@ -690,11 +690,30 @@ extension SettingsController {
                     fields[0].stringValue = "취소할 설명 변경"
                     if action != "닫기" { try click("취소", editor: editor, usingEscape: action == "Escape") }
                     else {
-                        editor.window.performClose(nil)
+                        let closeButton = editor.window.standardWindowButton(.closeButton)
+                        if let closeButton, closeButton.isEnabled && !closeButton.isHiddenOrHasHiddenAncestor {
+                            writeLine("LF_UI_RULE_CLOSE " + context + " close-button simulation")
+                            editor.window.performClose(nil)
+                        } else {
+                            // AppKit sheets can omit/disable the close affordance; performClose only
+                            // simulates that button. Exercise the production delegate contract in
+                            // that case, without claiming a user close-button click was available.
+                            writeLine("LF_UI_RULE_CLOSE " + context + " no close affordance; checking windowShouldClose delegate")
+                            try NativeLayoutChecks.require(editor.window.delegate === editor,
+                                                           context + " close delegate is not the rule editor")
+                            let result = editor.window.delegate?.windowShouldClose?(editor.window)
+                            try NativeLayoutChecks.require(result == false,
+                                                           context + " close delegate did not handle sheet cancellation")
+                        }
                         try NativeLayoutChecks.settle(controller.window)
                     }
-                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.drafts == before,
-                                                   context + " cancelling or closing changed the draft or left a modal open")
+                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.window.attachedSheet == nil,
+                                                   context + " " + action + " left the rule modal open")
+                    try NativeLayoutChecks.require(controller.drafts == before,
+                                                   context + " " + action + " changed the host draft")
+                    try NativeLayoutChecks.require(try Data(contentsOf: store.file) == originalFile,
+                                                   context + " " + action + " wrote the configuration file")
+                    writeLine("LF_UI_RULE_CANCEL " + context + " " + action + " passed")
                 }
                 for description in ["수정한 한글 웹 설명", ""] {
                     let (editor, fields) = try openRule(controller.drafts[selectedID]!.host.forwards[0])
