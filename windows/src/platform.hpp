@@ -13,19 +13,24 @@
 
 namespace lf {
 namespace fs = std::filesystem;
+using Post = std::function<void(std::function<void()>)>;
 std::wstring wide(const std::string& text);
 std::string utf8(const std::wstring& text);
 std::string winError(DWORD error = GetLastError());
 std::string newId();
+std::wstring currentUserSID();
 fs::path homeDirectory();
 fs::path executablePath();
 fs::path systemSSH();
 fs::path expandHome(const std::string& path);
 void protectPath(const fs::path& path);
+void createPrivateDirectory(const fs::path& path);
+void writePrivateFile(const fs::path& path, const std::string& bytes);
 Config loadConfig(const fs::path& directory);
 Host loadHost(const fs::path& directory, const std::string& id);
 void saveHost(const fs::path& directory, const Host& host);
 void deleteHost(const fs::path& directory, const std::string& id);
+void setIdentity(const fs::path& directory, const std::string& id, const std::string& identity);
 
 struct Handle {
     HANDLE value = nullptr;
@@ -41,7 +46,8 @@ struct Handle {
     explicit operator bool() const { return value && value!=INVALID_HANDLE_VALUE; }
 };
 class Child {
-    Handle process_, job_, pipe_;
+    Handle process_, job_, pipe_, completion_;
+    void waitForJob();
     std::thread reader_;
 public:
     using Callback = std::function<void(bool ended, const std::string& output, DWORD exitCode)>;
@@ -53,9 +59,13 @@ public:
 };
 struct Capture { DWORD code; std::string text; };
 Capture capture(const fs::path& executable, const std::vector<std::string>& args, DWORD timeout = 20000);
-int interactive(const fs::path& executable, const std::vector<std::string>& args);
+int interactive(const fs::path& executable, const std::vector<std::string>& args,
+                const std::optional<std::string>& input = std::nullopt);
 void outputLine(const std::string& line);
-void launchRecovery(const std::string& profileId);
+// Returns a cancellation action for the GUI observer, not the independent terminal.
+std::function<void()> launchRecovery(const std::string& profileId,
+                                    std::function<void(int)> completed = {}, Post post = {});
 std::string derivePublicKey(const fs::path& key);
-int setupAuthentication(const fs::path& directory, const std::string& profileId);
+int setupAuthentication(const fs::path& directory, const std::string& profileId,
+                        const std::string& configuration = {}, bool attachTerminal = true);
 }

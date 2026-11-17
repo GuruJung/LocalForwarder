@@ -69,6 +69,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: evidence-windows-${{ matrix.arch }}
-          path: dist/*evidence*.json
+          path: |
+            dist/*evidence*.json
+            dist/windows-*-tests.xml
           if-no-files-found: warn
           retention-days: 7

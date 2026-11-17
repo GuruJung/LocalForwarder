@@ -30,10 +30,11 @@ $build = Join-Path $root "build/windows-$Architecture"
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 & cmake --build $build --parallel 2
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-& ctest --test-dir $build --output-on-failure
+New-Item -ItemType Directory -Path dist -Force | Out-Null
+& ctest --test-dir $build --output-on-failure --output-junit (Join-Path $root "dist/windows-$Architecture-tests.xml")
 if ($LASTEXITCODE -ne 0) { throw 'CTest failed.' }
 $app = Join-Path $build 'LocalForwarder.exe'
-& python tests/integration.py --app $app
+& python tests/integration.py --behavior multi-host-v2 --app $app
 if ($LASTEXITCODE -ne 0) { throw 'SSH integration tests failed.' }
 New-Item -ItemType Directory -Path dist -Force | Out-Null
 $zip = Join-Path $root "dist/LocalForwarder-windows-$Architecture.zip"
@@ -43,3 +44,11 @@ Copy-Item $app,LICENSE,README.md $stage -Force
 Copy-Item third_party/yyjson/LICENSE (Join-Path $stage 'yyjson-LICENSE.txt') -Force
 Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
 Get-Item $app,$zip | Select-Object Name,Length | Format-Table
+@{
+    architecture = $Architecture
+    revision = (& git rev-parse HEAD)
+    executable_bytes = (Get-Item $app).Length
+    archive_bytes = (Get-Item $zip).Length
+    behavior = 'multi-host-v2'
+    native_desktop_manual_verification = 'not performed by this script'
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "dist/windows-$Architecture-build-evidence.json") -Encoding utf8

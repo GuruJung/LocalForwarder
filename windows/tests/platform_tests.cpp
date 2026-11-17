@@ -2,19 +2,82 @@
 #include <fstream>
 #include <iostream>
 #include <barrier>
+#include <exception>
+#include <shellapi.h>
+#include <aclapi.h>
+#include <sddl.h>
+#include <algorithm>
 using namespace lf;
 void check(bool x,const char* name){if(!x)throw std::runtime_error(name);}
+std::string readBytes(const fs::path& path) {
+ std::ifstream stream(path,std::ios::binary);
+ return std::string((std::istreambuf_iterator<char>(stream)),{});
+}
+void privateACL(const fs::path& path) {
+ PSECURITY_DESCRIPTOR descriptor=nullptr; PACL acl=nullptr; PSID owner=nullptr,expected=nullptr;
+ auto result=GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),SE_FILE_OBJECT,DACL_SECURITY_INFORMATION|OWNER_SECURITY_INFORMATION,&owner,nullptr,&acl,nullptr,&descriptor);
+ check(result==ERROR_SUCCESS,"read security descriptor");
+ check(ConvertStringSidToSidW(currentUserSID().c_str(),&expected)!=FALSE,"parse current SID");
+ bool valid=owner && EqualSid(owner,expected) && acl && acl->AceCount==1;
+ if(valid) {
+   void* pointer=nullptr; valid=GetAce(acl,0,&pointer)!=FALSE;
+   if(valid) {
+     auto* ace=static_cast<ACCESS_ALLOWED_ACE*>(pointer);
+     valid=ace->Header.AceType==ACCESS_ALLOWED_ACE_TYPE && EqualSid(&ace->SidStart,expected);
+   }
+ }
+ SECURITY_DESCRIPTOR_CONTROL control{}; DWORD revision=0;
+ valid=valid && GetSecurityDescriptorControl(descriptor,&control,&revision) && (control&SE_DACL_PROTECTED);
+ LocalFree(expected); LocalFree(descriptor); check(valid,"current user only protected ACL");
+}
 int main(int argc,char** argv) {
  if(argc==2 && std::string(argv[1])=="--close-stdout") {
    CloseHandle(GetStdHandle(STD_OUTPUT_HANDLE));
    const char message[]="stderr-survives\n"; DWORD written=0;
    return WriteFile(GetStdHandle(STD_ERROR_HANDLE),message,sizeof(message)-1,&written,nullptr) && written==sizeof(message)-1 ? 0 : 1;
  }
+ int wideCount=0; auto* wideArgs=CommandLineToArgvW(GetCommandLineW(),&wideCount);
+ std::vector<std::wstring> arguments;
+ for(int index=0;index<wideCount;++index) arguments.emplace_back(wideArgs[index]);
+ LocalFree(wideArgs);
+ if(arguments.size()==4 && arguments[1]==L"--save-many") {
+   try {
+     auto id=utf8(arguments[3]); Host host;host.id=id;host.name=id;host.target="localhost";
+     for(int index=0;index<80;++index) {host.name=id+"-"+std::to_string(index);saveHost(arguments[2],host);}
+     return 0;
+   } catch(const std::exception& error) {std::cerr<<error.what();return 1;}
+ }
+ if(arguments.size()==4 && arguments[1]==L"--identity-many") {
+   try {
+     for(int index=0;index<80;++index) setIdentity(arguments[2],utf8(arguments[3]),"key-"+std::to_string(index));
+     return 0;
+   } catch(const std::exception& error) {std::cerr<<error.what();return 1;}
+ }
+ if(arguments.size()==2 && arguments[1]==L"--sleep") {Sleep(30000);return 0;}
+ if(arguments.size()==3 && arguments[1]==L"--spawn-descendant") {
+   auto command=quoteWindowsArgument(executablePath().wstring())+L" --sleep";
+   STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
+   if(!CreateProcessW(nullptr,command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&process))return 1;
+   {std::ofstream marker{fs::path(arguments[2])};marker<<process.dwProcessId;}
+   CloseHandle(process.hThread);WaitForSingleObject(process.hProcess,INFINITE);CloseHandle(process.hProcess);return 0;
+ }
  auto root=fs::temp_directory_path()/wide("LF test 한글 ' "+newId());
  const char* stage="initialization";
  try {
    CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
    Host a; a.id="a";a.name="A";a.target="localhost";a.forwards.push_back({"f",true,15555,"localhost",80});
+   stage="v1 migration and user-only permissions";
+   createPrivateDirectory(root);
+   const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
+   writePrivateFile(root/L"config.json",original);
+   check(loadConfig(root).version==1,"v1 read supported");
+   check(readBytes(root/L"config.json")==original,"v1 read does not migrate");
+   saveHost(root,a);
+   std::vector<fs::path> backups;
+   for(const auto& entry:fs::directory_iterator(root)) if(entry.path().filename().wstring().rfind(L"config-v1-",0)==0) backups.push_back(entry.path());
+   check(backups.size()==1 && readBytes(backups[0])==original,"exact original migration backup");
+   check(loadConfig(root).version==2,"v2 saved");
+   for(const auto& path:{root,root/L"config.json",root/L"config.lock",backups[0]}) privateACL(path);
    stage="initial config CRUD";
    saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
    check(loadConfig(root).hosts.size()==2,"merge different hosts");
@@ -33,6 +96,30 @@ int main(int argc,char** argv) {
    for(auto& failure:failures)if(failure)std::rethrow_exception(failure);
    auto raced=loadConfig(root);check(raced.hosts.size()==1 && (raced.hosts[0].name=="Left" || raced.hosts[0].name=="Right"),"concurrent saves remain valid JSON");
    a.name="Final save";saveHost(root,a);check(loadHost(root,"a").name=="Final save","last completed save is freshly loaded");
+   stage="cross-process saves preserve distinct hosts";
+   auto concurrent=root/L"concurrent";createPrivateDirectory(concurrent);
+   auto ignore=[](bool,const std::string&,DWORD){};
+   Child first(executablePath(),{"--save-many",utf8(concurrent.wstring()),"left"},ignore);
+   Child second(executablePath(),{"--save-many",utf8(concurrent.wstring()),"right"},ignore);
+   check(first.wait(60000)==0 && second.wait(60000)==0,"concurrent processes complete");
+   auto both=loadConfig(concurrent);
+   check(both.hosts.size()==2,"distinct process writes preserve both hosts");
+   check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"right").name=="right-79","all process writes retained");
+   Child identity(executablePath(),{"--identity-many",utf8(concurrent.wstring()),"left"},ignore);
+   Child edit(executablePath(),{"--save-many",utf8(concurrent.wstring()),"right"},ignore);
+   check(identity.wait(60000)==0 && edit.wait(60000)==0,"identity and editor processes complete");
+   check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"left").identityFile=="key-79","identity mutation preserves latest other fields");
+   check(loadHost(concurrent,"right").name=="right-79","identity mutation preserves other host");
+   bool emptyRejected=false;try{setIdentity(concurrent,"left","");}catch(...){emptyRejected=true;}
+   check(emptyRejected && loadHost(concurrent,"left").identityFile=="key-79","empty helper key update rejected");
+   deleteHost(concurrent,"left");bool deletedRejected=false;
+   try{setIdentity(concurrent,"left","deleted-key");}catch(...){deletedRejected=true;}
+   check(deletedRejected && loadConfig(concurrent).hosts.size()==1,"helper never resurrects deleted host");
+   stage="lock failure preserves config";
+   auto blocked=root/L"blocked";createPrivateDirectory(blocked);writePrivateFile(blocked/L"config.json",original);
+   createPrivateDirectory(blocked/L"config.lock");bool lockRejected=false;
+   try{saveHost(blocked,a);}catch(...){lockRejected=true;}
+   check(lockRejected && readBytes(blocked/L"config.json")==original,"invalid lock path preserves original");
    stage="invalid config preservation";
    {std::ofstream f(root/L"config.json");f<<"broken";}
    bool threw=false;try{saveHost(root,a);}catch(...){threw=true;}check(threw,"broken config rejected");
@@ -41,6 +128,13 @@ int main(int argc,char** argv) {
    auto result=capture(systemSSH(),{"-V"});check(result.code==0 && result.text.find("OpenSSH")!=std::string::npos,"real SSH process");
    auto redirected=capture(executablePath(),{"--close-stdout"});
    check(redirected.code==0 && redirected.text=="stderr-survives\n","stderr survives child closing stdout");
+   stage="timeout kills query descendants";
+   auto childMarker=root/L"descendant.pid";
+   auto timeout=capture(executablePath(),{"--spawn-descendant",utf8(childMarker.wstring())},2000);
+   check(timeout.code==124,"capture timeout");
+   DWORD childPID=0;{std::ifstream marker(childMarker);marker>>childPID;}check(childPID!=0,"descendant started");
+   Handle descendant(OpenProcess(SYNCHRONIZE,FALSE,childPID));
+   check(!descendant || WaitForSingleObject(descendant.value,3000)==WAIT_OBJECT_0,"owned descendant stopped");
    stage="authentication key generation";
    auto keys=root/L"keys";fs::create_directory(keys);protectPath(keys);
    auto keygen=systemSSH().parent_path()/L"ssh-keygen.exe";
