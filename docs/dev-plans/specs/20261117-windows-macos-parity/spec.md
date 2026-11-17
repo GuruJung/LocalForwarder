@@ -7,6 +7,8 @@ current_spec_path: docs/dev-plans/current-spec.md
 
 # Tracked Feature Spec
 
+> 이 문서는 당시의 결정 기록이다. v1 설정 지원·이전·백업과 구형 실행·평가 동작에 관한 조항은 [저장소 정리 명세](../20261117-repository-cleanup/spec.md)로 대체됐다. 현재는 설정 v2와 현재 다중 호스트 동작만 지원하며 최신 의도는 [현재 명세](../../current-spec.md)를 따른다.
+
 ### 목표와 범위
 
 현재 macOS 소스와 현재 기능 명세를 기준으로 Windows를 다중 호스트 트레이 앱으로 재구성한다. 사용자에게 보이는 기능·설정·연결 정책·화면 구성은 동일하게 맞추고, OS 통합과 외형은 Windows 네이티브 방식을 사용한다.
@@ -78,7 +80,7 @@ Windows 11 x64·ARM64, 시스템 OpenSSH 9.5 이상, ZIP 배포를 유지한다.
 - **replace:** 현재 Windows가 v2를 읽지 못한다는 설명을 구버전 Windows·구버전 앱의 제한으로 변경한다.
 - **replace:** Windows 평가의 `legacy-v1` 기준을 `multi-host-v2`로 전환한다.
 - **add:** Windows의 로그인 세션별 인스턴스, 내부망 포함 네트워크 복구 기준, OpenSSH·ssh-agent 준비 안내 정책을 명시한다.
-- Windows 반영 대기의 기존 ID와 근거를 보존하며 구현 완료·자동 검증 완료·실기기 미검증을 구분해 갱신한다. 전역 개발 정책을 macOS 동결 정책으로 변경하지 않는다.
+- 구현 완료·자동 검증 완료·실기기 미검증을 구분한다. 현재 구현 차이와 검증 공백은 [현재 명세](../../current-spec.md)에서 확인한다.
 
 ### 수용 기준
 

@@ -151,7 +151,7 @@ LRESULT CALLBACK statusProc(HWND,UINT,WPARAM,LPARAM);
 LRESULT CALLBACK ruleProc(HWND,UINT,WPARAM,LPARAM);
 class App{
     HINSTANCE instance_;fs::path directory_;bool test_,start_,openConfig_,uiTest_,uiPreview_,quitting_=false,loading_=false,trayAdded_=false,menuOpen_=false;
-    std::string sshConfig_,singleID_;std::optional<ConnectionState> previous_;
+    std::string sshConfig_;
     std::shared_ptr<EventLoop> loop_=std::make_shared<EventLoop>();std::shared_ptr<int> lifetime_=std::make_shared<int>(0);
     LoginStartupController loginStartup_;
     std::unique_ptr<ConnectionManager> manager_;SettingsModel settings_;NetworkMonitor network_;
@@ -170,7 +170,7 @@ class App{
     void updateStatusFont(){if(!status_)return;HFONT old=statusFont_;statusFont_=CreateFontW(-MulDiv(10,uiDpi(status_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(statusFont_),TRUE);if(old)DeleteObject(old);}
     int choose(const wchar_t* title,const wchar_t* body,const std::vector<std::pair<int,const wchar_t*>>& choices,int defaultButton){std::vector<TASKDIALOG_BUTTON> buttons;for(auto& choice:choices)buttons.push_back({choice.first,choice.second});TASKDIALOGCONFIG config{};config.cbSize=sizeof(config);config.hwndParent=settingsWindow_;config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"LocalForwarder";config.pszMainInstruction=title;config.pszContent=body;config.cButtons=static_cast<UINT>(buttons.size());config.pButtons=buttons.data();config.nDefaultButton=defaultButton;int result=IDCANCEL;if(FAILED(TaskDialogIndirect(&config,&result,nullptr,nullptr)))throw std::runtime_error("확인 대화상자를 열 수 없습니다.");return result;}
 public:
-    App(HINSTANCE instance,fs::path directory,bool test,bool start,bool openConfig,std::string config,std::string single,bool uiTest=false,bool uiPreview=false,std::shared_ptr<LoginStartup> startup={}):instance_(instance),directory_(std::move(directory)),test_(test),start_(start),openConfig_(openConfig),uiTest_(uiTest),uiPreview_(uiPreview),sshConfig_(std::move(config)),singleID_(std::move(single)),loginStartup_(startup?std::move(startup):(test?std::shared_ptr<LoginStartup>(std::make_shared<PreviewLoginStartup>()):std::make_shared<RegistryLoginStartup>(executablePath()))){}
+    App(HINSTANCE instance,fs::path directory,bool test,bool start,bool openConfig,std::string config,bool uiTest=false,bool uiPreview=false,std::shared_ptr<LoginStartup> startup={}):instance_(instance),directory_(std::move(directory)),test_(test),start_(start),openConfig_(openConfig),uiTest_(uiTest),uiPreview_(uiPreview),sshConfig_(std::move(config)),loginStartup_(startup?std::move(startup):(test?std::shared_ptr<LoginStartup>(std::make_shared<PreviewLoginStartup>()):std::make_shared<RegistryLoginStartup>(executablePath()))){}
     ~App(){lifetime_.reset();network_.stop();if(loop_)loop_->detach();manager_.reset();if(trayAdded_)Shell_NotifyIconW(NIM_DELETE,&tray_);if(ruleWindow_)DestroyWindow(ruleWindow_);if(status_)DestroyWindow(status_);if(settingsWindow_)DestroyWindow(settingsWindow_);if(window_)DestroyWindow(window_);if(font_)DeleteObject(font_);if(statusFont_)DeleteObject(statusFont_);if(ruleFont_)DeleteObject(ruleFont_);clearMenuBitmaps();if(icon_)DestroyIcon(icon_);}
     void create(const std::wstring& title){
         WNDCLASSW cls{};cls.hInstance=instance_;cls.lpfnWndProc=appProc;cls.lpszClassName=AppClass;cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);if(!RegisterClassW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw std::runtime_error(winError());
@@ -181,7 +181,7 @@ public:
         manager_=std::make_unique<ConnectionManager>(StoreAccess{[directory]{return loadConfig(directory);},[directory](const std::string& id){return loadHost(directory,id);},[directory](const std::string& id){deleteHost(directory,id);}},[post,schedule,config,uiTest=uiTest_,uiPreview=uiPreview_]()->std::shared_ptr<SSHSessionProtocol>{if(uiTest)return std::make_shared<PreviewSession>(uiPreview);return std::make_shared<SSHSession>(post,schedule,config);},schedule);
         manager_->onChange=[this]{refresh();};manager_->onError=[this](const std::string&,const std::string& text){if(test_)error(text);else refresh();};manager_->onExit=[this]{finishQuit();};
         if(!test_||uiPreview_){icon_=static_cast<HICON>(LoadImageW(instance_,MAKEINTRESOURCEW(2),IMAGE_ICON,32,32,0));if(!icon_)icon_=forwardingIcon();taskbarCreated_=RegisterWindowMessageW(L"TaskbarCreated");updateTray();try{if(!uiPreview_){std::weak_ptr<int> alive=lifetime_;network_.start(post,[this,alive](bool available){if(!alive.expired()&&!quitting_)manager_->networkChanged(available);});}}catch(const std::exception& e){error(e.what());}}
-        try{manager_->reloadConfiguration();if(uiPreview_){manager_->connect("a");openSettings({},true);}else if(test_){if(!singleID_.empty())manager_->connect(singleID_);else if(start_)manager_->startAll();}else if(openConfig_||!fs::exists(directory_/L"config.json"))openSettings({},true);else manager_->startAll();}
+        try{manager_->reloadConfiguration();if(uiPreview_){manager_->connect("a");openSettings({},true);}else if(test_){if(start_)manager_->startAll();}else if(openConfig_||!fs::exists(directory_/L"config.json"))openSettings({},true);else manager_->startAll();}
         catch(const std::exception& e){if(!test_)openSettings({},true);error(std::string(e.what())+"\n기존 설정 파일은 보존했습니다.");}
         if(test_&&!uiTest_){snapshot();outputLine("LF_READY");startInput();}
     }
@@ -385,13 +385,12 @@ private:
     void quit(){if(quitting_)return;quitting_=true;network_.stop();closeRule(false);closeStatus();for(auto& [id,cancel]:authObservers_)if(cancel)cancel();authObservers_.clear();manager_->quit();}
     void finishQuit(){if(trayAdded_){Shell_NotifyIconW(NIM_DELETE,&tray_);trayAdded_=false;}loop_->detach();if(settingsWindow_)ShowWindow(settingsWindow_,SW_HIDE);PostQuitMessage(0);}
     void snapshot(const std::string& request={}){
-        if(!test_||!manager_)return;for(auto& host:manager_->hosts()){auto r=manager_->runtime(host.id);if(!r)continue;if(!singleID_.empty()&&singleID_==host.id&&previous_!=r->state){previous_=r->state;outputLine(std::string("LF_STATE ")+stateName(r->state));}
+        if(!test_||!manager_)return;for(auto& host:manager_->hosts()){auto r=manager_->runtime(host.id);if(!r)continue;
             yyjson_mut_doc* doc=yyjson_mut_doc_new(nullptr);auto* object=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,object);auto str=[&](yyjson_mut_val* obj,const char* key,const std::string& value){yyjson_mut_obj_add_strcpy(doc,obj,key,value.c_str());};str(object,"id",host.id);str(object,"state",stateName(r->state));str(object,"error",r->lastError);yyjson_mut_obj_add_bool(doc,object,"intent",r->desiredConnected);yyjson_mut_obj_add_bool(doc,object,"temporary",r->temporary);if(!request.empty())str(object,"requestID",request);
             auto* forwards=yyjson_mut_arr(doc);yyjson_mut_obj_add_val(doc,object,"forwards",forwards);for(auto& f:r->forwards){auto* row=yyjson_mut_arr_add_obj(doc,forwards);str(row,"id",f.id);str(row,"state",forwardStateName(f.state));str(row,"source",f.source);str(row,"description",f.description);str(row,"detail",f.detail);}auto* errors=yyjson_mut_arr(doc);yyjson_mut_obj_add_val(doc,object,"recentErrors",errors);for(auto& e:r->recentErrors){auto* row=yyjson_mut_arr_add_obj(doc,errors);str(row,"time",e.time);str(row,"message",e.message);}char* json=yyjson_mut_write(doc,0,nullptr);if(json){outputLine("LF_HOST "+std::string(json));free(json);}yyjson_mut_doc_free(doc);
         }
     }
     void input(const std::string& line){if(quitting_)return;try{
-        if(!singleID_.empty()&&(line.empty()||line.front()!='{')){if(line=="quit")quit();else if(line=="reconnect")manager_->connect(singleID_);else if(line=="disconnect")manager_->disconnect(singleID_);else if(line=="wake")manager_->wake();else if(line=="sleep")manager_->sleep();return;}
         std::unique_ptr<yyjson_doc,decltype(&yyjson_doc_free)> doc(yyjson_read(line.data(),line.size(),0),yyjson_doc_free);if(!doc)throw std::runtime_error("명령 JSON이 올바르지 않습니다.");auto* root=yyjson_doc_get_root(doc.get());if(!yyjson_is_obj(root))throw std::runtime_error("명령은 JSON 객체여야 합니다.");auto text=[&](const char* key,bool required=true){auto* value=yyjson_obj_get(root,key);if(!yyjson_is_str(value)){if(!required)return std::string{};throw std::runtime_error(std::string("문자열 필드가 필요합니다: ")+key);}return std::string(yyjson_get_str(value),yyjson_get_len(value));};auto command=text("command");
         if(command=="quit")quit();else if(command=="connect")manager_->connect(text("id"));else if(command=="disconnect")manager_->disconnect(text("id"));else if(command=="delete")manager_->remove(text("id"));else if(command=="saved")manager_->saved(loadHost(directory_,text("id")));else if(command=="reconnect-all")manager_->reconnectAll();else if(command=="wake")manager_->wake();else if(command=="sleep")manager_->sleep();else if(command=="network")manager_->networkChanged(yyjson_is_true(yyjson_obj_get(root,"available")));else if(command=="snapshot")snapshot(text("requestID",false));else if(command=="temporary"){auto* host=yyjson_obj_get(root,"host");if(!yyjson_is_obj(host))throw std::runtime_error("호스트 설정이 필요합니다.");char* value=yyjson_val_write(host,0,nullptr);if(!value)throw std::runtime_error("호스트 설정을 읽지 못했습니다.");std::string encoded=value;free(value);auto config=parseConfig("{\"version\":2,\"hosts\":["+encoded+"]}");manager_->connect(config.hosts.at(0),true);}else throw std::runtime_error("알 수 없는 명령: "+command);
         }catch(const std::exception& e){error(e.what());}}
@@ -570,7 +569,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);bool headless=false;int result=1;fs::path ownedTestDirectory;
     try{
         if(!argv)throw std::runtime_error(winError());std::vector<std::wstring> args(argv,argv+argc);LocalFree(argv);argv=nullptr;
-        auto directory=homeDirectory()/L".LocalForwarder";bool test=false,start=true,open=false,uiTest=false,uiPreview=false;std::string config,single;
+        auto directory=homeDirectory()/L".LocalForwarder";bool test=false,start=true,open=false,uiTest=false,uiPreview=false;std::string config;
         if(args.size()>=2){
             headless=args[1].rfind(L"--test-",0)==0;
             if(args[1]==L"--setup-auth"&&args.size()==3){result=setupAuthentication(directory,utf8(args[2]));if(SUCCEEDED(com))CoUninitialize();return result;}
@@ -578,7 +577,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(args[1]==L"--test-instance-peer"&&args.size()==3){if(!safeId(utf8(args[2])))throw std::runtime_error("Invalid test instance key");SingleInstance peer;if(peer.acquire(args[2]))throw std::runtime_error("Test instance was not already running");if(SUCCEEDED(com))CoUninitialize();return 0;}
             if(args[1]==L"--open-config"&&args.size()==2)open=true;
             else if(args[1]==L"--test-manager"&&(args.size()==4||(args.size()==5&&args[4]==L"--no-start"))){test=true;directory=args[2];config=utf8(args[3]);start=args.size()==4;}
-            else if(args[1]==L"--test-session"&&args.size()==5){test=true;directory=args[2];single=utf8(args[3]);config=utf8(args[4]);start=false;}
             else if(args[1]==L"--test-ui-preview"&&(args.size()==2||args.size()==3)){
                 if(args.size()==3){if(args[2]!=L"96"&&args[2]!=L"144"&&args[2]!=L"192")throw std::runtime_error("Preview DPI must be 96, 144 or 192");previewDpi=static_cast<UINT>(std::stoi(args[2]));}
                 test=true;uiTest=true;uiPreview=true;start=false;directory=fs::temp_directory_path()/wide("LocalForwarder-preview-"+newId());ownedTestDirectory=directory;
@@ -593,7 +591,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         if((!test||uiTest)&&!singleton.acquire(instanceKey)){if(SUCCEEDED(com))CoUninitialize();return 0;}
         INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&controls);
         {
-            App app(instance,directory,test,start,open,config,single,uiTest,uiPreview);app.create(!test||uiTest?singleton.windowTitle():L"LocalForwarder test");if(!test||uiTest)singleton.ready();
+            App app(instance,directory,test,start,open,config,uiTest,uiPreview);app.create(!test||uiTest?singleton.windowTitle():L"LocalForwarder test");if(!test||uiTest)singleton.ready();
             if(uiTest&&!uiPreview){app.nativeChecks(instanceKey);result=0;}
             else{MSG message{};BOOL received;while((received=GetMessageW(&message,nullptr,0,0))>0){if(!app.preprocess(message)){TranslateMessage(&message);DispatchMessageW(&message);}}result=received==-1?1:static_cast<int>(message.wParam);}
         }

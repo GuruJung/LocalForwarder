@@ -15,11 +15,11 @@ final class ForwardDescriptionTests: XCTestCase {
     }
     func testOptionalDescriptionRoundTripAndRequiredFields() throws {
         let original = host().forwards[0]
-        let legacy = try json(original)
-        XCTAssertNil(legacy["description"])
-        XCTAssertEqual(try decode(legacy), original)
+        let undescribed = try json(original)
+        XCTAssertNil(undescribed["description"])
+        XCTAssertEqual(try decode(undescribed), original)
         for absent in [NSNull(), ""] as [Any] {
-            var object = legacy; object["description"] = absent
+            var object = undescribed; object["description"] = absent
             let rule = try decode(object)
             XCTAssertEqual(rule, original)
             XCTAssertNil(try json(rule)["description"])
@@ -28,41 +28,35 @@ final class ForwardDescriptionTests: XCTestCase {
         XCTAssertEqual(try decode(json(described)), described)
         XCTAssertEqual(try json(described)["description"] as? String, described.description)
         for invalid in [true, 123, ["wrong"], ["text": "wrong"]] as [Any] {
-            var object = legacy; object["description"] = invalid
+            var object = undescribed; object["description"] = invalid
             XCTAssertThrowsError(try decode(object))
         }
         for key in ["id", "enabled", "localPort", "remoteHost", "remotePort"] {
-            var object = legacy; object.removeValue(forKey: key)
+            var object = undescribed; object.removeValue(forKey: key)
             XCTAssertThrowsError(try decode(object), "Missing required field: \(key)")
             object[key] = NSNull()
             XCTAssertThrowsError(try decode(object), "Null required field: \(key)")
         }
     }
-    func testV1AndV2LoadWithoutRewritingAndPreserveOriginalMigrationBackup() throws {
-        for version in [1, 2] {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            defer { try? FileManager.default.removeItem(at: directory) }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let store = ConfigurationStore(directory: directory)
-            var configuration = Configuration(hosts: [host()]); configuration.version = version
-            let original = try JSONEncoder().encode(configuration)
-            try original.write(to: store.file)
-            let loaded = try store.load()
-            XCTAssertEqual(loaded.version, version)
-            XCTAssertEqual(loaded.hosts[0].forwards.map(\.description), ["", ""])
-            XCTAssertEqual(try Data(contentsOf: store.file), original)
-            var edited = loaded.hosts[0]; edited.forwards[0].description = "기존 웹 규칙"
-            try store.save(edited)
-            XCTAssertEqual(try store.load().version, 2)
-            XCTAssertEqual(try store.host(edited.id), edited)
-            let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                .filter { $0.lastPathComponent.hasPrefix("config-v1-") }
-            XCTAssertEqual(backups.count, version == 1 ? 1 : 0)
-            if version == 1 { XCTAssertEqual(try Data(contentsOf: XCTUnwrap(backups.first)), original) }
-            try store.save(edited)
-            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path)
-                .filter { $0.hasPrefix("config-v1-") }.count, version == 1 ? 1 : 0)
-        }
+    func testV2LoadWithoutRewritingAndSaveRuleDescription() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ConfigurationStore(directory: directory)
+        let original = try JSONEncoder().encode(Configuration(hosts: [host()]))
+        try original.write(to: store.file)
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.version, 2)
+        XCTAssertEqual(loaded.hosts[0].forwards.map(\.description), ["", ""])
+        XCTAssertEqual(try Data(contentsOf: store.file), original)
+        var edited = loaded.hosts[0]; edited.forwards[0].description = "기존 웹 규칙"
+        try store.save(edited)
+        XCTAssertEqual(try store.load().version, 2)
+        XCTAssertEqual(try store.host(edited.id), edited)
+        try store.save(edited)
+        XCTAssertEqual(try store.host(edited.id), edited)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
+                       Set(["config.json", "config.lock"]))
     }
     func testInvalidDescriptionRejectsLoadAndSaveWithoutChangingFile() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

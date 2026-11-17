@@ -7,6 +7,8 @@ current_spec_path: docs/dev-plans/current-spec.md
 
 # Tracked Feature Spec
 
+> 이 문서는 당시의 결정 기록이다. v1 설정 지원·이전·백업과 구형 실행·평가 동작에 관한 조항은 [저장소 정리 명세](../20261117-repository-cleanup/spec.md)로 대체됐다. 현재는 설정 v2와 현재 다중 호스트 동작만 지원하며 최신 의도는 [현재 명세](../../current-spec.md)를 따른다.
+
 ## 목표와 동작
 
 macOS와 Windows의 포워딩 규칙에 선택적 `description`을 추가한다. 설명은 설정창 목록과 규칙 편집 팝업에서만 표시한다.

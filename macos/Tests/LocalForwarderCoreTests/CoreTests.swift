@@ -37,30 +37,43 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(machine.tick(now: 600), []); XCTAssertEqual(machine.failed(now: 601), [])
         machine.stopped(); XCTAssertEqual(machine.state, .disconnected)
     }
-    func testV1ReadIsUnchangedAndFirstSavePreservesExactBackup() throws {
+    func testV1RejectsLoadAndMutationsPreservingOriginalAndExistingBackup() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let store = ConfigurationStore(directory: directory)
-        let original = Data("{ \"version\": 1, \"hosts\": [{\"id\":\"old\",\"name\":\"old\",\"target\":\"server\",\"forwards\":[]}] }\n".utf8)
+        let original = Data("{ \"version\": 1, \"hosts\": [{\"id\":\"fixture\",\"name\":\"old\",\"target\":\"server\",\"forwards\":[]}] }\n".utf8)
+        let backup = directory.appendingPathComponent("config-v1-existing.json")
+        let backupBytes = Data("previous user backup\n".utf8)
+        try original.write(to: store.file)
+        try backupBytes.write(to: backup)
+        XCTAssertThrowsError(try store.load())
+        XCTAssertThrowsError(try store.save(host()))
+        XCTAssertThrowsError(try store.delete("fixture"))
+        XCTAssertThrowsError(try store.setIdentity("/tmp/new-key", for: "fixture"))
+        XCTAssertEqual(try Data(contentsOf: store.file), original)
+        XCTAssertEqual(try Data(contentsOf: backup), backupBytes)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
+                       Set(["config.json", "config.lock", "config-v1-existing.json"]))
+    }
+    func testV2MissingOptionsAndSavePermissions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = ConfigurationStore(directory: directory)
+        let original = Data("{ \"version\": 2, \"hosts\": [{\"id\":\"old\",\"name\":\"old\",\"target\":\"server\",\"forwards\":[]}] }\n".utf8)
         try original.write(to: store.file)
         let loaded = try store.load()
-        XCTAssertEqual(loaded.version, 1)
+        XCTAssertEqual(loaded.version, 2)
         XCTAssertTrue(loaded.hosts[0].autoConnect)
         XCTAssertTrue(loaded.hosts[0].exitOnForwardFailure)
         XCTAssertTrue(loaded.hosts[0].retryOnConnectionRefused)
         XCTAssertEqual(try Data(contentsOf: store.file), original)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["config.json"])
         var changed = loaded.hosts[0]; changed.autoConnect = false
         try store.save(changed)
-        XCTAssertEqual(try store.load().version, 2)
         XCTAssertFalse(try store.host("old").autoConnect)
-        let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("config-v1-") }
-        XCTAssertEqual(backups.count, 1)
-        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(backups.first)), original)
-        try store.save(changed)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix("config-v1-") }.count, 1)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
+                       Set(["config.json", "config.lock"]))
         let permissions = try FileManager.default.attributesOfItem(atPath: store.file.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
     }

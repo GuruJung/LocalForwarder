@@ -21,7 +21,7 @@ bundle=dist/LocalForwarder.app
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 swift scripts/generate-macos-icon.swift "$bundle/Contents/Resources/LocalForwarder.icns"
 test -s "$bundle/Contents/Resources/LocalForwarder.icns"
-cp LICENSE README.md "$bundle/Contents/Resources/"
+cp LICENSE README.md README_ko.md "$bundle/Contents/Resources/"
 cp "$binary_dir/LocalForwarder" "$bundle/Contents/MacOS/LocalForwarder"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -42,7 +42,7 @@ PLIST
 codesign --force --sign - "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
 "$bundle/Contents/MacOS/LocalForwarder" --test-ui
-python3 tests/integration.py --behavior multi-host-v2 --app "$bundle/Contents/MacOS/LocalForwarder"
+python3 tests/integration.py --app "$bundle/Contents/MacOS/LocalForwarder"
 ditto -c -k --keepParent "$bundle" dist/LocalForwarder-macos-arm64.zip
 stat -f 'macOS artifact bytes: %z' dist/LocalForwarder-macos-arm64.zip
 

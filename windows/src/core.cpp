@@ -186,7 +186,7 @@ Config parseConfig(const std::string& text) {
     if (!doc) throw std::runtime_error("설정 JSON을 읽을 수 없습니다: " + std::string(error.msg ? error.msg : "invalid JSON"));
     auto* root = yyjson_doc_get_root(doc.get());
     if (!yyjson_is_obj(root)) throw std::runtime_error("설정은 JSON 객체여야 합니다.");
-    auto version = exactInteger(yyjson_obj_get(root, "version"),1,2);
+    auto version = exactInteger(yyjson_obj_get(root, "version"),2,2);
     if (!version) throw std::runtime_error("지원하지 않는 설정 버전입니다.");
     auto* hosts = yyjson_obj_get(root, "hosts");
     if (!yyjson_is_arr(hosts)) throw std::runtime_error("hosts 배열이 없습니다.");

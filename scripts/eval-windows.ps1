@@ -35,13 +35,13 @@ New-Item -ItemType Directory -Path dist -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'CTest failed.' }
 $app = Join-Path $build 'LocalForwarder.exe'
 $env:PYTHONIOENCODING = 'utf-8'
-& python tests/integration.py --behavior multi-host-v2 --app $app
+& python tests/integration.py --app $app
 if ($LASTEXITCODE -ne 0) { throw 'SSH integration tests failed.' }
 New-Item -ItemType Directory -Path dist -Force | Out-Null
 $zip = Join-Path $root "dist/LocalForwarder-windows-$Architecture.zip"
 $stage = Join-Path $build 'package'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item $app,LICENSE,README.md $stage -Force
+Copy-Item $app,LICENSE,README.md,README_ko.md $stage -Force
 Copy-Item third_party/yyjson/LICENSE (Join-Path $stage 'yyjson-LICENSE.txt') -Force
 Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
 Get-Item $app,$zip | Select-Object Name,Length | Format-Table

@@ -146,11 +146,9 @@ void mutateConfig(const fs::path& directory,const std::function<void(Config&)>& 
     ConfigLock lock(directory);
     auto original=readConfigBytes(directory);
     Config config=original ? parseConfig(*original) : Config{};
-    const bool migration=original && config.version==1;
     change(config);
     config.version=2;
     auto encoded=writeConfig(config);
-    if(migration) writePrivateFile(directory/wide("config-v1-"+newId()+".json"),*original);
     atomicConfig(directory,encoded);
 }
 }

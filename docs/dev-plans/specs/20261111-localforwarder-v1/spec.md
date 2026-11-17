@@ -7,6 +7,8 @@ current_spec_path: docs/dev-plans/current-spec.md
 
 ## Tracked Feature Spec
 
+> 이 문서는 당시의 결정 기록이다. v1 설정 지원·이전·백업과 구형 실행·평가 동작에 관한 조항은 [저장소 정리 명세](../20261117-repository-cleanup/spec.md)로 대체됐다. 현재는 설정 v2와 현재 다중 호스트 동작만 지원하며 최신 의도는 [현재 명세](../../current-spec.md)를 따른다.
+
 ### 목적과 지원 범위
 
 시스템 OpenSSH를 실행하고 관리하는 작은 네이티브 GUI 프로그램을 만든다. SSH 프로토콜과 포워딩 전송 기능은 직접 구현하지 않는다.

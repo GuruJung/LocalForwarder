@@ -32,9 +32,9 @@ int main() {
     auto changedPort=describedRule;changedPort.forwards[0].remotePort++;
     check(!sameExecutionSettings(changedPort,undescribedRules),"real forwarding changes remain execution differences");
     auto ruleJSON=[](int version,const std::string& suffix){return std::string("{\"version\":")+std::to_string(version)+R"(,"hosts":[{"id":"h","name":"h","target":"s","forwards":[{"id":"f","enabled":true,"localPort":1234,"remoteHost":"localhost","remotePort":80)"+suffix+"}]}]}";};
-    for(int version:{1,2})for(auto suffix:{"",",\"description\":null",",\"description\":\"\""}){
-        auto old=parseConfig(ruleJSON(version,suffix));
-        check(old.hosts[0].forwards[0].description.empty(),"v1/v2 missing nullable empty rule description");
+    for(auto suffix:{"",",\"description\":null",",\"description\":\"\""}){
+        auto old=parseConfig(ruleJSON(2,suffix));
+        check(old.hosts[0].forwards[0].description.empty(),"v2 missing nullable empty rule description");
         check(writeConfig(old).find("description")==std::string::npos,"empty rule description omitted on save");
     }
     for(auto value:{"1","true","[]","{}","\"a\\nb\"","\"a\\rb\"","\"a\\u0000b\"","\"a\\u0085b\"","\"a\\u2028b\"","\"a\\u2029b\""})
@@ -74,21 +74,22 @@ int main() {
     check(remoteJump.feed("debug1: remote forward success for: listen 1234, connect localhost:22\n"),"target remote acknowledgement ready");
     Readiness failed;
     check(!failed.feed("Authenticated to h\nCould not request local forwarding.\ndebug1: Entering interactive session.\n"),"failed forward never connected");
-    // New v2 storage preserves v1 reads, defaults missing/null options, and rejects explicit empty optional strings.
-    auto v1=parseConfig(R"({"version":1,"hosts":[{"id":"old","name":"old","target":"server","forwards":[]}]})");
-    check(v1.version==1 && v1.hosts[0].autoConnect && v1.hosts[0].exitOnForwardFailure && v1.hosts[0].retryOnConnectionRefused,"v1 defaults");
-    check(parseConfig(writeConfig(v1)).version==2,"write upgrades v1 to v2");
+    // v2 defaults missing/null options and rejects explicit empty optional strings.
+    auto defaults=parseConfig(R"({"version":2,"hosts":[{"id":"old","name":"old","target":"server","forwards":[]}]})");
+    check(defaults.version==2 && defaults.hosts[0].autoConnect && defaults.hosts[0].exitOnForwardFailure && defaults.hosts[0].retryOnConnectionRefused,"v2 defaults");
+    check(parseConfig(writeConfig(defaults)).version==2,"v2 round trip");
+    rejects([]{parseConfig(R"({"version":1,"hosts":[{"id":"old","name":"old","target":"server","forwards":[]}]})");});
     auto empty=parseConfig(R"({"version":2,"hosts":[]})"); check(empty.hosts.empty(),"empty config permitted");
     auto optional=parseConfig(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","user":null,"identityFile":null,"port":null,"forwards":[],"autoConnect":null}]})");
     check(optional.hosts[0].user.empty() && optional.hosts[0].autoConnect,"null defaults");
     for(auto field:{"user","identityFile"}) {
-        auto text=R"({"version":1,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],")"+std::string(field)+R"(":""}]})";
+        auto text=R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],")"+std::string(field)+R"(":""}]})";
         rejects([&]{parseConfig(text);});
     }
     rejects([]{parseConfig(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],"autoConnect":1}]})");});
-    for(auto version:{"1.0","2e0","0.2e1"}) {
+    for(auto version:{"2.0","2e0","0.2e1"}) {
         auto text=std::string(R"({"version":)")+version+R"(,"hosts":[]})";
-        check(parseConfig(text).version>=1,"integral JSON version accepted");
+        check(parseConfig(text).version==2,"integral JSON version accepted");
     }
     for(auto number:{"22.0","2.2e1","220e-1","0.022e3","65535.000"}) {
         auto text=std::string(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","port":)")+number+R"(,"forwards":[]}]})";
@@ -98,7 +99,7 @@ int main() {
         auto text=std::string(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","port":)")+number+R"(,"forwards":[]}]})";
         rejects([&]{parseConfig(text);});
     }
-    for(auto version:{"true","2.1","2.000000000000000001","1e999","-1"}) {
+    for(auto version:{"1","1.0","1e0","0","3","true","2.1","2.000000000000000001","1e999","-1"}) {
         auto text=std::string(R"({"version":)")+version+R"(,"hosts":[]})"; rejects([&]{parseConfig(text);});
     }
     // Win32 NUL-terminated labels cannot represent this name safely; reject it
