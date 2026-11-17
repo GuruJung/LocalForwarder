@@ -35,14 +35,19 @@ enum NativeLayoutChecks {
                 ancestor = current.superview
             }
             try require(ancestor === container, label + " missing from container")
-            let rect = view.convert(view.bounds, to: container)
+            let frame = view.convert(view.bounds, to: container)
+            // AppKit positions controls by alignment rects. NSTextField frames have
+            // optical outsets (for example x=-2, width=116 for a 112pt label) that
+            // contain no clipped text. Ask the control for its native content geometry
+            // instead of treating those frame outsets as lost content.
+            let rect = view.superview!.convert(view.alignmentRect(forFrame: view.frame), to: container)
             try require(rect.width > 0 && rect.height > 0, label + " zero size \(rect)")
             try require(rect.minX >= -1 && rect.maxX <= container.bounds.width + 1,
                         label + " horizontal clipping \(rect) in \(container.bounds)")
             try require(rect.minY >= -1 && rect.maxY <= container.bounds.height + 1,
                         label + " vertical clipping \(rect) in \(container.bounds)")
             if let button = view as? NSButton {
-                try require(rect.width + 1 >= button.intrinsicContentSize.width, label + " truncated button")
+                try require(frame.width + 1 >= button.intrinsicContentSize.width, label + " truncated button")
             }
             if let scroll {
                 let clip = scroll.contentView
