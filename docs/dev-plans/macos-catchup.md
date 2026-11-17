@@ -80,6 +80,6 @@ Windows 전용 UI·OS 변경은 이식 목록에 추가하지 않는다. 기존 
 
 ## 설정창·트레이 개선 (20261117-settings-tray-refinement)
 
-- 상태: 구현 진행·검증 대기. [기능 명세](specs/20261117-settings-tray-refinement/spec.md)와 [검증 절차](../verification/settings-tray-refinement.md)를 따른다.
+- 상태: 구현 완료·ARM64 네이티브 CI 통과. macOS 실기기 시각 검증은 미수행이다. [기능 명세](specs/20261117-settings-tray-refinement/spec.md)와 [검증 절차](../verification/settings-tray-refinement.md)를 따른다.
 - macOS의 소형 설정창, 규칙 모달, description 보존과 실행 설정 비교, 아이콘·규칙별 트레이 표시를 대상으로 한다. 이전 차이 항목의 증거·미검증 상태는 그대로 유지한다.
 - 현재 UI 의도는 [현재 명세](current-spec.md)를 따른다. 이 절의 구현과 검증 상태는 이전 기능의 실기기 검증 완료를 뜻하지 않는다.
