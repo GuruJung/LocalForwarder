@@ -629,7 +629,24 @@ extension SettingsController {
                                                context + " document width differs from the scroll viewport")
                 try NativeLayoutChecks.check(expectedForm, in: controller.formDocumentView, scroll: controller.formScrollView, context: context)
                 let before = controller.drafts
-                for editing in [nil, controller.drafts[controller.selectedID!]!.host.forwards.first] as [Forward?] {
+                let selectedID = controller.selectedID!
+                let originalRules = before[selectedID]!.host.forwards
+                let originalFile = try Data(contentsOf: store.file)
+                let columns = controller.rulesTable.tableColumns
+                try NativeLayoutChecks.require(columns.map { $0.identifier.rawValue } ==
+                                               ["enabled", "localPort", "remoteHost", "remotePort", "description"],
+                                               context + " missing or reordered rule columns")
+                let descriptionColumn = columns.last!
+                try NativeLayoutChecks.require(descriptionColumn.title == "설명" && !descriptionColumn.isEditable,
+                                               context + " description column must use the rule editor")
+                try NativeLayoutChecks.require(controller.rulesTable.enclosingScrollView?.hasHorizontalScroller == true,
+                                               context + " rule columns cannot scroll horizontally")
+                func checkDescriptionCell(_ expected: String, row: Int = 0) throws {
+                    let displayed = controller.tableView(controller.rulesTable, objectValueFor: descriptionColumn, row: row) as? String
+                    try NativeLayoutChecks.require(displayed == expected, context + " incorrect description table cell")
+                }
+                try checkDescriptionCell(originalRules[0].description)
+                func openRule(_ editing: Forward?) throws -> (RuleEditor, [NSTextField]) {
                     controller.showRuleEditor(editing: editing)
                     guard let editor = controller.ruleEditor else { throw AppError(context + " missing rule sheet") }
                     try NativeLayoutChecks.settle(editor.window)
@@ -638,13 +655,70 @@ extension SettingsController {
                                                    context + " rule sheet exceeds available work area")
                     let modalContent = editor.window.contentView!
                     let controls = modalContent.subviews.flatMap { NativeLayoutChecks.leaves($0) }
-                    try NativeLayoutChecks.require(controls.count == 9, context + " missing rule controls")
+                    try NativeLayoutChecks.require(controls.count == 11, context + " missing rule controls")
                     try NativeLayoutChecks.check(controls, in: modalContent, context: context + " rule sheet")
-                    editor.cancel()
-                    try NativeLayoutChecks.settle(controller.window)
-                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.drafts == before,
-                                                   context + " cancelling changed the draft or left a modal open")
+                    let fields = controls.compactMap { $0 as? NSTextField }.filter { $0.isEditable }
+                    let labels = controls.compactMap { $0 as? NSTextField }.filter { !$0.isEditable }.map(\.stringValue)
+                    try NativeLayoutChecks.require(fields.count == 4 && labels == ["설명 (선택)", "로컬 포트", "목적지 호스트", "목적지 포트"],
+                                                   context + " wrong rule field order")
+                    try NativeLayoutChecks.require(fields[0].stringValue == (editing?.description ?? "") &&
+                                                   fields[0].cell?.usesSingleLineMode == true,
+                                                   context + " incorrect initial or multiline rule description")
+                    return (editor, fields)
                 }
+                func click(_ title: String, editor: RuleEditor, usingEscape: Bool = false) throws {
+                    let buttons = editor.window.contentView!.subviews.flatMap { NativeLayoutChecks.leaves($0) }.compactMap { $0 as? NSButton }
+                    guard let button = buttons.first(where: { $0.title == title }) else { throw AppError(context + " missing " + title) }
+                    try NativeLayoutChecks.require(button.keyEquivalent == (title == "취소" ? "\u{1b}" : "\r"),
+                                                   context + " wrong rule keyboard equivalent")
+                    if usingEscape {
+                        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                           windowNumber: editor.window.windowNumber, context: nil,
+                                                           characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                                                           isARepeat: false, keyCode: 53) else { throw AppError(context + " missing Escape event") }
+                        try NativeLayoutChecks.require(button.performKeyEquivalent(with: event), context + " Escape did not activate Cancel")
+                    } else { button.performClick(nil) }
+                    try NativeLayoutChecks.settle(controller.window)
+                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.window.attachedSheet == nil,
+                                                   context + " rule sheet remained open after " + title)
+                    try NativeLayoutChecks.require(try Data(contentsOf: store.file) == originalFile,
+                                                   context + " rule modal wrote the configuration file")
+                }
+                let cancellations: [(String, Forward?)] = [("취소", nil), ("Escape", originalRules.first), ("닫기", originalRules.first)]
+                for (action, editing) in cancellations {
+                    let (editor, fields) = try openRule(editing)
+                    fields[0].stringValue = "취소할 설명 변경"
+                    if action != "닫기" { try click("취소", editor: editor, usingEscape: action == "Escape") }
+                    else {
+                        editor.window.performClose(nil)
+                        try NativeLayoutChecks.settle(controller.window)
+                    }
+                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.drafts == before,
+                                                   context + " cancelling or closing changed the draft or left a modal open")
+                }
+                for description in ["수정한 한글 웹 설명", ""] {
+                    let (editor, fields) = try openRule(controller.drafts[selectedID]!.host.forwards[0])
+                    fields[0].stringValue = description
+                    try click("확인", editor: editor)
+                    var expected = before
+                    expected[selectedID]!.host.forwards[0].description = description
+                    try NativeLayoutChecks.require(controller.drafts == expected,
+                                                   context + " description confirmation changed other draft fields, IDs, or order")
+                    try checkDescriptionCell(description)
+                }
+                let beforeAddition = controller.drafts[selectedID]!.host.forwards
+                let (editor, fields) = try openRule(nil)
+                fields[0].stringValue = "새 규칙 설명"; fields[1].stringValue = "18081"
+                try click("확인", editor: editor)
+                let added = controller.drafts[selectedID]!.host.forwards
+                try NativeLayoutChecks.require(added.count == beforeAddition.count + 1 && Array(added.dropLast()) == beforeAddition &&
+                                               added.last?.description == "새 규칙 설명" && added.last?.localPort == 18081 &&
+                                               Set(added.map(\.id)).count == added.count,
+                                               context + " new rule lost description or changed previous rules")
+                try checkDescriptionCell("새 규칙 설명", row: added.count - 1)
+                // Reset only the isolated test fixture before testing the next window size.
+                controller.drafts = before
+                controller.rulesTable.reloadData(); controller.hostsTable.reloadData(); controller.updateCommand()
                 writeLine("LF_UI_LAYOUT " + context + " passed")
             }
         }

@@ -106,7 +106,10 @@ enum NativeLayoutChecks {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("LocalForwarder-UI-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = ConfigurationStore(directory: directory)
-        try store.save(Host(name: "Layout test", target: "example.invalid", forwards: [Forward()], autoConnect: false))
+        try store.save(Host(name: "Layout test", target: "example.invalid", forwards: [
+            Forward(id: "web", description: "사내 웹 대시보드"),
+            Forward(id: "database", enabled: false, localPort: 15432, remoteHost: "database", remotePort: 5432,
+                    description: "읽기 전용 DB")], autoConnect: false))
         let manager = ConnectionManager(store: store, sessionFactory: { Session() })
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory); application.finishLaunching()
