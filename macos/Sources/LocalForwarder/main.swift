@@ -49,6 +49,7 @@ func runTestManager(directory: String, configuration: String, start: Bool) {
                     switch command {
                     case "connect": try manager.connect(id())
                     case "disconnect": manager.disconnect(try id())
+                    case "disconnect-all": manager.disconnectAll()
                     case "delete": try manager.delete(id())
                     case "temporary":
                         guard let object = value["host"] else { throw AppError("호스트 설정이 필요합니다.") }

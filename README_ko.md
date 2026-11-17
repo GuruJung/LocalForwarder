@@ -8,11 +8,13 @@ LocalForwarder는 macOS와 Windows에서 SSH 로컬 포워딩을 관리하는 �
 
 | 시스템 | CPU | 다운로드 |
 |---|---|---|
-| macOS 15 이상 | Apple Silicon ARM64 | `LocalForwarder-macos-arm64.zip` |
-| Windows 11 | x64 | `LocalForwarder-windows-x64.zip` |
-| Windows 11 | ARM64 | `LocalForwarder-windows-arm64.zip` |
+| macOS 15 이상 | Apple Silicon ARM64 | `LocalForwarder-<version>-macos-arm64.zip` |
+| Windows 11 | x64 | `LocalForwarder-<version>-windows-x64.zip` |
+| Windows 11 | ARM64 | `LocalForwarder-<version>-windows-arm64.zip` |
 
-[GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml)의 성공한 실행을 열고 **Artifacts**에서 해당 플랫폼의 패키지를 다운로드하세요. 다운로드에는 GitHub 로그인이 필요하며 결과물은 7일간 보관됩니다. Artifact 압축 파일과 그 안의 배포 ZIP을 모두 푼 뒤 macOS에서는 `.app`, Windows에서는 `.exe`를 실행합니다. 별도 설치 프로그램은 필요하지 않습니다.
+[GitHub Releases](https://github.com/GuruJung/LocalForwarder/releases)에서 공개된 버전을 다운로드하세요. 위 파일명의 `<version>`은 릴리스 버전(시작값 `0.1.0`)입니다. ZIP을 풀고 `.app` 또는 `.exe`를 실행합니다.
+
+개발 빌드는 [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml)의 성공한 실행을 열고 **Artifacts**에서 해당 플랫폼의 패키지를 다운로드하세요. 다운로드에는 GitHub 로그인이 필요하며 결과물은 7일간 보관됩니다. Artifact 압축 파일과 그 안의 배포 ZIP을 모두 푼 뒤 macOS에서는 `.app`, Windows에서는 `.exe`를 실행합니다. 별도 설치 프로그램은 필요하지 않습니다.
 
 macOS 앱은 ad-hoc 서명하며 공증하지 않고, Windows 실행 파일에는 서명 인증서가 없습니다. macOS가 실행을 차단하면 출처를 확인한 뒤 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요. Windows에서는 SmartScreen 경고가 나타날 수 있습니다. 조직에서 실행을 제한한다면 해당 정책을 따르세요.
 
@@ -40,11 +42,15 @@ macOS는 `/usr/bin/ssh`를 사용합니다. Windows에는 시스템 **OpenSSH Cl
 
 ## 연결과 트레이
 
-트레이 메뉴에는 설정, 로그인 자동 시작, 전체 재연결, 호스트별 메뉴, 종료가 있습니다. 호스트 메뉴에는 SSH 요약, 규칙별 정보와 상태 아이콘, 연결 동작이 표시됩니다. 비활성 규칙도 표시됩니다. 자세한 오류와 저장 설정·실행 중 연결의 차이는 설정창의 **연결 상태…**에서 확인하세요.
+트레이 메뉴에는 설정, 로그인 자동 시작, 전체 재연결, 전체 연결 끊기, 호스트별 메뉴, About..., 종료가 있습니다. 호스트 메뉴에는 SSH 요약, 규칙별 정보와 상태 아이콘, 연결 동작이 표시됩니다. 비활성 규칙도 표시됩니다. 자세한 오류와 저장 설정·실행 중 연결의 차이는 설정창의 **연결 상태…**에서 확인하세요.
 
 저장은 선택한 호스트만 변경하며 현재 연결과 다른 호스트의 미저장 초안은 유지합니다. 변경은 다음 연결부터 적용됩니다. 저장 없이 연결하면 임시 설정이 수동 재연결과 자동 복구에도 사용되며, 이후 편집을 취소해도 실행 중인 설정은 되돌리지 않습니다. 해당 호스트를 명시적으로 저장하면 다음 연결부터 임시 설정 대신 저장값을 사용합니다. 저장 없이 연결한 신규 호스트는 앱 종료 전까지만 유지됩니다.
 
 **전체 재연결**은 임시 설정을 해제하고 저장된 자동 연결 ON 호스트만 다시 연결합니다. 자동 연결 OFF인 호스트도 수동 연결할 수 있습니다. 수동으로 끊으면 현재 실행 중에는 자동 복구하지 않지만 저장된 자동 연결 옵션은 바뀌지 않습니다.
+
+**전체 연결 끊기**는 한 번 확인한 뒤 수동 연결과 미저장 임시 호스트를 포함한 모든 호스트를 끊고 연결 시도·재시도·자동 복구 대기도 취소합니다. 기본 선택은 취소입니다. 앱은 트레이에 남으며 저장된 자동 연결 옵션, 미저장 편집, 임시 실행 설정은 보존됩니다. 다시 연결하거나 정상 시작 정책에 따라 앱을 재시작하기 전까지 자동 복구하지 않습니다. 끊을 연결이나 작업·연결 의도가 없으면 메뉴가 비활성화됩니다.
+
+**About...**은 앱 아이콘·이름·제품 버전·개발자 GuruJung·GitHub 링크를 표시하는 모달을 엽니다. 기존 연결은 유지하며, 링크를 클릭할 때만 기본 브라우저를 엽니다. 닫기 버튼이나 Escape로 닫습니다.
 
 절전 복귀 또는 네트워크 사용 불가→사용 가능 전환 후 **마지막 이벤트부터 5초 뒤** 복구합니다. 연결을 유지하도록 요청된 호스트 중 실제로 끊긴 호스트만 대상입니다. 정상 연결, 연결 시도 중, 수동 단절 호스트는 건드리지 않습니다. 다시 오프라인이 되면 대기 중 복구를 취소합니다. 설정창 열기나 앱 포커스 복귀는 복구 계기가 아닙니다. 복구 이후 늦게 감지한 단절은 다음 이벤트나 수동 연결을 기다립니다.
 
@@ -132,3 +138,17 @@ pwsh -NoProfile -File scripts/eval-windows.ps1 -Architecture arm64
 통합 테스트는 임시 키·설정과 루프백 SSH 서버를 사용하며 몇 분이 걸립니다. macOS의 일반 사용자 계정에서는 격리된 테스트 서버 실행에 `sudo -n` 권한이 필요하며 테스트 중 비밀번호 입력은 받을 수 없습니다. Windows에서는 시스템 OpenSSH 설치 또는 `LOCALFORWARDER_TEST_SSHD`로 `sshd.exe`를 제공하세요. Windows CI 서버 준비 스크립트는 일회성 GitHub 러너 전용이며 로컬 PC 설정 명령이 아닙니다. macOS의 실제 로그인 항목 등록 테스트도 일회성 GitHub 호스팅 CI에서만 실행합니다. 자동 테스트가 실제 절전·네트워크 전환과 데스크톱 동작 확인을 대신하지는 않습니다.
 
 제품 의도와 개발 이슈는 [현재 명세](https://github.com/GuruJung/LocalForwarder/blob/main/docs/dev-plans/current-spec.md)에서 확인하세요.
+
+## 버전 관리와 배포
+
+`VERSION`은 macOS·Windows의 공통 제품 버전이며 설정 형식 `"version": 2`와는 별개입니다. 제품 버전을 바꾸려면 `VERSION`을 `major.minor.patch` 형식으로 수정한 뒤 추적 중인 Swift 버전 상수를 다시 생성하고 검사합니다.
+
+```sh
+python3 scripts/version.py --write
+python3 scripts/version.py --check
+python3 -m unittest discover -s tests -p 'test_release*.py'
+```
+
+`VERSION`과 생성된 Swift 파일을 함께 커밋합니다. Windows는 CMake가 `VERSION`을 읽습니다. 네이티브 평가 스크립트는 버전과 패키지 메타데이터를 검사합니다. About·OS 버전 정보·ZIP 파일명은 모두 같은 제품 버전을 사용합니다.
+
+릴리스를 검토하고 커밋한 뒤 일치하는 태그(예: `v0.1.0`)를 명시적으로 생성·push합니다. 태그는 `v`와 `VERSION`을 붙인 값과 정확히 일치해야 합니다. 태그 CI는 macOS arm64·Windows x64/arm64 검증과 패키징이 모두 성공한 경우에만 자동 생성한 노트와 함께 GitHub Release를 공개합니다. 브랜치·PR CI는 발행 없이 artifact만 생성합니다. 업로드 실패 시 draft를 남겨 재시도하며 이미 공개된 Release는 덮어쓰지 않습니다. 버전·태그를 자동 생성하거나 앱을 자동 업데이트하지 않습니다.

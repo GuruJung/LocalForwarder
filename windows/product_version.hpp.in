@@ -1,0 +1,3 @@
+// Generated from VERSION by CMake. Do not edit.
+#pragma once
+namespace lf { inline constexpr char productVersion[] = "@LF_VERSION@"; }

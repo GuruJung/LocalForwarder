@@ -149,6 +149,27 @@ void ConnectionManager::disconnect(const std::string& id) {
     value->runtime.desiredConnected=false; value->runtime.state=ConnectionState::stopping;
     stop(value,[]{}); changed();
 }
+void ConnectionManager::disconnectAll() {
+    if(quitting_ || disconnectingAll_) return;
+    cancelRecovery();
+    std::vector<std::shared_ptr<Entry>> current;
+    for(auto& [id,value]:entries_) current.push_back(value);
+    if(current.empty()) return;
+    disconnectingAll_=true;
+    // Invalidate every intent before stopping: synchronous completion of an older
+    // reconnect-all barrier must not launch a peer that has not been visited yet.
+    for(auto& value:current) {
+        ++value->generation; value->pending.reset();
+        value->runtime.desiredConnected=false; value->runtime.state=ConnectionState::stopping;
+    }
+    auto remaining=std::make_shared<size_t>(current.size());
+    std::weak_ptr<int> alive=lifetime_;
+    for(auto& value:current) stop(value,[this,remaining,alive] {
+        if(alive.expired()) return;
+        if(--*remaining==0) { disconnectingAll_=false; changed(); }
+    });
+    changed();
+}
 void ConnectionManager::remove(const std::string& id) {
     if(quitting_) return;
     if(std::any_of(savedHosts_.begin(),savedHosts_.end(),[&](auto& h){return h.id==id;})) store_.remove(id);

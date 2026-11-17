@@ -1,0 +1,3 @@
+// Generated from VERSION by CMake. Do not edit.
+#define LF_VERSION_STRING "@LF_VERSION@"
+#define LF_VERSION_NUMERIC @LF_VERSION_COMMAS@,0

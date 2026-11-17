@@ -116,8 +116,49 @@ void cancelledTimerCannotFireAfterDestruction() {
     for(auto& task:clock.tasks) task->action();
     check(s->starts.size()==1,"destroyed manager safely ignores callbacks");
 }
+void disconnectAllPreservesSettingsAndCancelsRecovery() {
+    Fixture f;f.disk.hosts[1].autoConnect=false;f.manager.startAll();f.manager.connect("b");
+    auto temporary=host("a");temporary.target="temporary";f.manager.connect(temporary,true);
+    f.manager.connect(host("unsaved"),true);
+    auto disk=f.disk.hosts;
+    f.sessions[0]->lost();f.manager.wake();auto stale=f.clock.tasks.back();
+    f.damaged=true;f.manager.disconnectAll();f.manager.disconnectAll();
+    stale->action();f.manager.wake();f.manager.networkChanged(false);f.manager.networkChanged(true);f.clock.advance(100);
+    for(auto& h:f.manager.hosts())check(!f.manager.runtime(h.id)->desiredConnected&&f.manager.runtime(h.id)->state==ConnectionState::disconnected,"all hosts stay manually disconnected");
+    check(f.disk.hosts==disk&&f.manager.hosts().size()==3,"all disconnect preserves disk and temporary hosts");
+    check(f.manager.runtime("a")->temporary&&f.manager.runtime("a")->executionHost->target=="temporary","all disconnect preserves execution snapshot");
+    check(f.sessions[0]->starts.size()==2&&f.sessions[1]->starts.size()==1&&f.sessions[2]->starts.size()==1,"cancelled and new recovery never reconnect");
+    f.manager.connect("a");check(f.sessions[0]->starts.back().target=="temporary","manual connect remembers temporary settings despite damaged disk");
+    f.manager.connect("unsaved");check(f.sessions[2]->starts.size()==2,"temporary host remains connectable");
+    f.damaged=false;f.manager.reconnectAll();check(f.manager.runtime("a")->desiredConnected&&!f.manager.runtime("b")->desiredConnected&&!f.manager.runtime("unsaved")->desiredConnected,"full reconnect still applies saved autoConnect selection");
+}
+void disconnectAllInvalidatesPendingConnections() {
+    Fixture f;f.manager.startAll();auto a=f.sessions[0],b=f.sessions[1];a->delayed=b->delayed=true;
+    f.manager.connect("a");f.manager.reconnectAll();f.manager.disconnectAll();
+    check(f.manager.isDisconnectingAll(),"all-disconnect remains active during asynchronous cleanup");
+    auto pending=a->completions.size()+b->completions.size();f.manager.disconnectAll();
+    check(a->completions.size()+b->completions.size()==pending,"duplicate all-disconnect does not queue more work");
+    for(auto& s:f.sessions)while(!s->completions.empty())s->finish();
+    check(!f.manager.isDisconnectingAll()&&a->starts.size()==1&&b->starts.size()==1,"late manual and full-reconnect completions cannot restart any host");
+    f.manager.connect("b");b->finish();check(b->starts.size()==2,"manual connection works after cancelled barrier completes");
+    f.manager.disconnectAll();bool exited=false;f.manager.onExit=[&]{exited=true;};f.manager.quit();
+    check(!exited,"quit waits for disconnect-all cleanup");
+    for(auto& s:f.sessions)while(!s->completions.empty())s->finish();
+    check(exited,"quit completes after every all-disconnect stop");
+    Clock clock;ConnectionManager empty({[]{return Config{};},[](const std::string&){return host();},[](const std::string&){}},[]{return std::make_shared<MockSession>();},[&](double d,std::function<void()> a){return clock.schedule(d,std::move(a));});
+    empty.disconnectAll();empty.disconnectAll();check(empty.hosts().empty(),"empty all-disconnect is harmless");
+}
+void manualConnectDuringAllDisconnectDoesNotLatchBusy() {
+    Fixture f;f.manager.startAll();auto a=f.sessions[0],b=f.sessions[1];a->delayed=b->delayed=true;
+    f.manager.disconnectAll();f.manager.connect("a");
+    a->finish();check(f.manager.isDisconnectingAll(),"all-disconnect waits for peer cleanup");
+    b->finish();check(!f.manager.isDisconnectingAll(),"manual connection intent cannot latch all-disconnect busy state");
+    a->finish();check(a->starts.size()==2&&f.manager.runtime("a")->desiredConnected,"later explicit connection is honored");
+    f.manager.disconnectAll();for(auto& s:f.sessions)while(!s->completions.empty())s->finish();
+    check(!f.manager.runtime("a")->desiredConnected&&!f.manager.isDisconnectingAll(),"later all-disconnect can run again");
+}
 }
 int main() {
-    try {independentAndIntent();recoveryBoundaries();startupAndInitialNetwork();temporaryAndSave();failuresAndDeletion();delayedStopsAndQuit();cancelledTimerCannotFireAfterDestruction();std::cout<<"manager tests passed\n";return 0;}
+    try {independentAndIntent();recoveryBoundaries();startupAndInitialNetwork();temporaryAndSave();failuresAndDeletion();delayedStopsAndQuit();cancelledTimerCannotFireAfterDestruction();disconnectAllPreservesSettingsAndCancelsRecovery();disconnectAllInvalidatesPendingConnections();manualConnectDuringAllDisconnectDoesNotLatchBusy();std::cout<<"manager tests passed\n";return 0;}
     catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

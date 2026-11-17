@@ -114,5 +114,6 @@ enum NativeLayoutChecks {
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory); application.finishLaunching()
         try SettingsController.checkNativeLayout(store: store, manager: manager)
+        try MainActor.assumeIsolated { try AppDelegate.checkAppDialogs(store: store) }
     }
 }
