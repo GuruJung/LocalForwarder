@@ -3,7 +3,7 @@
 #include <iostream>
 #include <barrier>
 #include <exception>
-#include <chrono>
+#include <sstream>
 #include <shellapi.h>
 #include <aclapi.h>
 #include <sddl.h>
@@ -69,61 +69,27 @@ int main(int argc,char** argv) {
    Host a; a.id="a";a.name="A";a.target="localhost";a.forwards.push_back({"f",true,15555,"localhost",80});
    stage="v1 migration and user-only permissions";
    createPrivateDirectory(root);
-   stage="diagnostic pipe cancellation without writer";
-   auto cancelStarted=std::chrono::steady_clock::now();
-   { DiagnosticPipe unused([](const std::string&){}); unused.finish(); }
-   check(std::chrono::steady_clock::now()-cancelStarted<std::chrono::seconds(2),"no-client diagnostic cancellation is prompt");
-   stage="diagnostic pipe drains final bytes after early writer exit";
-   std::string finalBytes;
-   {
-     DiagnosticPipe early([&](const std::string& bytes){finalBytes+=bytes;});
-     Handle writer(CreateFileW(early.path().c_str(),GENERIC_WRITE,0,nullptr,OPEN_EXISTING,0,nullptr));
-     check(static_cast<bool>(writer),"diagnostic writer connects");
-     const std::string chunk(4096,'x');
-     for(int index=0;index<40;++index) {
-       DWORD count=0;check(WriteFile(writer.value,chunk.data(),static_cast<DWORD>(chunk.size()),&count,nullptr) && count==chunk.size(),"diagnostic writer writes");
-     }
-     writer.reset();early.finish();
-   }
-   check(finalBytes==std::string(4096*40,'x'),"diagnostic final drain retains every buffered byte");
-   stage="real OpenSSH target diagnostic pipe";
-   std::cout<<"Testing system OpenSSH -E diagnostic pipe\n"<<std::flush;
-   {
-     std::string appendBytes;
-     DiagnosticPipe appendPipe([&](const std::string& bytes){appendBytes+=bytes;});
-     Handle appendWriter(CreateFileW(appendPipe.path().c_str(),FILE_APPEND_DATA,FILE_SHARE_WRITE,nullptr,
-         OPEN_ALWAYS,FILE_FLAG_OVERLAPPED|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
-     std::cout<<"OpenSSH-compatible pipe open: "<<(appendWriter?"success":winError())<<"\n";
-     if(appendWriter) {
-       Handle completed(CreateEventW(nullptr,TRUE,FALSE,nullptr));OVERLAPPED operation{};operation.hEvent=completed.value;
-       DWORD count=0;const char marker[]="append-probe\n";
-       bool written=WriteFile(appendWriter.value,marker,sizeof(marker)-1,&count,&operation)!=FALSE;
-       if(!written && GetLastError()==ERROR_IO_PENDING) {
-         if(WaitForSingleObject(completed.value,1000)!=WAIT_OBJECT_0) CancelIoEx(appendWriter.value,&operation);
-         written=GetOverlappedResult(appendWriter.value,&operation,&count,TRUE)!=FALSE;
-       }
-       std::cout<<"OpenSSH-compatible pipe write: "<<(written?std::to_string(count)+" bytes":winError())<<"\n";
-       appendWriter.reset();
-     }
-     appendPipe.finish();std::cout<<"OpenSSH-compatible pipe received: ["<<appendBytes<<"]\n"<<std::flush;
-   }
+   stage="supported system OpenSSH and PID-tagged diagnostics";
+   auto version=capture(systemSSH(),{"-V"},5000);
+   check(version.code==0 && supportedOpenSSHVersion(version.text),"Windows OpenSSH 9.5 or newer is required");
    auto diagnosticConfig=root/L"diagnostic-config";writePrivateFile(diagnosticConfig,"Host *\n  BatchMode yes\n");
-   std::string queryLog;
-   {
-     DiagnosticPipe query([&](const std::string& bytes){queryLog+=bytes;});
-     auto result=capture(systemSSH(),{"-vv","-E",utf8(query.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),"-G","localhost"},5000);
-     query.finish();
-     std::cout<<"OpenSSH query exit="<<result.code<<" target=["<<queryLog<<"] auxiliary=["<<result.text<<"]\n"<<std::flush;
+   DWORD targetPid=0;std::string diagnosticText;
+   Host diagnosticHost;diagnosticHost.id="diagnostic";diagnosticHost.name="Diagnostic";diagnosticHost.target="127.0.0.1";diagnosticHost.port=1;
+   auto diagnosticArgs=sshArguments(diagnosticHost,utf8(diagnosticConfig.wstring()),false);
+   diagnosticArgs.insert(diagnosticArgs.begin(),{"-o","ConnectTimeout=1","-o","ConnectionAttempts=1"});
+   Child diagnostic(systemSSH(),diagnosticArgs,
+       [&](DWORD pid,bool ended,const std::string& bytes,DWORD) {targetPid=pid;if(!ended)diagnosticText+=bytes;});
+   auto diagnosticCode=diagnostic.wait(5000);
+   std::string targetText;std::istringstream lines(diagnosticText);std::string line;
+   while(std::getline(lines,line)) {
+     if(auto target=targetDiagnosticLine(line,targetPid)) {
+       targetText+=*target+"\n";
+       check(!targetDiagnosticLine(line,targetPid+1),"another process cannot supply target diagnostics");
+     }
    }
-   std::string targetLog;
-   DiagnosticPipe diagnostic([&](const std::string& bytes){targetLog+=bytes;});
-   auto diagnosticResult=capture(systemSSH(),{"-vv","-E",utf8(diagnostic.path().wstring()),"-F",utf8(diagnosticConfig.wstring()),
-       "-o","ConnectTimeout=1","-o","ConnectionAttempts=1","-p","1","127.0.0.1"},5000);
-   diagnostic.finish();
-   std::cout<<"OpenSSH connection exit="<<diagnosticResult.code<<" target=["<<targetLog<<"] auxiliary=["<<diagnosticResult.text<<"]\n"<<std::flush;
-   check(diagnosticResult.code!=124,"OpenSSH diagnostic probe completes before timeout");
-   check(targetLog.find("Connecting to 127.0.0.1")!=std::string::npos,"target diagnostics arrive through real OpenSSH -E");
-   check(diagnosticResult.text.find("Connecting to 127.0.0.1")==std::string::npos,"target diagnostics stay separate from inherited stderr");
+   if(diagnosticCode==124 || targetText.find("Connecting to 127.0.0.1")==std::string::npos)
+     throw std::runtime_error("PID-tagged system OpenSSH diagnostics missing (PID="+std::to_string(targetPid)+", exit="+std::to_string(diagnosticCode)+"): "+diagnosticText);
+   stage="v1 migration and user-only permissions";
    const std::string original="{ \"version\": 1, \"hosts\": [{\"id\":\"a\",\"name\":\"A\",\"target\":\"localhost\",\"forwards\":[]}] }\n";
    writePrivateFile(root/L"config.json",original);
    check(loadConfig(root).version==1,"v1 read supported");

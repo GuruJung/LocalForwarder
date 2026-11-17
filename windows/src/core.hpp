@@ -42,6 +42,10 @@ std::string registrationCommand(const std::string& publicKey);
 bool authenticationFailure(const std::string& text);
 bool isConnectionRefusal(const std::string& targetDiagnostic, const std::string& auxiliaryDiagnostic = {});
 std::string describeFailure(const std::string& text);
+// Only standard OpenSSH version banners at or above the supported baseline.
+bool supportedOpenSSHVersion(const std::string& output);
+// Accept only an anchored OpenSSH LogVerbose envelope from the actual child PID.
+std::optional<std::string> targetDiagnosticLine(const std::string& line, uint32_t expectedPid);
 
 // Feed only target diagnostics when requireForwards is false. Proxy stderr must be separate.
 class Readiness {

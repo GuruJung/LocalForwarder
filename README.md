@@ -16,7 +16,9 @@
 
 첫 버전은 무료 배포를 위해 macOS ad-hoc 서명과 Windows 인증서 없는 실행 파일을 사용합니다. macOS가 앱 실행을 차단하면 출처를 확인한 뒤 시스템 설정의 개인정보 보호 및 보안에서 허용할 수 있습니다. Windows에서는 SmartScreen 경고가 나타날 수 있습니다. 조직 정책이 실행을 금지한다면 관리자의 정책을 따르세요.
 
-Windows에는 **OpenSSH Client** 선택적 기능이 필요합니다. 앱은 Windows 시스템 OpenSSH를 사용하며 Git for Windows의 SSH나 별도의 SSH 구현을 설치하지 않습니다. macOS에서는 `/usr/bin/ssh`를 사용합니다.
+Windows에는 **OpenSSH Client 9.5 이상** 선택적 기능이 필요합니다. 앱은 Windows 시스템 OpenSSH를 사용하며 Git for Windows의 SSH나 별도의 SSH 구현을 설치하지 않습니다. macOS에서는 `/usr/bin/ssh`를 사용합니다.
+
+Windows에서는 시스템 OpenSSH Client **9.5 이상**을 사용합니다. PowerShell에서 `& "$env:WINDIR\System32\OpenSSH\ssh.exe" -V`로 확인할 수 있습니다. 구버전은 Windows Update 또는 [Microsoft의 OpenSSH 업데이트 안내](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/upgrade-in-box-openssh-to-latest-openssh-release)에 따라 사용자가 업데이트합니다. 앱은 자동 설치·관리자 권한 요청·서비스 설정 변경을 하지 않습니다. 원격 Linux/macOS 서버에 같은 최소 버전을 요구하지 않습니다.
 
 ## 사용 방법
 

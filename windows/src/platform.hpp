@@ -14,6 +14,9 @@
 namespace lf {
 namespace fs = std::filesystem;
 using Post = std::function<void(std::function<void()>)>;
+inline constexpr const char* sshUpdateGuidance =
+    "Windows OpenSSH 9.5 이상이 필요합니다. Windows Update 또는 Microsoft의 OpenSSH 배포판으로 직접 업데이트한 뒤 다시 연결하세요. "
+    "앱이 사용하는 Windows\\System32\\OpenSSH\\ssh.exe의 버전은 해당 경로에서 ssh -V로 확인할 수 있습니다.";
 std::wstring wide(const std::string& text);
 std::string utf8(const std::wstring& text);
 std::string winError(DWORD error = GetLastError());
@@ -45,25 +48,15 @@ struct Handle {
     void reset(HANDLE h=nullptr) { if(value && value!=INVALID_HANDLE_VALUE) CloseHandle(value); value=h; }
     explicit operator bool() const { return value && value!=INVALID_HANDLE_VALUE; }
 };
-// A private target-only -E stream. finish() is called after the writer exits.
-class DiagnosticPipe {
-    fs::path path_;
-    Handle pipe_, cancel_, event_;
-    std::thread reader_;
-public:
-    explicit DiagnosticPipe(std::function<void(const std::string&)> output);
-    ~DiagnosticPipe();
-    const fs::path& path() const { return path_; }
-    void finish();
-    DiagnosticPipe(const DiagnosticPipe&) = delete;
-};
 class Child {
     Handle process_, job_, pipe_, completion_;
     void waitForJob();
     std::thread reader_;
 public:
     using Callback = std::function<void(bool ended, const std::string& output, DWORD exitCode)>;
+    using ProcessCallback = std::function<void(DWORD processId, bool ended, const std::string& output, DWORD exitCode)>;
     Child(const fs::path& executable, const std::vector<std::string>& args, Callback callback);
+    Child(const fs::path& executable, const std::vector<std::string>& args, ProcessCallback callback);
     ~Child();
     Child(const Child&) = delete;
     void stop();

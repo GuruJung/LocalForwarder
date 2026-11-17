@@ -84,6 +84,8 @@ int setupAuthentication(const fs::path& directory,const std::string& profileId,c
     }
     try {
         auto host=loadHost(directory,profileId); auto ssh=systemSSH();
+        auto version=capture(ssh,{"-V"},10000);
+        if(version.code!=0 || !supportedOpenSSHVersion(version.text)) throw std::runtime_error(sshUpdateGuidance);
         std::cout<<"LocalForwarder 인증 설정 — "<<host.name<<"\n"
                  <<"서버 비밀번호와 기존 키 암호는 이 터미널에서만 입력합니다.\n"
                  <<"서버의 호스트 키 검증과 인증 정책은 변경하지 않습니다.\n"<<std::flush;

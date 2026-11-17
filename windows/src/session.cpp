@@ -159,8 +159,15 @@ void SSHSession::launch() {
         DWORD code=1; std::string error;
         try {
             if(!host.identityFile.empty()) host.identityFile=utf8(expandHome(host.identityFile).wstring());
-            auto ssh=systemSSH(); std::string effective;
-            {
+            auto ssh=systemSSH(); std::string effective,version;
+            if(!operation->cancelled) {
+                auto child=std::make_shared<Child>(ssh,std::vector<std::string>{"-V"},[&](bool ended,const std::string& text,DWORD) {
+                    if(!ended && version.size()<4096) version.append(text,0,4096-version.size());
+                });
+                operation->attach(child); code=child->wait(10000); operation->release();
+            }
+            if(!operation->cancelled) {
+                if(code!=0 || !supportedOpenSSHVersion(version)) throw std::runtime_error(sshUpdateGuidance);
                 auto child=std::make_shared<Child>(ssh,sshArguments(host,configuration,true),[&](bool ended,const std::string& text,DWORD) {
                     if(!ended && effective.size()<262144) effective.append(text,0,262144-effective.size());
                 });
@@ -180,18 +187,27 @@ void SSHSession::launch() {
                     self->readiness_=Readiness(0,false,target,port);
                     self->tracker_=std::make_unique<ForwardTracker>(host,inheritedForwards(effective)); self->changed();
                 });
-                DiagnosticPipe diagnostic([self,post,token](const std::string& bytes) {
-                    post([self,bytes,token] { self->consume(bytes,true,token); });
-                });
                 if(!operation->cancelled) {
-                    auto args=sshArguments(host,configuration,false);
-                    args.insert(args.begin(),{"-E",utf8(diagnostic.path().wstring())});
-                    auto child=std::make_shared<Child>(ssh,args,[self,post,token](bool ended,const std::string& bytes,DWORD) {
-                        if(!ended) post([self,bytes,token] { self->consume(bytes,false,token); });
-                    });
+                    auto child=std::make_shared<Child>(ssh,sshArguments(host,configuration,false),
+                        [self,post,token,pending=std::string{},discarding=false](DWORD pid,bool ended,const std::string& bytes,DWORD) mutable {
+                            pending+=bytes;
+                            if(ended && !pending.empty() && pending.back()!='\n') pending+='\n';
+                            size_t end=0;
+                            while((end=pending.find('\n'))!=std::string::npos) {
+                                auto line=pending.substr(0,end); pending.erase(0,end+1);
+                                if(discarding) { discarding=false; continue; }
+                                if(!line.empty() && line.back()=='\r') line.pop_back();
+                                auto target=targetDiagnosticLine(line,pid);
+                                auto output=target?*target:line;
+                                post([self,output=std::move(output),isTarget=target.has_value(),token] {
+                                    self->consume(output+"\n",isTarget,token);
+                                });
+                            }
+                            // Never reinterpret a tail fragment as a fresh PID-tagged line.
+                            if(pending.size()>65536) { pending.clear(); discarding=true; }
+                        });
                     operation->attach(child); code=child->wait(INFINITE); operation->release();
                 }
-                diagnostic.finish();
             } else if(!operation->cancelled) error=effective;
         } catch(const std::exception& exception) { error=exception.what(); }
         operation->release();

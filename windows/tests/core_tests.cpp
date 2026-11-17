@@ -120,6 +120,56 @@ int main() {
     ambiguous.consume("Local forwarding listening on 127.0.0.1 port 15432.");ambiguous.consume("channel 0: new port-listener [port listener]");ambiguous.sessionReady();
     check(ambiguous.forwards[0].state==ForwardState::unknown && ambiguous.forwards[1].state==ForwardState::unknown,"shared listener not guessed");
     check(registrationCommand("ssh-ed25519 AAAA comment").find("for(i=1;i<=NF;i++)")!=std::string::npos,"restricted authorized key entry retained");
+    for(auto banner:{"OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2\r\n", "OpenSSH_9.5p1, OpenSSL 3.0.0\n", "OpenSSH_9.5", "OpenSSH_9.10p1", "OpenSSH_for_Windows_10.0p1, LibreSSL 4.0.0"})
+        check(supportedOpenSSHVersion(banner),"supported system OpenSSH baseline");
+    for(auto banner:{"OpenSSH_for_Windows_9.4p1, LibreSSL 3.8.2", "OpenSSH_8.9p1", "prefix OpenSSH_10.0p1", "OpenSSH_9.5garbage", "OpenSSH_9.5p", "OpenSSH_9.x", "OpenSSH_9.5.1", "OpenSSH_99999999999999999999.0", "OpenSSH_09.5", "OpenSSH_9.5p1\nextra", "OpenSSH_9.5p1, "})
+        check(!supportedOpenSSHVersion(banner),"old or malformed version rejected");
+    auto tagged=targetDiagnosticLine("debug1: sshconnect2.c:ssh_userauth2():449 (pid=1234): Authenticated to target ([127.0.0.1]:22).",1234);
+    check(tagged && *tagged=="debug1: Authenticated to target ([127.0.0.1]:22).","target tag removed, severity retained");
+    auto plainTagged=targetDiagnosticLine("ssh.c:main():123 (pid=1234): Connection closed by target",1234);
+    check(plainTagged && *plainTagged=="Connection closed by target","tagged info severity preserved");
+    auto futureTagged=targetDiagnosticLine("debug2: channels.c:channel_new():512 (bin=ssh, pid=1234): channel 0: new port-listener [port listener]\r",1234);
+    check(futureTagged && *futureTagged=="debug2: channel 0: new port-listener [port listener]","future binary PID format");
+    auto failureTagged=targetDiagnosticLine("fatal: kex.c:kex_exchange_identification():1337 (pid=1234): kex_exchange_identification: read: Connection reset by peer",1234);
+    check(failureTagged && isConnectionRefusal(*failureTagged),"target preauth failure classification after tag removal");
+    check(targetDiagnosticLine("ssh.c:main():123 (bin=ssh.exe, pid=1234): message",1234)=="message","future Windows binary PID format");
+    auto actualKex=targetDiagnosticLine("kex.c:kex_exchange_identification():1247 (pid=1234): read: Connection reset by peer",1234);
+    check(actualKex && *actualKex=="kex_exchange_identification: read: Connection reset by peer" && isConnectionRefusal(*actualKex),"forced error_f logging restores retry context");
+    auto kexDebug=targetDiagnosticLine("debug1: kex.c:kex_exchange_identification():1247 (pid=1234): banner line 0: Connection closed by peer",1234);
+    check(kexDebug && !isConnectionRefusal(*kexDebug),"peer banner cannot become retry evidence");
+    auto unknownReset=targetDiagnosticLine("ssh.c:main():123 (pid=1234): read: Connection reset by peer",1234);
+    check(unknownReset && !isConnectionRefusal(*unknownReset),"unknown function reset remains strict");
+    check(!targetDiagnosticLine("read: Connection reset by peer",1234) && !isConnectionRefusal("read: Connection reset by peer"),"untagged generic reset remains strict");
+    for(auto badLine:{
+        "debug1: ssh.c:main():123 (pid=5678): Authenticated to target",
+        "Authenticated to target (pid=1234)",
+        "warning: ssh.c:main():123 (pid=1234): Authenticated to target",
+        "debug1: user message ssh.c:main():123 (pid=1234): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=0): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=-1234): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=01234): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=4294967296): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=1234x): Authenticated to target",
+        "debug1: ssh.c:main():123 (bin=sshd, pid=1234): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=1234, bin=ssh): Authenticated to target",
+        "debug1: ssh.c:main():0 (pid=1234): Authenticated to target",
+        "debug1: ssh.c:main():999999999999999 (pid=1234): Authenticated to target",
+        "debug1: ssh.c:main():123 (pid=1234): Authenticated to target\nother line",
+        "debug1: ssh.c:main():123 (pid=1234):Authenticated to target",
+        "debug1: ssh.c:main:123 (pid=1234): Authenticated to target"})
+        check(!targetDiagnosticLine(badLine,1234),"wrong, untagged, malformed or embedded PID rejected");
+    check(!targetDiagnosticLine("ssh.c:main():1 (pid=1234): message",0),"missing expected PID rejected");
+    check(targetDiagnosticLine("ssh.c:main():1 (pid=4294967295): message",4294967295u)=="message","maximum valid uint32 PID accepted");
+    auto selective="LogVerbose=ssh.c:*,sshconnect.c:*,sshconnect2.c:*,kex.c:*,clientloop.c:client_loop():*,channels.c:channel_setup_fwd_listener_*:*,channels.c:channel_input_open_failure():*,channels.c:channel_new():*";
+    auto connectionArgs=sshArguments(h),queryArgs=sshArguments(h,{},true);
+    check(std::count(connectionArgs.begin(),connectionArgs.end(),selective)==1,"normal SSH selects functional diagnostic families");
+    check(std::none_of(queryArgs.begin(),queryArgs.end(),[](auto& arg){return arg.starts_with("LogVerbose=");}),"configuration query does not enable verbose logging");
+    Readiness isolated(0,false,"target",22);
+    auto jumpLine=targetDiagnosticLine("debug1: sshconnect2.c:ssh_userauth2():449 (pid=5678): Authenticated to target ([127.0.0.1]:22).",1234);
+    if(jumpLine) isolated.consume(*jumpLine);
+    auto targetEntry=targetDiagnosticLine("debug1: clientloop.c:client_loop():1650 (pid=1234): Entering interactive session.",1234);
+    isolated.consume(*targetEntry);check(!isolated.ready(),"jump authentication cannot establish actual target");
+    isolated.consume(*tagged);isolated.consume(*targetEntry);check(isolated.ready(),"actual target PID establishes readiness");
     std::cout<<"core tests passed\n";return 0;
  } catch(const std::exception& e) {std::cerr<<e.what()<<"\n";return 1;}
 }

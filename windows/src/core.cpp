@@ -10,6 +10,8 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <charconv>
+#include <string_view>
 
 namespace lf {
 namespace {
@@ -242,7 +244,8 @@ std::vector<std::string> sshArguments(const Host& h, const std::string& configFi
     if (query) { args.emplace_back("-G"); args.emplace_back("-N"); args.emplace_back("-T"); args.emplace_back("-o"); args.emplace_back("BatchMode=yes"); }
     else {
         for (auto flag : {"-v", "-N", "-n", "-T"}) args.emplace_back(flag);
-        for (auto option : {"BatchMode=yes", "StrictHostKeyChecking=yes", "ServerAliveInterval=15", "ServerAliveCountMax=3"}) { args.emplace_back("-o"); args.emplace_back(option); }
+        // Limit steady-state channel/loop logging to lifecycle events, avoiding per-packet DEBUG3 traffic.
+        for (auto option : {"BatchMode=yes", "StrictHostKeyChecking=yes", "ServerAliveInterval=15", "ServerAliveCountMax=3", "LogVerbose=ssh.c:*,sshconnect.c:*,sshconnect2.c:*,kex.c:*,clientloop.c:client_loop():*,channels.c:channel_setup_fwd_listener_*:*,channels.c:channel_input_open_failure():*,channels.c:channel_new():*"}) { args.emplace_back("-o"); args.emplace_back(option); }
         for (auto& f : h.forwards) if (f.enabled) {
             args.emplace_back("-L"); args.push_back(forwarding(f));
         }
@@ -338,6 +341,77 @@ std::string describeFailure(const std::string& text) {
     if(containsAny(lower(text),{"address already in use","cannot listen to port","only one usage of each socket address"}))
         return "다른 프로그램이 해당 로컬 포트를 사용 중이거나 포트를 열 수 없습니다.\n"+text;
     return text.empty() ? "SSH 연결을 완료하지 못했습니다." : text;
+}
+namespace {
+bool asciiDigit(char c) { return c>='0' && c<='9'; }
+bool identifierFirst(char c) { return (c>='a' && c<='z') || (c>='A' && c<='Z') || c=='_'; }
+bool identifierRest(char c) { return identifierFirst(c) || asciiDigit(c); }
+std::optional<uint32_t> unsignedDecimal(std::string_view text, bool positive=false) {
+    if(text.empty() || text.size()>10 || !std::all_of(text.begin(),text.end(),asciiDigit)) return {};
+    if(text.size()>1 && text.front()=='0') return {};
+    uint32_t number=0; auto result=std::from_chars(text.data(),text.data()+text.size(),number);
+    if(result.ec!=std::errc{} || result.ptr!=text.data()+text.size() || (positive && number==0)) return {};
+    return number;
+}
+bool consumePrefix(std::string_view& text,std::string_view prefix) {
+    if(!text.starts_with(prefix)) return false;
+    text.remove_prefix(prefix.size());return true;
+}
+}
+bool supportedOpenSSHVersion(const std::string& output) {
+    std::string_view text(output);
+    if(text.ends_with("\n")) text.remove_suffix(1);
+    if(text.ends_with("\r")) text.remove_suffix(1);
+    if(text.find_first_of("\r\n")!=std::string_view::npos || text.find('\0')!=std::string_view::npos) return false;
+    if(!consumePrefix(text,"OpenSSH_for_Windows_") && !consumePrefix(text,"OpenSSH_")) return false;
+    auto dot=text.find('.'); if(dot==std::string_view::npos) return false;
+    auto major=unsignedDecimal(text.substr(0,dot),true);text.remove_prefix(dot+1);
+    size_t count=0;while(count<text.size() && asciiDigit(text[count])) ++count;
+    auto minor=unsignedDecimal(text.substr(0,count));text.remove_prefix(count);
+    if(!major || !minor) return false;
+    if(consumePrefix(text,"p")) {
+        count=0;while(count<text.size() && asciiDigit(text[count])) ++count;
+        auto patch=unsignedDecimal(text.substr(0,count));text.remove_prefix(count);
+        if(!patch) return false;
+    }
+    if(!text.empty()) {
+        if(!consumePrefix(text,", ") || text.empty()) return false;
+        if(std::any_of(text.begin(),text.end(),[](unsigned char c){return c<32 || c==127;})) return false;
+    }
+    return *major>9 || (*major==9 && *minor>=5);
+}
+std::optional<std::string> targetDiagnosticLine(const std::string& line,uint32_t expectedPid) {
+    if(expectedPid==0) return {};
+    std::string_view text(line),severity;
+    if(text.ends_with("\r")) text.remove_suffix(1);
+    if(text.find_first_of("\r\n")!=std::string_view::npos || text.find('\0')!=std::string_view::npos) return {};
+    for(std::string_view prefix:{"debug1: ","debug2: ","debug3: ","error: ","fatal: ","internal error: "}) {
+        if(text.starts_with(prefix)) {severity=prefix;text.remove_prefix(prefix.size());break;}
+    }
+    auto sourceEnd=text.find(':'); if(sourceEnd==std::string_view::npos) return {};
+    auto source=text.substr(0,sourceEnd);
+    if(source.size()<3 || !source.ends_with(".c") || !identifierFirst(source.front()) ||
+       !std::all_of(source.begin(),source.end(),[](char c){return identifierRest(c) || c=='.' || c=='-';})) return {};
+    text.remove_prefix(sourceEnd+1);
+    auto functionEnd=text.find("():"); if(functionEnd==std::string_view::npos) return {};
+    auto function=text.substr(0,functionEnd);
+    if(function.empty() || !identifierFirst(function.front()) || !std::all_of(function.begin(),function.end(),identifierRest)) return {};
+    text.remove_prefix(functionEnd+3);
+    auto lineEnd=text.find(' '); if(lineEnd==std::string_view::npos || !unsignedDecimal(text.substr(0,lineEnd),true)) return {};
+    text.remove_prefix(lineEnd+1);
+    if(!consumePrefix(text,"(pid=") && !consumePrefix(text,"(bin=ssh, pid=") &&
+       !consumePrefix(text,"(bin=ssh.exe, pid=")) return {};
+    auto pidEnd=text.find("): "); if(pidEnd==std::string_view::npos) return {};
+    auto pid=unsignedDecimal(text.substr(0,pidEnd),true);
+    if(!pid || *pid!=expectedPid) return {};
+    text.remove_prefix(pidEnd+3);
+    // Forced LogVerbose replaces OpenSSH's error_f function prefix. Restore only
+    // known transport-error forms, never banner/debug text supplied by a peer.
+    if(source=="kex.c" && function=="kex_exchange_identification" &&
+       (severity.empty() || severity=="error: " || severity=="fatal: ") &&
+       (text.starts_with("read: ") || text.starts_with("Connection closed by ") || text.starts_with("Connection reset by ")))
+        return std::string(severity)+"kex_exchange_identification: "+std::string(text);
+    return std::string(severity)+std::string(text);
 }
 Readiness::Readiness(int expected,bool requireForwards,std::string expectedTarget,int expectedPort)
     :expectedTarget_(std::move(expectedTarget)),remoteExpected_(expected),expectedPort_(expectedPort),requireForwards_(requireForwards) {}
