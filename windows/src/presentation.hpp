@@ -3,7 +3,7 @@
 #include <algorithm>
 
 namespace lf {
-enum class MenuIcon { settings, reconnect, quit, connect, disconnect, edit, ready, disconnected, disabled, preparing, failed, unknown, warning };
+enum class MenuIcon { settings, reconnect, quit, connect, disconnect, edit, ready, disconnected, disabled, preparing, failed, unknown };
 struct MenuForwardRow {
     std::string id, text;
     MenuIcon icon;
@@ -15,11 +15,7 @@ inline MenuIcon forwardMenuIcon(ForwardState state) {
     return MenuIcon::unknown;
 }
 inline MenuIcon hostMenuIcon(const Host& host,const HostRuntime* runtime) {
-    if(runtime&&(runtime->state==ConnectionState::connecting||runtime->state==ConnectionState::stopping))return MenuIcon::preparing;
-    if(runtime&&runtime->state==ConnectionState::connected){
-        if(std::any_of(runtime->forwards.begin(),runtime->forwards.end(),[](const auto& f){return f.state==ForwardState::failed;}))return MenuIcon::warning;
-        return MenuIcon::ready;
-    }
+    if(runtime&&runtime->state==ConnectionState::connected)return MenuIcon::ready;
     return host.autoConnect?MenuIcon::disconnected:MenuIcon::disabled;
 }
 inline std::vector<MenuForwardRow> menuForwards(const Host& saved,const HostRuntime* runtime) {

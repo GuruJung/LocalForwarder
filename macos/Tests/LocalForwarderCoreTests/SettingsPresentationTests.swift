@@ -7,6 +7,27 @@ final class SettingsPresentationTests: XCTestCase {
             Forward(id: "one", localPort: 18080, remoteHost: "localhost", remotePort: 80),
             Forward(id: "off", enabled: false, localPort: 18081, remoteHost: "database", remotePort: 5432)])
     }
+    func testHostConnectivityPresentationKeepsForwardFailuresInChildRows() {
+        var host = host(); host.autoConnect = false
+        var runtime = HostRuntime(); runtime.executionHost = host; runtime.state = .connected
+        runtime.forwards = [ForwardRuntime(id: "one", description: "failed forward", source: "앱 설정", state: .failed)]
+        XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .connected)
+        XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).title, host.name)
+        XCTAssertEqual(TrayPresentation.forwards(host: host, runtime: runtime)[0].state, .failed)
+        runtime.state = .disconnected
+        XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disabled)
+        host.autoConnect = true
+        XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disconnected)
+        runtime.temporary = true
+        for state in [ConnectionState.connecting, .stopping] {
+            runtime.state = state
+            XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disconnected)
+            XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).title, host.name + " · 임시 · 작업 중…")
+            host.autoConnect = false
+            XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disabled)
+            host.autoConnect = true
+        }
+    }
     func testDescriptionCompatibilityAndExecutionIdentity() throws {
         let original = host()
         let data = try JSONEncoder().encode(original)

@@ -230,18 +230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let runtime = manager.runtime(id)
             let connected = runtime?.state == .connected
             let busy = runtime?.state == .connecting || runtime?.state == .stopping
-            let warning = connected && runtime?.forwards.contains(where: { $0.state == .failed }) == true
-            let temporary = runtime?.temporary == true ? " · 임시" : ""
-            let progress = busy ? " · 작업 중…" : ""
-            item.title = host.name + temporary + progress + (warning ? " · 포워딩 경고" : "")
-            let symbol: String
-            let state: String
-            if busy { symbol = "arrow.triangle.2.circlepath"; state = "연결 작업 중" }
-            else if warning { symbol = "exclamationmark.triangle.fill"; state = "SSH 연결됨, 포워딩 경고" }
-            else if connected { symbol = "checkmark.circle.fill"; state = "연결됨" }
-            else if host.autoConnect { symbol = "circle"; state = "연결 안 됨" }
-            else { symbol = "minus.circle"; state = "자동 연결 꺼짐, 연결 안 됨" }
-            item.image = menuImage(symbol, state)
+            let presentation = TrayPresentation.host(host, runtime: runtime)
+            item.title = presentation.title
+            item.image = menuImage(presentation.state.symbol, presentation.state.title)
             guard let menu = item.submenu else { continue }
             menu.item(withTag: 1)?.title = connectionSummary(runtime)
             updateForwardItems(host, runtime: runtime, menu: menu)

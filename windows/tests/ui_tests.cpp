@@ -42,11 +42,17 @@ int main(){try{
     runtime.forwards={{"f","live-forward","앱 설정","",ForwardState::ready},{"ssh-config-0","localforward 13000 localhost:80","SSH 설정","",ForwardState::failed}};
     auto changed=savedSnapshot;changed.forwards.clear();rows=menuForwards(changed,&runtime);
     check(rows.size()==3&&rows[0].icon==MenuIcon::ready&&rows[1].icon==MenuIcon::disabled&&rows[2].icon==MenuIcon::failed,"execution snapshot plus inherited rules, not newly savedSnapshot config");
-    check(hostMenuIcon(changed,&runtime)==MenuIcon::warning,"partial forwarding failure warns on connected host");
+    check(hostMenuIcon(changed,&runtime)==MenuIcon::ready,"partial forwarding failure keeps SSH-connected host icon");
+    changed.autoConnect=false;check(hostMenuIcon(changed,&runtime)==MenuIcon::ready,"manual SSH connection takes precedence over autoconnect disabled");
     runtime.executionHost->forwards[0].id="ssh-config-0";runtime.forwards[0].id="ssh-config-0";
     rows=menuForwards(changed,&runtime);check(rows.size()==3&&rows[0].icon==MenuIcon::ready&&rows[2].icon==MenuIcon::failed,"app and inherited ID collision retains both categories");
     for(auto state:{ForwardState::preparing,ForwardState::ready,ForwardState::failed,ForwardState::disconnected,ForwardState::unknown}){runtime.forwards[0].state=state;check(menuForwards(changed,&runtime)[0].icon==forwardMenuIcon(state),"forward state projection");}
-    runtime.state=ConnectionState::connecting;check(hostMenuIcon(changed,&runtime)==MenuIcon::preparing,"busy host icon");runtime.state=ConnectionState::disconnected;changed.autoConnect=false;check(hostMenuIcon(changed,&runtime)==MenuIcon::disabled,"autoconnect off icon");
+    for(auto state:{ConnectionState::connecting,ConnectionState::stopping,ConnectionState::disconnected}){
+        runtime.state=state;changed.autoConnect=true;check(hostMenuIcon(changed,&runtime)==MenuIcon::disconnected,"nonconnected SSH state with autoconnect enabled");
+        changed.autoConnect=false;check(hostMenuIcon(changed,&runtime)==MenuIcon::disabled,"nonconnected SSH state with autoconnect disabled");
+    }
+    changed.autoConnect=true;check(hostMenuIcon(changed,nullptr)==MenuIcon::disconnected,"unstarted autoconnect host");
+    changed.autoConnect=false;check(hostMenuIcon(changed,nullptr)==MenuIcon::disabled,"unstarted disabled host");
     check(menuForwards(Host{},nullptr).empty(),"empty menu projection");
     std::cout<<"settings model tests passed\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}}

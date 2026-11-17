@@ -23,6 +23,7 @@
 using namespace lf;
 namespace {
 UINT previewDpi=0;
+std::optional<RECT> previewWorkArea;
 UINT uiDpi(HWND window){return previewDpi?previewDpi:GetDpiForWindow(window);}
 constexpr UINT WM_TASK=WM_APP+1,WM_TRAY=WM_APP+2,WM_OPEN_SETTINGS=WM_APP+3;
 constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
@@ -31,11 +32,21 @@ constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
 enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleOkay,RuleCancel,RuleError,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
+RECT availableWorkArea(HMONITOR display){
+    if(previewWorkArea)return *previewWorkArea;
+    MONITORINFO monitor{sizeof(monitor)};
+    if(GetMonitorInfoW(display,&monitor))return monitor.rcWork;
+    RECT fallback{};SystemParametersInfoW(SPI_GETWORKAREA,0,&fallback,0);return fallback;
+}
+void constrainMinimum(HWND window,MINMAXINFO* info,int width,int height){
+    auto work=availableWorkArea(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST));UINT dpi=uiDpi(window);
+    info->ptMinTrackSize={std::min(MulDiv(width,dpi,96),std::max(1,static_cast<int>(work.right-work.left)-24)),std::min(MulDiv(height,dpi,96),std::max(1,static_cast<int>(work.bottom-work.top)-24))};
+}
 void centerInWorkArea(HWND window,int desiredWidth,int desiredHeight,HWND owner=nullptr){
-    POINT point{};GetCursorPos(&point);MONITORINFO monitor{sizeof(monitor)};
+    POINT point{};GetCursorPos(&point);
     HMONITOR display=owner?MonitorFromWindow(owner,MONITOR_DEFAULTTONEAREST):MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST);
-    GetMonitorInfoW(display,&monitor);int dpi=uiDpi(window);int width=std::min(MulDiv(desiredWidth,dpi,96),int(monitor.rcWork.right-monitor.rcWork.left)-24);int height=std::min(MulDiv(desiredHeight,dpi,96),int(monitor.rcWork.bottom-monitor.rcWork.top)-24);
-    SetWindowPos(window,nullptr,monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-width)/2,monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-height)/2,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
+    auto work=availableWorkArea(display);int dpi=uiDpi(window);int width=std::min(MulDiv(desiredWidth,dpi,96),std::max(1,static_cast<int>(work.right-work.left)-24));int height=std::min(MulDiv(desiredHeight,dpi,96),std::max(1,static_cast<int>(work.bottom-work.top)-24));
+    SetWindowPos(window,nullptr,work.left+(work.right-work.left-width)/2,work.top+(work.bottom-work.top-height)/2,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
 }
 void setText(HWND control,const std::wstring& text){if(textOf(control)!=text)SetWindowTextW(control,text.c_str());}
 std::wstring nativeLines(std::string text){std::string out;for(char c:text){if(c=='\n'&&(out.empty()||out.back()!='\r'))out+='\r';out+=c;}return wide(out);}
@@ -206,22 +217,33 @@ private:
         layoutSettings();
     }
     void layoutSettings(){if(!settingsWindow_||!form_)return;RECT rect{};GetClientRect(settingsWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(settingsWindow_)),h=MulDiv(rect.bottom,96,uiDpi(settingsWindow_));
-        place(NewHost,12,12,102,30);place(DeleteHost,120,12,108,30);place(Hosts,12,50,216,std::max(40,h-118));
-        place(CancelButton,w-190,h-44,82,30);place(Okay,w-96,h-44,82,30);MoveWindow(form_,scale(240),scale(12),scale(std::max(400,w-252)),scale(std::max(80,h-70)),TRUE);layoutForm();
+        const int sidebar=w>=740?216:std::clamp(w/4,120,180);bool stacked=sidebar<216;
+        if(stacked){place(NewHost,12,12,sidebar,30);place(DeleteHost,12,48,sidebar,30);}
+        else{place(NewHost,12,12,102,30);place(DeleteHost,120,12,108,30);}
+        int listTop=stacked?86:50;place(Hosts,12,listTop,sidebar,std::max(24,h-listTop-68));
+        place(CancelButton,w-190,h-44,82,30);place(Okay,w-96,h-44,82,30);
+        int formLeft=sidebar+24;MoveWindow(form_,scale(formLeft),scale(12),scale(std::max(1,w-formLeft-12)),scale(std::max(32,h-70)),TRUE);layoutForm();
     }
     void layoutForm(){if(!form_)return;RECT rect{};GetClientRect(form_,&rect);int w=MulDiv(rect.right,96,uiDpi(settingsWindow_)),h=MulDiv(rect.bottom,96,uiDpi(settingsWindow_));
-        SCROLLINFO si{sizeof(si),SIF_RANGE|SIF_PAGE|SIF_POS,0,543,static_cast<UINT>(std::max(1,h)),scroll_,0};SetScrollInfo(form_,SB_VERT,&si,TRUE);si.fMask=SIF_POS;GetScrollInfo(form_,SB_VERT,&si);scroll_=si.nPos;
-        auto pos=[&](int id,int x,int y,int width,int height){place(id,x,y-scroll_,width,height);};int content=w-12;
-        pos(300,0,4,105,22);pos(Name,115,0,content-115,26);
-        pos(310,0,38,110,22);pos(Description,115,34,content-115,26);
-        pos(301,0,72,110,22);pos(Target,115,68,content-115,26);
-        int userWidth=std::max(90,content-310);pos(302,0,106,110,22);pos(User,115,102,userWidth,26);pos(303,125+userWidth,106,100,22);pos(Port,225+userWidth,102,content-225-userWidth,26);
-        pos(304,0,140,110,22);pos(Key,115,136,content-255,26);pos(ChooseKey,content-132,136,132,26);
-        pos(AutoConnect,0,174,110,26);pos(ExitFailure,115,174,175,26);pos(RetryRefused,295,174,content-295,26);
-        pos(305,0,208,content,22);pos(Rules,0,234,content,118);ListView_SetColumnWidth(control(Rules),0,scale(48));ListView_SetColumnWidth(control(Rules),1,scale(90));ListView_SetColumnWidth(control(Rules),2,scale(std::max(100,content-242)));ListView_SetColumnWidth(control(Rules),3,scale(100));
-        pos(RuleNew,0,360,100,28);pos(RuleEdit,108,360,100,28);pos(RuleDelete,216,360,100,28);
-        pos(309,0,400,content,22);pos(CommandPreview,0,426,content,64);
-        int gap=6;int button=(content-3*gap)/4;pos(Save,0,502,button,32);pos(Connect,button+gap,502,button,32);pos(Authentication,2*(button+gap),502,button,32);pos(ConnectionStatus,3*(button+gap),502,button,32);
+        struct Placement{int id,x,y,width,height;};std::vector<Placement> places;
+        auto add=[&](int id,int x,int y,int width,int height){places.push_back({id,x,y,width,height});};
+        int content=std::max(1,w-12),y=0;bool narrow=content<490;
+        auto field=[&](int labelID,int editID){if(narrow){add(labelID,0,y,content,22);add(editID,0,y+24,content,26);y+=58;}else{add(labelID,0,y+4,110,22);add(editID,115,y,content-115,26);y+=34;}};
+        field(300,Name);field(310,Description);field(301,Target);
+        if(narrow){field(302,User);field(303,Port);field(304,Key);add(ChooseKey,0,y,content,28);y+=36;}
+        else{int userWidth=content-310;add(302,0,y+4,110,22);add(User,115,y,userWidth,26);add(303,125+userWidth,y+4,100,22);add(Port,225+userWidth,y,content-225-userWidth,26);y+=34;add(304,0,y+4,110,22);add(Key,115,y,content-255,26);add(ChooseKey,content-132,y,132,26);y+=34;}
+        if(narrow){for(int id:{AutoConnect,ExitFailure,RetryRefused}){add(id,0,y,content,26);y+=32;}}
+        else{add(AutoConnect,0,y+4,110,26);add(ExitFailure,115,y+4,175,26);add(RetryRefused,295,y+4,content-295,26);y+=38;}
+        add(305,0,y,content,narrow?40:22);y+=narrow?46:28;add(Rules,0,y,content,118);y+=126;
+        int ruleColumns=content>=324?3:(content>=216?2:1),ruleWidth=(content-(ruleColumns-1)*8)/ruleColumns;
+        int ruleIndex=0;for(int id:{RuleNew,RuleEdit,RuleDelete}){add(id,(ruleIndex%ruleColumns)*(ruleWidth+8),y+(ruleIndex/ruleColumns)*34,ruleWidth,28);++ruleIndex;}y+=((3+ruleColumns-1)/ruleColumns)*34+6;
+        add(309,0,y,content,22);y+=26;add(CommandPreview,0,y,content,64);y+=76;
+        int actionColumns=content>=554?4:(content>=270?2:1),button=(content-(actionColumns-1)*6)/actionColumns;
+        int actionIndex=0;for(int id:{Save,Connect,Authentication,ConnectionStatus}){add(id,(actionIndex%actionColumns)*(button+6),y+(actionIndex/actionColumns)*38,button,32);++actionIndex;}y+=((4+actionColumns-1)/actionColumns)*38+6;
+        SCROLLINFO si{sizeof(si),SIF_RANGE|SIF_PAGE|SIF_POS,0,y-1,static_cast<UINT>(std::max(1,h)),scroll_,0};SetScrollInfo(form_,SB_VERT,&si,TRUE);si.fMask=SIF_POS;GetScrollInfo(form_,SB_VERT,&si);scroll_=si.nPos;
+        for(const auto& item:places)place(item.id,item.x,item.y-scroll_,item.width,item.height);
+        int enabledWidth=content<360?36:48,portWidth=content<360?70:90;
+        ListView_SetColumnWidth(control(Rules),0,scale(enabledWidth));ListView_SetColumnWidth(control(Rules),1,scale(portWidth));ListView_SetColumnWidth(control(Rules),2,scale(std::max(40,content-enabledWidth-2*portWidth-4)));ListView_SetColumnWidth(control(Rules),3,scale(portWidth));
     }
     void scrollForm(int code,int wheel=0){SCROLLINFO si{sizeof(si),SIF_ALL};GetScrollInfo(form_,SB_VERT,&si);int next=si.nPos;switch(code){case SB_LINEUP:next-=24;break;case SB_LINEDOWN:next+=24;break;case SB_PAGEUP:next-=si.nPage;break;case SB_PAGEDOWN:next+=si.nPage;break;case SB_THUMBPOSITION:case SB_THUMBTRACK:next=si.nTrackPos;break;default:next-=wheel;}scroll_=next;layoutForm();}
     void ensureFocusVisible(){if(!form_)return;HWND focus=GetFocus();if(!focus||!IsChild(form_,focus))return;RECT area{},client{};GetWindowRect(focus,&area);MapWindowPoints(nullptr,form_,reinterpret_cast<POINT*>(&area),2);GetClientRect(form_,&client);if(area.top<0)scroll_+=MulDiv(area.top,96,uiDpi(settingsWindow_));else if(area.bottom>client.bottom)scroll_+=MulDiv(area.bottom-client.bottom,96,uiDpi(settingsWindow_));layoutForm();}
@@ -235,7 +257,8 @@ private:
     void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);}
     void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
     void layoutRule(){if(!ruleWindow_||!control(RuleOkay))return;RECT rect{};GetClientRect(ruleWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(ruleWindow_)),h=MulDiv(rect.bottom,96,uiDpi(ruleWindow_));
-        place(RuleEnabled,16,12,w-32,26);place(320,16,52,110,22);place(LocalPort,136,48,w-152,26);place(321,16,88,110,22);place(RemoteHost,136,84,w-152,26);place(322,16,124,110,22);place(RemotePort,136,120,w-152,26);place(RuleError,16,156,w-32,std::max(36,h-208));place(RuleCancel,w-196,h-44,84,30);place(RuleOkay,w-100,h-44,84,30);
+        int row=h<230?30:36,first=h<230?36:48,errorTop=first+row*3,footer=h-44;
+        place(RuleEnabled,16,8,w-32,24);place(320,16,first+4,110,22);place(LocalPort,136,first,w-152,26);place(321,16,first+row+4,110,22);place(RemoteHost,136,first+row,w-152,26);place(322,16,first+row*2+4,110,22);place(RemotePort,136,first+row*2,w-152,26);place(RuleError,16,errorTop,w-32,std::max(20,footer-errorTop-8));place(RuleCancel,w-196,footer,84,30);place(RuleOkay,w-100,footer,84,30);
     }
     void showRule(bool creating){if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
         if(!creating&&(rule_<0||static_cast<size_t>(rule_)>=host.forwards.size()))return;
@@ -276,7 +299,7 @@ private:
         make(status_,StatusErrors,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusClose,L"BUTTON",L"닫기",WS_TABSTOP|BS_DEFPUSHBUTTON);EnableWindow(settingsWindow_,FALSE);updateStatusFont();layoutStatus();refreshStatus();ShowWindow(status_,SW_SHOW);SetForegroundWindow(status_);SetFocus(control(StatusClose));
     }
     void closeStatus(){if(!status_)return;HWND old=status_;status_=nullptr;for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})controls_.erase(id);DestroyWindow(old);if(statusFont_){DeleteObject(statusFont_);statusFont_=nullptr;}settings_.closeStatus();if(settingsWindow_){EnableWindow(settingsWindow_,TRUE);if(settings_.open)SetForegroundWindow(settingsWindow_);}}
-    void layoutStatus(){if(!status_||!control(StatusClose))return;RECT rect{};GetClientRect(status_,&rect);UINT dpi=uiDpi(status_);auto statusScale=[dpi](int value){return MulDiv(value,dpi,96);};int w=MulDiv(rect.right,96,dpi),h=MulDiv(rect.bottom,96,dpi);place(StatusHeading,12,12,w-24,26);place(StatusSummary,12,44,w-24,76);place(StatusForwards,12,130,w-24,std::max(60,h-286));place(StatusErrors,12,std::max(200,h-146),w-24,92);place(StatusClose,w-100,h-44,88,30);ListView_SetColumnWidth(control(StatusForwards),0,statusScale(180));ListView_SetColumnWidth(control(StatusForwards),1,statusScale(85));ListView_SetColumnWidth(control(StatusForwards),2,statusScale(90));ListView_SetColumnWidth(control(StatusForwards),3,statusScale(std::max(160,w-395)));}
+    void layoutStatus(){if(!status_||!control(StatusClose))return;RECT rect{};GetClientRect(status_,&rect);UINT dpi=uiDpi(status_);auto statusScale=[dpi](int value){return MulDiv(value,dpi,96);};int w=MulDiv(rect.right,96,dpi),h=MulDiv(rect.bottom,96,dpi);int footer=h-44,summaryHeight=std::clamp((h-150)/3,40,76),forwardsTop=54+summaryHeight,errorsHeight=std::clamp((h-150)/2,40,92),errorsTop=footer-10-errorsHeight;place(StatusHeading,12,12,w-24,26);place(StatusSummary,12,44,w-24,summaryHeight);place(StatusForwards,12,forwardsTop,w-24,std::max(24,errorsTop-forwardsTop-10));place(StatusErrors,12,errorsTop,w-24,errorsHeight);place(StatusClose,w-100,footer,88,30);ListView_SetColumnWidth(control(StatusForwards),0,statusScale(180));ListView_SetColumnWidth(control(StatusForwards),1,statusScale(85));ListView_SetColumnWidth(control(StatusForwards),2,statusScale(90));ListView_SetColumnWidth(control(StatusForwards),3,statusScale(std::max(160,w-395)));}
     static std::wstring forwardTitle(ForwardState state){switch(state){case ForwardState::preparing:return L"준비 중";case ForwardState::ready:return L"준비됨";case ForwardState::failed:return L"개설 실패";case ForwardState::disconnected:return L"연결 끊김";case ForwardState::unknown:return L"확인 불가";}return L"확인 불가";}
     void refreshStatus(){if(!status_||settings_.modalHost.empty())return;auto runtime=manager_->runtime(settings_.modalHost);Host host;auto draft=settings_.drafts.find(settings_.modalHost);if(draft!=settings_.drafts.end())host=draft->second.host;if(runtime&&runtime->executionHost)host=*runtime->executionHost;set(StatusHeading,wide(host.name+" · "+host.target));std::string summary=runtime?runtime->summary():"SSH 연결 끊김 · 포워딩 준비 0 / 실패 0";if(runtime&&runtime->temporary)summary+="\n이번 실행의 임시 설정 사용 중";else if(runtime&&runtime->executionHost&&draft!=settings_.drafts.end()&&!sameExecutionSettings(*runtime->executionHost,draft->second.host))summary+="\n현재 실행 설정과 편집한 설정이 다릅니다.";set(StatusSummary,nativeLines(summary));
         SendMessageW(control(StatusForwards),WM_SETREDRAW,FALSE,0);ListView_DeleteAllItems(control(StatusForwards));if(runtime){for(size_t i=0;i<runtime->forwards.size();++i){auto& f=runtime->forwards[i];auto description=wide(f.description);LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=static_cast<int>(i);item.pszText=description.data();ListView_InsertItem(control(StatusForwards),&item);auto source=wide(f.source),state=forwardTitle(f.state),detail=wide(f.detail);ListView_SetItemText(control(StatusForwards),item.iItem,1,source.data());ListView_SetItemText(control(StatusForwards),item.iItem,2,state.data());ListView_SetItemText(control(StatusForwards),item.iItem,3,detail.data());}}
@@ -297,7 +320,7 @@ private:
         auto oldBitmap=SelectObject(dc,bitmap);std::fill_n(static_cast<DWORD*>(pixels),n*n,0);
         COLORREF color=GetSysColor(COLOR_MENUTEXT);if(color==RGB(0,0,0))color=RGB(32,32,32);
         HIGHCONTRASTW contrast{sizeof(contrast)};SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0);
-        if(!(contrast.dwFlags&HCF_HIGHCONTRASTON)){if(icon==MenuIcon::ready)color=RGB(32,140,70);else if(icon==MenuIcon::failed)color=RGB(195,48,48);else if(icon==MenuIcon::warning)color=RGB(178,112,12);else if(icon==MenuIcon::preparing)color=RGB(40,112,190);else if(icon==MenuIcon::disabled||icon==MenuIcon::disconnected)color=RGB(116,116,116);}
+        if(!(contrast.dwFlags&HCF_HIGHCONTRASTON)){if(icon==MenuIcon::ready)color=RGB(32,140,70);else if(icon==MenuIcon::failed)color=RGB(195,48,48);else if(icon==MenuIcon::preparing)color=RGB(40,112,190);else if(icon==MenuIcon::disabled||icon==MenuIcon::disconnected)color=RGB(116,116,116);}
         HPEN pen=CreatePen(PS_SOLID,std::max(1,n/10),color);auto oldPen=SelectObject(dc,pen);auto oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
         auto x=[n](int value){return MulDiv(value,n-1,16);};
         auto line=[&](int a,int b,int c,int d){MoveToEx(dc,x(a),x(b),nullptr);LineTo(dc,x(c),x(d));};
@@ -308,7 +331,6 @@ private:
         case MenuIcon::disconnected:circle();break;
         case MenuIcon::disabled:circle();line(5,8,11,8);break;
         case MenuIcon::preparing:case MenuIcon::reconnect:Arc(dc,x(2),x(2),x(15),x(15),x(3),x(5),x(13),x(5));line(13,2,13,6);line(13,6,9,6);break;
-        case MenuIcon::warning:line(8,2,1,14);line(1,14,15,14);line(15,14,8,2);line(8,6,8,9);line(8,11,8,12);break;
         case MenuIcon::unknown:{circle();SetBkMode(dc,TRANSPARENT);SetTextColor(dc,color);HFONT font=CreateFontW(-n+3,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,L"Segoe UI");auto oldFont=SelectObject(dc,font);RECT area{0,-1,n,n};DrawTextW(dc,L"?",1,&area,DT_CENTER|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,oldFont);DeleteObject(font);break;}
         case MenuIcon::settings:for(int i=0;i<8;++i){double angle=i*3.141592653589793/4;line(8+static_cast<int>(4*std::cos(angle)),8+static_cast<int>(4*std::sin(angle)),8+static_cast<int>(7*std::cos(angle)),8+static_cast<int>(7*std::sin(angle)));}Ellipse(dc,x(4),x(4),x(13),x(13));Ellipse(dc,x(6),x(6),x(11),x(11));break;
         case MenuIcon::connect:line(2,8,14,8);line(10,4,14,8);line(14,8,10,12);break;
@@ -335,7 +357,7 @@ private:
     }
     void updateMenu(){if(!activeMenu_)return;bool busy=false;
         for(auto& host:manager_->hosts()){auto r=manager_->runtime(host.id);bool connected=r&&r->state==ConnectionState::connected,working=r&&(r->state==ConnectionState::connecting||r->state==ConnectionState::stopping);busy=busy||working;auto found=menus_.find(host.id);if(found==menus_.end())continue;auto& menu=found->second;
-            auto state=hostMenuIcon(host,r);std::string title=host.name+(working?" · 작업 중…":"")+(r&&r->temporary?" · 임시":"")+(state==MenuIcon::warning?" · 포워딩 경고":"");
+            auto state=hostMenuIcon(host,r);std::string title=host.name+(working?" · 작업 중…":"")+(r&&r->temporary?" · 임시":"");
             MENUITEMINFOW row{};row.cbSize=sizeof(row);row.fMask=MIIM_STRING|MIIM_BITMAP;auto text=menuText(title);row.dwTypeData=text.data();row.hbmpItem=menuBitmap(state);for(int i=0;i<GetMenuItemCount(activeMenu_);++i)if(GetSubMenu(activeMenu_,i)==menu.menu){SetMenuItemInfoW(activeMenu_,i,TRUE,&row);break;}
             MENUITEMINFOW summary{};summary.cbSize=sizeof(summary);summary.fMask=MIIM_STRING;auto summaryText=menuText(r?r->summary():"SSH 연결 끊김 · 포워딩 준비 0 / 실패 0");summary.dwTypeData=summaryText.data();SetMenuItemInfoW(menu.menu,menu.summary,FALSE,&summary);
             syncForwardMenu(menu,menuForwards(host,r));
@@ -421,21 +443,32 @@ public:
             centerInWorkArea(settingsWindow_,900,650);layoutSettings();
             RECT clampedClient{},clampedViewport{};GetClientRect(settingsWindow_,&clampedClient);GetClientRect(form_,&clampedViewport);
             check(inside(bounds(control(Okay),settingsWindow_),clampedClient)&&inside(bounds(control(CancelButton),settingsWindow_),clampedClient),"work-area clamp preserves fixed footer");
-            // A headless runner's physical screen need not accommodate the synthetic
-            // minimum width at 200%; supported-width fit was checked above. Clamping
-            // must still leave the vertically scrolled action reachable.
+            // The clamped layout must preserve keyboard access at every scale.
             SetFocus(control(ConnectionStatus));ensureFocusVisible();auto lastAction=bounds(control(ConnectionStatus),form_);
             check(lastAction.top>=clampedViewport.top&&lastAction.bottom<=clampedViewport.bottom,"work-area height clamp preserves vertical action access");
             MONITORINFO monitor{sizeof(monitor)};check(GetMonitorInfoW(MonitorFromWindow(settingsWindow_,MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE,"layout monitor information");
             RECT actual{};GetWindowRect(settingsWindow_,&actual);check(inside(actual,monitor.rcWork),"settings initial size fits available work area");
+            verifySettings();
+            previewWorkArea=RECT{0,0,MulDiv(520,dpi,96),MulDiv(360,dpi,96)};
+            centerInWorkArea(settingsWindow_,900,650);layoutSettings();verifySettings();
+            GetWindowRect(settingsWindow_,&actual);check(inside(actual,*previewWorkArea),"settings fits synthetic narrow work area");
             auto before=settings_.drafts.at(settings_.selected);
             showRule(true);
+            GetWindowRect(ruleWindow_,&actual);check(inside(actual,*previewWorkArea),"rule modal initial size fits narrow work area");
+            RECT ruleClient{};GetClientRect(ruleWindow_,&ruleClient);
+            std::vector<int> ruleControls={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322};
+            disjoint(ruleControls,ruleWindow_);for(int id:ruleControls)check(inside(bounds(control(id),ruleWindow_),ruleClient),"clamped rule modal controls remain accessible");
             for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,260},{400,240}}){
                 resizeClient(ruleWindow_,logicalSize.first,logicalSize.second,dpi);layoutRule();
                 RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,RuleError,320,321,322};
                 disjoint(ids,ruleWindow_);for(int id:ids)check(inside(bounds(control(id),ruleWindow_),client),"rule modal controls fit within client area");
             }
-            closeRule(false);check(settings_.drafts.at(settings_.selected)==before,"layout probes leave draft unchanged");
+            closeRule(false);showStatus();
+            GetWindowRect(status_,&actual);check(inside(actual,*previewWorkArea),"status modal fits narrow work area");
+            RECT statusClient{};GetClientRect(status_,&statusClient);
+            std::vector<int> statusControls={StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
+            disjoint(statusControls,status_);for(int id:statusControls)check(inside(bounds(control(id),status_),statusClient),"clamped status modal controls remain accessible");
+            closeStatus();previewWorkArea.reset();check(settings_.drafts.at(settings_.selected)==before,"layout probes leave draft unchanged");
             outputLine("native layout checks passed at simulated DPI "+std::to_string(dpi));
         }
         previewDpi=previousDpi;updateFont();scroll_=0;SetWindowPos(settingsWindow_,nullptr,original.left,original.top,original.right-original.left,original.bottom-original.top,SWP_NOZORDER|SWP_NOACTIVATE);layoutSettings();
@@ -486,12 +519,12 @@ public:
     }
     LRESULT message(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         if(hwnd==window_){if(taskbarCreated_&&msg==taskbarCreated_){trayAdded_=false;updateTray();return 0;}switch(msg){case WM_TASK:{std::unique_ptr<std::function<void()>> task(reinterpret_cast<std::function<void()>*>(l));(*task)();return 0;}case WM_TIMER:loop_->timer(w);return 0;case WM_OPEN_SETTINGS:if(menuOpen_)EndMenu();openSettings();return 1;case WM_TRAY:if(LOWORD(l)==WM_CONTEXTMENU||LOWORD(l)==WM_RBUTTONUP||LOWORD(l)==NIN_SELECT||LOWORD(l)==NIN_KEYSELECT)trayMenu();return 0;case WM_POWERBROADCAST:if(w==PBT_APMSUSPEND)manager_->sleep();else if(w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND)manager_->wake();return TRUE;case WM_QUERYENDSESSION:return TRUE;case WM_ENDSESSION:if(w)quit();return 0;case WM_CLOSE:quit();return 0;}}
-        else{switch(msg){case WM_COMMAND:command(LOWORD(w),HIWORD(w));return 0;case WM_NOTIFY:{auto* notification=reinterpret_cast<NMHDR*>(l);if(notification->idFrom==Rules){if(notification->code==LVN_ITEMCHANGED)ruleChanged(reinterpret_cast<NMLISTVIEW*>(l));else if(notification->code==NM_DBLCLK)showRule(false);}return 0;}case WM_SIZE:layoutSettings();return 0;case WM_GETMINMAXINFO:{auto* info=reinterpret_cast<MINMAXINFO*>(l);info->ptMinTrackSize={scale(800),scale(430)};return 0;}case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateFont();layoutSettings();return 0;}case WM_CLOSE:closeSettings(false);return 0;}}
+        else{switch(msg){case WM_COMMAND:command(LOWORD(w),HIWORD(w));return 0;case WM_NOTIFY:{auto* notification=reinterpret_cast<NMHDR*>(l);if(notification->idFrom==Rules){if(notification->code==LVN_ITEMCHANGED)ruleChanged(reinterpret_cast<NMLISTVIEW*>(l));else if(notification->code==NM_DBLCLK)showRule(false);}return 0;}case WM_SIZE:layoutSettings();return 0;case WM_GETMINMAXINFO:{constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),800,430);return 0;}case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateFont();layoutSettings();return 0;}case WM_CLOSE:closeSettings(false);return 0;}}
         return DefWindowProcW(hwnd,msg,w,l);
     }
     LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:reinterpret_cast<MINMAXINFO*>(l)->ptMinTrackSize={MulDiv(600,uiDpi(hwnd),96),MulDiv(390,uiDpi(hwnd),96)};return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:reinterpret_cast<MINMAXINFO*>(l)->ptMinTrackSize={MulDiv(400,uiDpi(hwnd),96),MulDiv(280,uiDpi(hwnd),96)};return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),600,390);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,280);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
     void caught(const std::exception& exception){error(exception.what());}
 };
 template<class F>LRESULT dispatchWindow(HWND hwnd,UINT msg,WPARAM w,LPARAM l,F&& invoke){auto* app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));if(msg==WM_NCCREATE){app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));}if(app){try{return invoke(*app);}catch(const std::exception& e){app->caught(e);return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
