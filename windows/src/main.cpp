@@ -597,14 +597,9 @@ public:
                     check(!IsWindowEnabled(owner)&&IsWindow(prompt),"native warning remains the active modal");
                     outputLine("native owner probe actions passed: "+ownerName);
                 }catch(...){probe->error=std::current_exception();}
-                // Activate and click the real button: MessageBox need not accept
-                // a fabricated WM_COMMAND without the originating child HWND.
-                SetActiveWindow(prompt);
-                if(HWND button=GetDlgItem(prompt,IDOK))SendMessageW(button,BM_CLICK,0,0);
-                else {
-                    if(!probe->error)probe->error=std::make_exception_ptr(std::runtime_error("native MessageBox has no OK control"));
-                    SendMessageW(prompt,WM_CLOSE,0,0);
-                }
+                // Close the real warning through its window-close path. Native
+                // MessageBox implementations need not expose an IDOK child HWND.
+                SendMessageW(prompt,WM_CLOSE,0,0);
                 outputLine("native owner probe dismissed: "+ownerName);
             });
         };
@@ -613,7 +608,7 @@ public:
         if(!hook){ownerDialogProbe_=nullptr;dialogTest_={};throw std::runtime_error("cannot install native modal test hook");}
         outputLine("native owner probe MessageBox start: "+ownerName);
         int result=MessageBoxW(owner,L"모달 소유 관계 회귀 검사",title.c_str(),MB_OK|MB_ICONWARNING);
-        outputLine("native owner probe MessageBox returned: "+ownerName);
+        outputLine("native owner probe MessageBox returned: "+ownerName+" result="+std::to_string(result));
         UnhookWindowsHookEx(hook);ownerDialogProbe_=nullptr;probe->active=false;dialogTest_={};
         if(activation.error)std::rethrow_exception(activation.error);
         if(probe->error)std::rethrow_exception(probe->error);
