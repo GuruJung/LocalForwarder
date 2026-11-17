@@ -306,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.trayMenu.autoenablesItems = false
         controller.populateMenu(controller.trayMenu)
         let titles = controller.trayMenu.items.map(\.title)
-        try NativeLayoutChecks.require(Array(titles.prefix(4)) == ["설정", "로그인 자동 시작", "전체 재연결", "전체 연결 끊기"], "global tray menu order")
+        try NativeLayoutChecks.require(Array(titles.prefix(4)) == ["설정", controller.loginItem.menuTitle, "전체 재연결", "전체 연결 끊기"], "global tray menu order: \(titles)")
         try NativeLayoutChecks.require(Array(titles.suffix(2)) == ["About...", "종료"], "About precedes quit")
         try NativeLayoutChecks.require(controller.allDisconnectItem?.isEnabled == false, "idle disconnect all disabled")
         let id = manager.hosts[0].id
