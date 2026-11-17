@@ -1425,7 +1425,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app")
     parser.add_argument("--behavior", choices=("legacy-v1", "multi-host-v2"), default="legacy-v1",
-                        help="legacy-v1 preserves frozen Windows expectations; macOS uses multi-host-v2")
+                        help="legacy-v1 checks v1 behavior; multi-host-v2 checks multi-host behavior")
     parser.add_argument("--sshd", default=os.environ.get("LOCALFORWARDER_TEST_SSHD"))
     parser.add_argument("--report", default="dist/integration-evidence.json")
     parser.add_argument("--only", help="Run matching unittest method names, e.g. test_02")
