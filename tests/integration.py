@@ -1225,6 +1225,13 @@ class MultiHostSSHTests(unittest.TestCase):
              "remoteHost": "127.0.0.1", "remotePort": dead_destination},
             {"id": "disabled", "enabled": False, "localPort": ports(1)[0],
              "remoteHost": "127.0.0.1", "remotePort": self.fixture.echo.port}])
+        if WINDOWS:
+            # Native Windows sshd can confirm a failed asynchronous TCP connect,
+            # then send EOF without SSH_CHANNEL_OPEN_FAILURE. Keep the closed-port
+            # check and separately provoke a synchronous destination lookup error.
+            host["forwards"].append({"id": "destination-unresolved", "enabled": True,
+                "localPort": ports(1)[0], "remoteHost": "localforwarder-destination.invalid.",
+                "remotePort": 80})
         dynamic_port = ports(1)[0]
         session, _, _ = self.start("multi-inherited", config, inherited=True, dynamic_port=dynamic_port)
         session.wait_host("host-0", "connected")
@@ -1236,6 +1243,19 @@ class MultiHostSSHTests(unittest.TestCase):
             connection.settimeout(4)
             with contextlib.suppress(ConnectionResetError):
                 self.assertEqual(connection.recv(1), b"")
+        if WINDOWS:
+            observed = session.snapshot("host-0")
+            self.assertEqual(observed["state"], "connected")
+            self.assertEqual(next(rule for rule in observed["forwards"]
+                                  if rule["id"] == "destination-down")["state"], "ready")
+            self.report["closed_destination"] = {
+                "transport": "EOF or reset", "ssh_state": observed["state"],
+                "reported_errors": observed.get("recentErrors", []),
+                "policy": "Only emitted SSH errors are reported; no service probe or inferred error."}
+            with socket.create_connection(("127.0.0.1", host["forwards"][3]["localPort"]), timeout=4) as connection:
+                connection.settimeout(10)
+                with contextlib.suppress(ConnectionResetError):
+                    self.assertEqual(connection.recv(1), b"")
         deadline = time.monotonic() + 5
         while True:
             state = session.snapshot("host-0")
@@ -1252,6 +1272,8 @@ class MultiHostSSHTests(unittest.TestCase):
             time.sleep(.1)
         self.assertEqual(state["state"], "connected")
         self.assertIn("time", state["recentErrors"][-1])
+        self.assertTrue(any("open failed:" in error["message"] or "connect failed:" in error["message"]
+                            for error in state["recentErrors"]))
         self.assertGreaterEqual(len(state["forwards"]), 4)
         session.send("quit")
         self.assertEqual(session.wait_exit(8), 0)

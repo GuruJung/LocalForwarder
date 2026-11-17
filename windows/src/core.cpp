@@ -324,11 +324,13 @@ bool authenticationFailure(const std::string& text) {
 bool isConnectionRefusal(const std::string& targetDiagnostic,const std::string& auxiliaryDiagnostic) {
     auto auxiliary=lower(auxiliaryDiagnostic);
     if(authenticationFailure(auxiliary) || containsAny(auxiliary,{"could not resolve hostname","name or service not known",
-        "network is unreachable","no route to host","timed out","bad configuration","address already in use",
+        "network is unreachable","no route to host","timed out","timeout, server ","bad configuration","address already in use",
         "remote port forwarding failed","could not request local forwarding","only one usage of each socket address"})) return false;
     auto text=lower(targetDiagnostic);
+    // Forced DEBUG3 includes remaining-time countdowns and channel inactivity
+    // settings. Only timeout failure messages veto a proven pre-auth refusal.
     if(authenticationFailure(text) || containsAny(text,{"authenticated to ","authentication succeeded","address already in use",
-        "forwarding failed","could not request","cannot listen","open failed:","connect failed:","timed out","timeout",
+        "forwarding failed","could not request","cannot listen","open failed:","connect failed:","timed out","timeout, server ",
         "only one usage of each socket address"})) return false;
     std::istringstream stream(text); std::string line;
     while(std::getline(stream,line)) {

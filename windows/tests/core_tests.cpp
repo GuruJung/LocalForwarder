@@ -94,6 +94,14 @@ int main() {
     check(!isConnectionRefusal("Connection closed by target", "Permission denied (publickey)"),"proxy auth veto");
     check(isConnectionRefusal("Connection closed by target", "Authenticated to jump"),"proxy success does not hide target refusal");
     check(!isConnectionRefusal("Authenticated to target\nConnection closed by target"),"post-auth no retry");
+    const std::string countdownClose="debug1: Connection established.\ndebug3: timeout: 10000 ms remain after connect\ndebug1: Local version string SSH-2.0-OpenSSH_for_Windows_9.5\nkex_exchange_identification: Connection closed by remote host";
+    check(isConnectionRefusal(countdownClose,countdownClose),"remaining-time countdown does not veto canonical banner close");
+    check(isConnectionRefusal("debug3: timeout: 10000 ms remain after connect\nssh: connect to host target port 22: Connection refused"),"countdown does not veto TCP refusal");
+    check(!isConnectionRefusal("debug3: timeout: 10000 ms remain after connect"),"countdown alone is not refusal evidence");
+    for(auto failure:{"Connection timed out during banner exchange", "ssh: connect to host target port 22: Connection timed out", "Timeout, server target not responding.", "Permission denied (publickey).", "Host key verification failed.", "load key: failure"}) {
+        check(!isConnectionRefusal(countdownClose+"\n"+failure),"real target timeout or auth failure vetoes close");
+        check(!isConnectionRefusal(countdownClose,failure),"real auxiliary timeout or auth failure vetoes close");
+    }
     check(!isConnectionRefusal("kex_exchange_identification: read: Unknown error"),"ambiguous Windows errno is not proof of reset");
     check(!isConnectionRefusal("kex_exchange_identification: read: Unknown error\nbanner exchange: Connection to 127.0.0.1 port 22: Unknown error"),"matching banner failure does not disambiguate unknown errno");
     Readiness target(0,false,"target",22);
