@@ -60,4 +60,22 @@ Windows CI의 네이티브 sshd는 원격 Linux/macOS 계정의 `authorized_keys
 
 Linux의 CMake/CTest에서 `core`, `manager`, `ui-model` 3종이 통과했다. LLVM-MinGW 20261104로 Windows x64·ARM64 실행 파일과 테스트 실행 파일의 컴파일·링크를 확인했다. 공통 Python 테스트 구문 검사와 `git diff --check`도 통과했다. macOS 소스·리소스·전용 스크립트 변경은 없다.
 
-이 결과에 Windows 실행·MSVC 빌드·네이티브 SSH 통합·배포 ZIP·macOS 회귀 실행은 포함되지 않는다. 세 네이티브 CI 작업과 전체 변경 독립 리뷰가 끝나기 전에는 검증·통합 완료로 처리하지 않는다.
+로컬 결과와 별도로 아래 네이티브 CI를 실행했다. 실제 데스크톱 검증은 미수행이며, 전체 변경 독립 리뷰·통합 상태는 로컬 작업 기록에서 관리한다.
+
+## 네이티브 자동 검증 결과 (2026-11-17)
+
+커밋 `9f2c2db3bc2e3e1dfd331f6da919a0348866229f`, [CI 44003519096](https://github.com/GuruJung/LocalForwarder/actions/runs/44003519096). 이후 검증 기록만 바뀐 문서 커밋에는 실행·테스트·패키징 입력이 동일한 이 결과를 출처와 함께 재사용할 수 있다.
+
+| 환경 | SSH 클라이언트 | 자동 검사 | 배포 ZIP | 65초 유휴 RSS |
+|---|---|---|---:|---:|
+| Windows Server 2025 x64 네이티브 러너 | 9.5p2 | CTest 5/5, SSH 14 통과·2 제외 | 488,265 B | 11,218,944 B |
+| Windows 11 ARM64 네이티브 러너 | 9.5p2 | CTest 5/5, SSH 14 통과·2 제외 | 460,713 B | 9,068,544 B |
+| macOS 15.8.2 ARM64 | 9.9p2 | Swift 33/33, SSH 15 통과·1 제외 | 366,246 B | 7,225,344 B |
+
+모두 빌드·테스트·ZIP 생성이 성공했으며 macOS ad-hoc 서명도 성공했다. 유휴 수치는 연결 해제 후 headless production 관리자의 약 65초 관측값이다. 세 러너에서 관측한 CPU 시간 증가량은 0초였으며 네이티브 UI·장시간 실행의 자원 사용을 나타내지 않는다. Windows x64의 CI OS는 Server 2025이므로 일반 Windows 11 x64 데스크톱 검증을 대신하지 않는다.
+
+- Windows 제외: macOS Foundation 조회 취소 전용 회귀(Windows Job Object 자식 정리 검사는 별도로 통과), POSIX 원격 계정 공개키 등록(Windows→POSIX 실제 인증 등록은 미검증).
+- macOS 제외: Windows Job Object 전용 조회 자식 정리. macOS 자체 조회 취소 검사는 통과했다.
+- Windows는 네이티브 중복 포트 바인딩이 연결됨으로 관측됐고, macOS에서는 개설 실패였다. 별도의 배타적 바인딩 충돌 검사는 양쪽 모두 통과했다. 중복 포트 트래픽의 전달 대상을 보장하지 않는다.
+- Windows 닫힌 목적지의 EOF에는 오류 진단이 없었고 개설 상태가 유지됐다. 별도 `.invalid.` 목적지의 실제 오류와 시각 표시 검사는 통과했다.
+- 실제 데스크톱의 DPI·트레이·절전·물리 네트워크·VPN·외부 인증 터미널 및 Windows→POSIX 등록은 위 수동 목록대로 남아 있다. macOS 서버 로그 문자열 판정 보강은 [MAC-003](../dev-plans/macos-catchup.md#mac-003-서버가-제공한-로그-문자열과-상태-판정-분리)에 남겨 두었다.

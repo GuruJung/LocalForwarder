@@ -39,7 +39,7 @@
 
 ### MAC-003: 서버가 제공한 로그 문자열과 상태 판정 분리
 
-- 상태: macOS 반영 대기. Windows 코어 수정·회귀 테스트 완료, 최종 네이티브 검증 대기. macOS 실제 SSH 공격 시나리오는 미검증이다.
+- 상태: macOS 반영 대기. Windows 코어 수정·회귀 테스트와 x64/ARM64 네이티브 CI 통과 (`9f2c2db`). macOS 실제 SSH 공격 시나리오는 미검증이다.
 - 변경 이유·영향: OpenSSH의 `kex_exchange_identification` 로그는 서버 배너와 소프트웨어 식별자를 포함한다. `Authenticated to ... Entering interactive session.` 같은 배너를 상태 메시지로 해석하면 인증 전 연결됨을 표시할 수 있다. 채널 열기 실패의 서버 제공 설명에 원격 포워딩 실패 문자열이 있으면 다른 규칙 상태도 잘못 바뀔 수 있다. 이는 SSH 인증 우회가 아니라 앱 상태 표시의 신뢰성 문제다.
 - 기대 동작: 서버가 제공한 텍스트는 진단으로 보존하되 연결·포워딩 상태 증거로 사용하지 않는다. 정식 상태 메시지의 시작 형식과 출처를 검증한다. [현재 명세](current-spec.md)의 상태 판정 요구를 따른다.
 - 관련 코드·테스트: Windows `core.cpp`의 `targetDiagnosticLine`, `Readiness::consume`, `ForwardTracker::consume`와 `core_tests.cpp`의 배너·채널 오류 설명 회귀 테스트. macOS `SSHCommand.swift`의 `Readiness.consume`는 부분 문자열을, `ForwardRuntime.swift`의 `consume`는 시작 위치를 제한하지 않는 정규식·부분 문자열을 사용한다. 해당 macOS 코드의 정적 비교를 수행했으며 이번 기능의 macOS 소스 변경은 없다.
