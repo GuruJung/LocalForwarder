@@ -18,14 +18,18 @@ run_fixture() {
     local evidence=$2
     # Match opening the packaged application in Finder, including LaunchServices app identity.
     # open's own exit code is not the app's exit code, so require explicit result evidence too.
-    open -W -n -g --env GITHUB_ACTIONS=true --env RUNNER_ENVIRONMENT=github-hosted \
+    open -n -g --env GITHUB_ACTIONS=true --env RUNNER_ENVIRONMENT=github-hosted \
         "$bundle" --args "$mode" "$evidence" || return 1
     python3 - "$evidence" <<'PY'
 import json
 import sys
+import time
 from pathlib import Path
 
 path = Path(sys.argv[1])
+deadline = time.monotonic() + 30
+while not path.is_file() and time.monotonic() < deadline:
+    time.sleep(0.1)
 if not path.is_file():
     raise SystemExit("Fixture did not write evidence: " + str(path))
 data = json.loads(path.read_text())
@@ -39,6 +43,12 @@ cleanup() {
     trap - EXIT
     if [[ -x "$executable" ]]; then
         run_fixture cleanup "$evidence_dir/macos-login-item-cleanup-evidence.json" || result=1
+    fi
+    if [[ "$result" != 0 ]]; then
+        /usr/bin/log show --last 3m --style compact --predicate \
+            'subsystem CONTAINS[c] "servicemanagement" OR subsystem CONTAINS[c] "backgroundtaskmanagement"' \
+            > "$evidence_dir/macos-login-item-system.log" 2>&1 || true
+        cat "$evidence_dir/macos-login-item-system.log"
     fi
     # fixture_root is the exact mktemp directory created above, never the product app.
     rm -rf -- "$fixture_root"
@@ -58,6 +68,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>LocalForwarderLoginItemTest</string>
 <key>CFBundleExecutable</key><string>LocalForwarderLoginItemTest</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>LSUIElement</key><true/>
@@ -65,4 +76,6 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
+codesign -d --verbose=4 "$bundle" 2> "$evidence_dir/macos-login-item-signing.log"
+cat "$evidence_dir/macos-login-item-signing.log"
 run_fixture exercise "$evidence_dir/macos-login-item-evidence.json"

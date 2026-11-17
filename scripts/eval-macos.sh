@@ -2,9 +2,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test "$(uname -s)" = Darwin
-# Probe the actual ad-hoc registration path before the longer native test suite.
+# Probe registration early, but still collect independent build/test evidence if it fails.
+login_item_result=0
 if [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]; then
-    bash scripts/test-macos-login-item.sh
+    if bash scripts/test-macos-login-item.sh; then
+        echo "Real login-item registration fixture passed."
+    else
+        login_item_result=$?
+        echo "Real login-item registration fixture failed; continuing native checks before returning failure." >&2
+    fi
 else
     echo "Skipping real login-item registration outside disposable GitHub-hosted CI (unit tests still run)."
 fi
@@ -38,3 +44,6 @@ codesign --verify --strict --verbose=2 "$bundle"
 python3 tests/integration.py --behavior multi-host-v2 --app "$bundle/Contents/MacOS/LocalForwarder"
 ditto -c -k --keepParent "$bundle" dist/LocalForwarder-macos-arm64.zip
 stat -f 'macOS artifact bytes: %z' dist/LocalForwarder-macos-arm64.zip
+
+# A fixture failure remains a required-check failure even when all other checks pass.
+exit "$login_item_result"
