@@ -11,10 +11,32 @@ public struct Forward: Codable, Equatable {
     public var localPort: Int
     public var remoteHost: String
     public var remotePort: Int
+    public var description: String
     public init(id: String = UUID().uuidString, enabled: Bool = true, localPort: Int = 8080,
-                remoteHost: String = "localhost", remotePort: Int = 80) {
+                remoteHost: String = "localhost", remotePort: Int = 80, description: String = "") {
         self.id = id; self.enabled = enabled; self.localPort = localPort
-        self.remoteHost = remoteHost; self.remotePort = remotePort
+        self.remoteHost = remoteHost; self.remotePort = remotePort; self.description = description
+    }
+    private enum CodingKeys: String, CodingKey {
+        case id, enabled, localPort, remoteHost, remotePort, description
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        localPort = try values.decode(Int.self, forKey: .localPort)
+        remoteHost = try values.decode(String.self, forKey: .remoteHost)
+        remotePort = try values.decode(Int.self, forKey: .remotePort)
+        description = try values.decodeIfPresent(String.self, forKey: .description) ?? ""
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(enabled, forKey: .enabled)
+        try values.encode(localPort, forKey: .localPort)
+        try values.encode(remoteHost, forKey: .remoteHost)
+        try values.encode(remotePort, forKey: .remotePort)
+        if !description.isEmpty { try values.encode(description, forKey: .description) }
     }
 }
 public struct Host: Codable, Equatable {
@@ -72,10 +94,12 @@ public struct Host: Codable, Equatable {
         try values.encode(exitOnForwardFailure, forKey: .exitOnForwardFailure)
         try values.encode(retryOnConnectionRefused, forKey: .retryOnConnectionRefused)
     }
-    /// Description is saved metadata, not a change to an executing connection.
+    /// Host and rule descriptions are saved metadata, not changes to an executing connection.
     public func hasSameExecutionSettings(as other: Host) -> Bool {
         var lhs = self, rhs = other
         lhs.description = ""; rhs.description = ""
+        for index in lhs.forwards.indices { lhs.forwards[index].description = "" }
+        for index in rhs.forwards.indices { rhs.forwards[index].description = "" }
         return lhs == rhs
     }
     public func validate() throws {
@@ -93,6 +117,9 @@ public struct Host: Codable, Equatable {
         var ports = Set<Int>()
         var ids = Set<String>()
         for forward in forwards {
+            guard !forward.description.unicodeScalars.contains(where: { [0, 10, 13, 0x85, 0x2028, 0x2029].contains($0.value) }) else {
+                throw AppError("규칙 설명은 개행과 NUL이 없는 한 줄로 입력하세요.")
+            }
             guard Self.validID(forward.id), ids.insert(forward.id).inserted else { throw AppError("규칙 ID가 중복되거나 잘못되었습니다.") }
             guard (1...65535).contains(forward.localPort), (1...65535).contains(forward.remotePort), Self.validToken(forward.remoteHost) else {
                 throw AppError("규칙의 포트(1–65535)와 목적지 호스트를 확인하세요.")

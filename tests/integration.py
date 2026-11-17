@@ -1600,10 +1600,31 @@ class MultiHostSSHTests(unittest.TestCase):
             ("false-options", {"autoConnect": False, "exitOnForwardFailure": False,
                                "retryOnConnectionRefused": False}, True),
         ]
+        # Both supported file versions accept old rules with no description. Description
+        # is metadata, while malformed values must still preserve the original file.
+        forward_descriptions = [
+            ("missing", {}, True), ("null", {"description": None}, True),
+            ("empty", {"description": ""}, True),
+            ("korean", {"description": "개발 DB · 읽기 전용"}, True),
+            ("number", {"description": 42}, False),
+            ("boolean", {"description": True}, False),
+            ("object", {"description": {}}, False),
+            ("array", {"description": []}, False),
+        ]
+        for label, character in [("lf", "\n"), ("cr", "\r"), ("nel", "\u0085"),
+                                 ("ls", "\u2028"), ("ps", "\u2029"), ("nul", "\u0000")]:
+            forward_descriptions.append((label, {"description": "앞" + character + "뒤"}, False))
+        for version in (1, 2):
+            for label, changes, accepted in forward_descriptions:
+                rule = {"id": "rule", "enabled": True, "localPort": 15432,
+                        "remoteHost": "localhost", "remotePort": 5432}
+                rule.update(changes)
+                cases.append((f"forward-description-v{version}-{label}", {"forwards": [rule]}, accepted))
         observed = []
         for label, changes, accepted in cases:
             with self.subTest(case=label):
-                config = {"version": 2.0 if label == "port-integral" else 2,
+                config = {"version": (1 if label.startswith("forward-description-v1-") else
+                                      2.0 if label == "port-integral" else 2),
                           "hosts": [{"id": "corpus", "name": "서버", "target": "server", "forwards": []}]}
                 config["hosts"][0].update(changes)
                 directory = self.fixture.config_directory("corpus-" + label, config)

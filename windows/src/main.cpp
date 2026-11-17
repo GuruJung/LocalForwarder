@@ -30,7 +30,7 @@ constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
 constexpr wchar_t FormClass[]=L"LocalForwarder.MultiHost.Form";
 constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
-enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
+enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleDescription,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
 RECT availableWorkArea(HMONITOR display){
     if(previewWorkArea)return *previewWorkArea;
@@ -210,7 +210,7 @@ private:
         label(305,L"포워딩 규칙 — 앱 규칙은 127.0.0.1에 바인딩합니다.");
         make(form_,Rules,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP|WS_BORDER);
         ListView_SetExtendedListViewStyle(control(Rules),LVS_EX_CHECKBOXES|LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);
-        const wchar_t* titles[]={L"사용",L"로컬 포트",L"목적지 호스트",L"목적지 포트"};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(titles[i]);col.cx=scale(i==2?260:90);ListView_InsertColumn(control(Rules),i,&col);}
+        const wchar_t* titles[]={L"사용",L"로컬 포트",L"목적지 호스트",L"목적지 포트",L"설명"};for(int i=0;i<5;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(titles[i]);col.cx=scale(i==2?260:90);ListView_InsertColumn(control(Rules),i,&col);}
         make(form_,RuleNew,L"BUTTON",L"새 규칙…",WS_TABSTOP);make(form_,RuleEdit,L"BUTTON",L"규칙 편집…",WS_TABSTOP);make(form_,RuleDelete,L"BUTTON",L"규칙 삭제",WS_TABSTOP);
         label(309,L"실행 명령 프리뷰 (편집한 값)");make(form_,CommandPreview,L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP);
         make(form_,Save,L"BUTTON",L"선택 호스트 저장",WS_TABSTOP);make(form_,Connect,L"BUTTON",L"연결·재연결",WS_TABSTOP);make(form_,Authentication,L"BUTTON",L"인증 설정…",WS_TABSTOP);make(form_,ConnectionStatus,L"BUTTON",L"연결 상태…",WS_TABSTOP);
@@ -243,7 +243,8 @@ private:
         SCROLLINFO si{sizeof(si),SIF_RANGE|SIF_PAGE|SIF_POS,0,y-1,static_cast<UINT>(std::max(1,h)),scroll_,0};SetScrollInfo(form_,SB_VERT,&si,TRUE);si.fMask=SIF_POS;GetScrollInfo(form_,SB_VERT,&si);scroll_=si.nPos;
         for(const auto& item:places)place(item.id,item.x,item.y-scroll_,item.width,item.height);
         int enabledWidth=content<360?36:48,portWidth=content<360?70:90;
-        ListView_SetColumnWidth(control(Rules),0,scale(enabledWidth));ListView_SetColumnWidth(control(Rules),1,scale(portWidth));ListView_SetColumnWidth(control(Rules),2,scale(std::max(40,content-enabledWidth-2*portWidth-4)));ListView_SetColumnWidth(control(Rules),3,scale(portWidth));
+        int available=content-enabledWidth-2*portWidth-4,hostWidth=std::max(140,available/2);
+        ListView_SetColumnWidth(control(Rules),0,scale(enabledWidth));ListView_SetColumnWidth(control(Rules),1,scale(portWidth));ListView_SetColumnWidth(control(Rules),2,scale(hostWidth));ListView_SetColumnWidth(control(Rules),3,scale(portWidth));ListView_SetColumnWidth(control(Rules),4,scale(std::max(160,available-hostWidth)));
     }
     void scrollForm(int code,int wheel=0){SCROLLINFO si{sizeof(si),SIF_ALL};GetScrollInfo(form_,SB_VERT,&si);int next=si.nPos;switch(code){case SB_LINEUP:next-=24;break;case SB_LINEDOWN:next+=24;break;case SB_PAGEUP:next-=si.nPage;break;case SB_PAGEDOWN:next+=si.nPage;break;case SB_THUMBPOSITION:case SB_THUMBTRACK:next=si.nTrackPos;break;default:next-=wheel;}scroll_=next;layoutForm();}
     void ensureFocusVisible(){if(!form_)return;HWND focus=GetFocus();if(!focus||!IsChild(form_,focus))return;RECT area{},client{};GetWindowRect(focus,&area);MapWindowPoints(nullptr,form_,reinterpret_cast<POINT*>(&area),2);GetClientRect(form_,&client);if(area.top<0)scroll_+=MulDiv(area.top,96,uiDpi(settingsWindow_));else if(area.bottom>client.bottom)scroll_+=MulDiv(area.bottom-client.bottom,96,uiDpi(settingsWindow_));layoutForm();}
@@ -251,33 +252,33 @@ private:
     void capture(){if(loading_||!settings_.open||!settings_.drafts.contains(settings_.selected))return;auto& draft=settings_.drafts.at(settings_.selected);draft.host.name=utf8(get(Name));draft.host.description=utf8(get(Description));draft.host.target=utf8(get(Target));draft.host.user=utf8(get(User));draft.host.identityFile=utf8(get(Key));draft.port=utf8(get(Port));draft.host.autoConnect=SendMessageW(control(AutoConnect),BM_GETCHECK,0,0)==BST_CHECKED;draft.host.exitOnForwardFailure=SendMessageW(control(ExitFailure),BM_GETCHECK,0,0)==BST_CHECKED;draft.host.retryOnConnectionRefused=SendMessageW(control(RetryRefused),BM_GETCHECK,0,0)==BST_CHECKED;
     }
     void preview(){if(!settings_.drafts.contains(settings_.selected))return;try{auto host=settings_.validated();std::wstring command=quoteWindowsArgument(systemSSH().wstring());for(auto& argument:sshArguments(host))command+=L" "+quoteWindowsArgument(wide(argument));set(CommandPreview,command);}catch(const std::exception& e){set(CommandPreview,wide(e.what()));}}
-    void fillRules(){loading_=true;ListView_DeleteAllItems(control(Rules));if(settings_.drafts.contains(settings_.selected)){auto& draft=settings_.drafts.at(settings_.selected);for(size_t i=0;i<draft.host.forwards.size();++i){auto& f=draft.host.forwards[i];LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=static_cast<int>(i);item.pszText=const_cast<LPWSTR>(L"");ListView_InsertItem(control(Rules),&item);auto ports=draft.rulePorts.at(f.id);auto local=wide(ports.first),host=wide(f.remoteHost),remote=wide(ports.second);ListView_SetItemText(control(Rules),item.iItem,1,local.data());ListView_SetItemText(control(Rules),item.iItem,2,host.data());ListView_SetItemText(control(Rules),item.iItem,3,remote.data());ListView_SetCheckState(control(Rules),item.iItem,f.enabled);}}
+    void fillRules(){loading_=true;ListView_DeleteAllItems(control(Rules));if(settings_.drafts.contains(settings_.selected)){auto& draft=settings_.drafts.at(settings_.selected);for(size_t i=0;i<draft.host.forwards.size();++i){auto& f=draft.host.forwards[i];LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=static_cast<int>(i);item.pszText=const_cast<LPWSTR>(L"");ListView_InsertItem(control(Rules),&item);auto ports=draft.rulePorts.at(f.id);auto local=wide(ports.first),host=wide(f.remoteHost),remote=wide(ports.second),description=wide(f.description);ListView_SetItemText(control(Rules),item.iItem,1,local.data());ListView_SetItemText(control(Rules),item.iItem,2,host.data());ListView_SetItemText(control(Rules),item.iItem,3,remote.data());ListView_SetItemText(control(Rules),item.iItem,4,description.data());ListView_SetCheckState(control(Rules),item.iItem,f.enabled);}}
         loading_=false;
     }
     void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);}
-    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
+    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
     void layoutRule(){if(!ruleWindow_||!control(RuleOkay))return;RECT rect{};GetClientRect(ruleWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(ruleWindow_)),h=MulDiv(rect.bottom,96,uiDpi(ruleWindow_));
-        int row=h<230?30:36,first=h<230?36:48,footer=h-44;
-        place(RuleEnabled,16,8,w-32,24);place(320,16,first+4,110,22);place(LocalPort,136,first,w-152,26);place(321,16,first+row+4,110,22);place(RemoteHost,136,first+row,w-152,26);place(322,16,first+row*2+4,110,22);place(RemotePort,136,first+row*2,w-152,26);place(RuleOkay,w-196,footer,84,30);place(RuleCancel,w-100,footer,84,30);
+        int row=h<260?30:36,first=h<260?36:48,footer=h-44;
+        place(RuleEnabled,16,8,w-32,24);place(323,16,first+4,110,22);place(RuleDescription,136,first,w-152,26);place(320,16,first+row+4,110,22);place(LocalPort,136,first+row,w-152,26);place(321,16,first+row*2+4,110,22);place(RemoteHost,136,first+row*2,w-152,26);place(322,16,first+row*3+4,110,22);place(RemotePort,136,first+row*3,w-152,26);place(RuleOkay,w-196,footer,84,30);place(RuleCancel,w-100,footer,84,30);
     }
     void showRule(bool creating){if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
         if(!creating&&(rule_<0||static_cast<size_t>(rule_)>=host.forwards.size()))return;
         ruleDraft_.emplace(creating?Forward{newId(),true,8080,"localhost",80}:host.forwards[rule_]);creatingRule_=creating;settings_.modalHost=settings_.selected;
-        ruleWindow_=CreateWindowExW(WS_EX_CONTROLPARENT,RuleClass,creating?L"새 규칙":L"규칙 편집",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(460),scale(250),settingsWindow_,nullptr,instance_,this);
+        ruleWindow_=CreateWindowExW(WS_EX_CONTROLPARENT,RuleClass,creating?L"새 규칙":L"규칙 편집",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(460),scale(280),settingsWindow_,nullptr,instance_,this);
         if(!ruleWindow_){settings_.modalHost.clear();ruleDraft_.reset();throw std::runtime_error(winError());}
-        RECT desiredClient{0,0,0,scale(200)};
+        RECT desiredClient{0,0,0,scale(230)};
         AdjustWindowRectExForDpi(&desiredClient,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_EXSTYLE)),GetDpiForWindow(ruleWindow_));
         centerInWorkArea(ruleWindow_,460,MulDiv(desiredClient.bottom-desiredClient.top,96,uiDpi(ruleWindow_)),settingsWindow_);
         make(ruleWindow_,RuleEnabled,L"BUTTON",L"사용",BS_AUTOCHECKBOX|WS_TABSTOP);SendMessageW(control(RuleEnabled),BM_SETCHECK,ruleDraft_->rule.enabled?BST_CHECKED:BST_UNCHECKED,0);
-        make(ruleWindow_,320,L"STATIC",L"로컬 포트",0);make(ruleWindow_,321,L"STATIC",L"목적지 호스트",0);make(ruleWindow_,322,L"STATIC",L"목적지 포트",0);
-        for(int id:{LocalPort,RemoteHost,RemotePort})make(ruleWindow_,id,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP);
-        set(LocalPort,wide(ruleDraft_->localPort));set(RemoteHost,wide(ruleDraft_->rule.remoteHost));set(RemotePort,wide(ruleDraft_->remotePort));
+        make(ruleWindow_,323,L"STATIC",L"설명 (선택)",0);make(ruleWindow_,320,L"STATIC",L"로컬 포트",0);make(ruleWindow_,321,L"STATIC",L"목적지 호스트",0);make(ruleWindow_,322,L"STATIC",L"목적지 포트",0);
+        for(int id:{RuleDescription,LocalPort,RemoteHost,RemotePort})make(ruleWindow_,id,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP);
+        set(RuleDescription,wide(ruleDraft_->rule.description));set(LocalPort,wide(ruleDraft_->localPort));set(RemoteHost,wide(ruleDraft_->rule.remoteHost));set(RemotePort,wide(ruleDraft_->remotePort));
         make(ruleWindow_,RuleOkay,L"BUTTON",L"확인",WS_TABSTOP|BS_DEFPUSHBUTTON);make(ruleWindow_,RuleCancel,L"BUTTON",L"취소",WS_TABSTOP);
-        EnableWindow(settingsWindow_,FALSE);updateRuleFont();layoutRule();ShowWindow(ruleWindow_,SW_SHOW);SetForegroundWindow(ruleWindow_);SetFocus(control(LocalPort));
+        EnableWindow(settingsWindow_,FALSE);updateRuleFont();layoutRule();ShowWindow(ruleWindow_,SW_SHOW);SetForegroundWindow(ruleWindow_);SetFocus(control(RuleDescription));
     }
     void closeRule(bool accepted){if(!ruleWindow_)return;
-        if(accepted){try{ruleDraft_->rule.enabled=SendMessageW(control(RuleEnabled),BM_GETCHECK,0,0)==BST_CHECKED;ruleDraft_->rule.remoteHost=utf8(get(RemoteHost));ruleDraft_->localPort=utf8(get(LocalPort));ruleDraft_->remotePort=utf8(get(RemotePort));settings_.applyRule(settings_.modalHost,*ruleDraft_,creatingRule_);}catch(const std::exception& e){error(e.what());return;}}
-        auto selectedID=ruleDraft_->rule.id;HWND old=ruleWindow_;ruleWindow_=nullptr;ruleDraft_.reset();for(int id:std::initializer_list<int>{RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322})controls_.erase(id);DestroyWindow(old);if(ruleFont_){DeleteObject(ruleFont_);ruleFont_=nullptr;}settings_.modalHost.clear();EnableWindow(settingsWindow_,TRUE);
+        if(accepted){try{ruleDraft_->rule.enabled=SendMessageW(control(RuleEnabled),BM_GETCHECK,0,0)==BST_CHECKED;ruleDraft_->rule.description=utf8(get(RuleDescription));ruleDraft_->rule.remoteHost=utf8(get(RemoteHost));ruleDraft_->localPort=utf8(get(LocalPort));ruleDraft_->remotePort=utf8(get(RemotePort));settings_.applyRule(settings_.modalHost,*ruleDraft_,creatingRule_);}catch(const std::exception& e){error(e.what());return;}}
+        auto selectedID=ruleDraft_->rule.id;HWND old=ruleWindow_;ruleWindow_=nullptr;ruleDraft_.reset();for(int id:std::initializer_list<int>{RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323})controls_.erase(id);DestroyWindow(old);if(ruleFont_){DeleteObject(ruleFont_);ruleFont_=nullptr;}settings_.modalHost.clear();EnableWindow(settingsWindow_,TRUE);
         if(accepted){fillRules();auto& rules=settings_.drafts.at(settings_.selected).host.forwards;for(size_t i=0;i<rules.size();++i)if(rules[i].id==selectedID){rule_=static_cast<int>(i);ListView_SetItemState(control(Rules),rule_,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);ListView_EnsureVisible(control(Rules),rule_,FALSE);break;}populateHosts();preview();}
         fillRuleEditor();if(settings_.open){SetForegroundWindow(settingsWindow_);SetFocus(control(Rules));}
     }
@@ -429,6 +430,10 @@ public:
             for(int id:ids){auto rect=bounds(control(id),form_);check(rect.left>=formClient.left&&rect.right<=formClient.right,"form controls fit horizontally");}
             SetFocus(control(ConnectionStatus));ensureFocusVisible();check(inside(bounds(control(ConnectionStatus),form_),formClient),"keyboard focus scrolls final action into view");
             SetFocus(control(Name));ensureFocusVisible();check(inside(bounds(control(Name),form_),formClient),"keyboard focus scrolls first input into view");
+            check(Header_GetItemCount(ListView_GetHeader(control(Rules)))==5,"rule list has final description column");
+            check(ListView_GetColumnWidth(control(Rules),1)>=scale(70)&&ListView_GetColumnWidth(control(Rules),3)>=scale(70)&&ListView_GetColumnWidth(control(Rules),4)>=scale(160),"rule list preserves port and description access");
+            SCROLLINFO horizontal{sizeof(horizontal),SIF_ALL};GetScrollInfo(control(Rules),SB_HORZ,&horizontal);
+            if(horizontal.nMax>=static_cast<int>(horizontal.nPage)){ListView_Scroll(control(Rules),10000,0);horizontal.fMask=SIF_POS;GetScrollInfo(control(Rules),SB_HORZ,&horizontal);check(horizontal.nPos>0,"narrow rule list can scroll to description");ListView_Scroll(control(Rules),-10000,0);}
         };
         auto resizeClient=[](HWND window,int width,int height,UINT dpi){
             RECT outer{0,0,MulDiv(width,dpi,96),MulDiv(height,dpi,96)};
@@ -460,11 +465,11 @@ public:
             GetWindowRect(ruleWindow_,&actual);check(inside(actual,*previewWorkArea),"rule modal initial size fits narrow work area");
             RECT ruleClient{};GetClientRect(ruleWindow_,&ruleClient);
             check(bounds(control(RuleOkay),ruleWindow_).right<=bounds(control(RuleCancel),ruleWindow_).left,"rule modal OK precedes Cancel");
-            std::vector<int> ruleControls={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322};
+            std::vector<int> ruleControls={RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323};
             disjoint(ruleControls,ruleWindow_);for(int id:ruleControls)check(inside(bounds(control(id),ruleWindow_),ruleClient),"clamped rule modal controls remain accessible");
-            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,220},{400,190}}){
+            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{460,250},{400,220}}){
                 resizeClient(ruleWindow_,logicalSize.first,logicalSize.second,dpi);layoutRule();
-                RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322};
+                RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323};
                 disjoint(ids,ruleWindow_);for(int id:ids)check(inside(bounds(control(id),ruleWindow_),client),"rule modal controls fit within client area");
             }
             closeRule(false);showStatus();
@@ -482,7 +487,7 @@ public:
         openSettings({},true);check(settings_.startup&&settings_.order.size()==2,"startup settings load");
         nativeLayoutChecks();
         auto originalRules=settings_.drafts.at("a").host.forwards;
-        showRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&settings_.modalHost=="a","rule modal blocks owner");
+        showRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&settings_.modalHost=="a","rule modal blocks owner");check(get(RuleDescription).empty(),"new rule description defaults empty");set(RuleDescription,L"취소할 설명");
         set(LocalPort,L"invalid");closeRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&get(LocalPort)==L"invalid"&&settings_.drafts.at("a").host.forwards==originalRules,"invalid modal warns and stays open with input and draft preserved");
         openSettings("b");check(settings_.selected=="a"&&ruleWindow_,"second open preserves rule modal target");
         closeRule(false);check(IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a").host.forwards==originalRules,"cancel new rule preserves draft");
@@ -493,10 +498,19 @@ public:
         };
         auto beforeNew=settings_.drafts.at("a");showRule(true);set(LocalPort,L"18081");enterFocused(RuleCancel);
         check(!ruleWindow_&&IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a")==beforeNew,"Cancel Enter discards valid new rule without changing draft");
-        showRule(true);set(LocalPort,L"18080");enterFocused(LocalPort);check(!ruleWindow_&&ListView_GetItemCount(control(Rules))==2,"Enter in field confirms new rule");
-        auto added=settings_.drafts.at("a").host.forwards.back();auto beforeEdit=settings_.drafts.at("a");showRule(false);set(RemoteHost,L"cancelled.example");enterFocused(RuleCancel);
+        showRule(true);set(LocalPort,L"18080");set(RuleDescription,L"개발 웹 서비스");enterFocused(RuleDescription);check(!ruleWindow_&&ListView_GetItemCount(control(Rules))==2,"Enter in field confirms new rule");
+        auto added=settings_.drafts.at("a").host.forwards.back();check(added.description=="개발 웹 서비스","new rule description committed");wchar_t ruleText[256]{};ListView_GetItemText(control(Rules),1,4,ruleText,256);check(std::wstring(ruleText)==L"개발 웹 서비스","rule list displays description in final column");auto beforeEdit=settings_.drafts.at("a");showRule(false);check(get(RuleDescription)==L"개발 웹 서비스","edit loads saved draft description");set(RuleDescription,L"취소할 변경");set(RemoteHost,L"cancelled.example");enterFocused(RuleCancel);
         check(!ruleWindow_&&IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a")==beforeEdit,"Cancel Enter discards rule edit without changing draft");
-        showRule(false);set(RemoteHost,L"accepted.example");enterFocused(RuleOkay);check(!ruleWindow_&&settings_.drafts.at("a").host.forwards.back().id==added.id&&settings_.drafts.at("a").host.forwards.back().remoteHost=="accepted.example","OK Enter confirms edit and preserves ID");
+        showRule(false);set(RuleDescription,L"수정된 웹 서비스");set(RemoteHost,L"accepted.example");enterFocused(RuleOkay);check(!ruleWindow_&&settings_.drafts.at("a").host.forwards.back().id==added.id&&settings_.drafts.at("a").host.forwards.back().remoteHost=="accepted.example","OK Enter confirms edit and preserves ID");
+        check(settings_.drafts.at("a").host.forwards.back().description=="수정된 웹 서비스","rule description edit committed");
+        auto beforeCancel=settings_.drafts.at("a");showRule(false);set(RuleDescription,L"Escape 취소");
+        MSG escape{};escape.hwnd=control(RuleDescription);escape.message=WM_KEYDOWN;escape.wParam=VK_ESCAPE;check(preprocess(escape),"rule Escape handled");
+        check(!ruleWindow_&&settings_.drafts.at("a")==beforeCancel,"Escape discards description changes");
+        showRule(false);set(RuleDescription,L"닫기 취소");SendMessageW(ruleWindow_,WM_CLOSE,0,0);
+        check(!ruleWindow_&&settings_.drafts.at("a")==beforeCancel,"window close discards description changes");
+        NMHDR doubleClick{control(Rules),Rules,NM_DBLCLK};SendMessageW(settingsWindow_,WM_NOTIFY,Rules,reinterpret_cast<LPARAM>(&doubleClick));
+        check(ruleWindow_&&get(RuleDescription)==L"수정된 웹 서비스","double click opens description editor");set(RuleDescription,L"");enterFocused(RuleOkay);
+        check(settings_.drafts.at("a").host.forwards.back().description.empty()&&settings_.drafts.at("a").host.forwards.back().id==added.id,"clearing description keeps ID");
         command(RuleDelete,BN_CLICKED);check(settings_.drafts.at("a").host.forwards==originalRules,"delete selected rule after modal");
         set(Name,L"A edited");set(Port,L"invalid");
         SendMessageW(control(Hosts),LB_SETCURSEL,1,0);command(Hosts,LBN_SELCHANGE);
@@ -507,6 +521,12 @@ public:
         showStatus();check(status_&&!IsWindowEnabled(settingsWindow_)&&settings_.modalHost=="b","native modal blocks owner");
         auto host=loadHost(directory_,"b");manager_->connect(host,false);
         check(get(StatusHeading).find(L"server-b")!=std::wstring::npos&&ListView_GetItemCount(control(StatusForwards))==1,"native live status initial target");
+        auto executionBeforeDescription=manager_->runtime("b")->executionHost;closeStatus();
+        ListView_SetItemState(control(Rules),0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);showRule(false);set(RuleDescription,L"실행 중 DB 설명");closeRule(true);
+        check(settings_.dirty("b"),"native description-only edit marks dirty");command(Save,BN_CLICKED);showStatus();
+        check(loadHost(directory_,"b").forwards[0].description=="실행 중 DB 설명"&&!settings_.dirty("b"),"native rule description persists and clears dirty flag");
+        check(manager_->runtime("b")->executionHost==executionBeforeDescription&&manager_->runtime("b")->state==ConnectionState::connected,"native description save preserves running connection");
+        check(get(StatusSummary).find(L"현재 실행 설정과 편집한 설정이 다릅니다.")==std::wstring::npos,"description-only change has no execution difference warning");
         createTrayMenu();menuOpen_=true;auto rowID=menus_.at("b").rows.front().second;
         MENUITEMINFOW image{};image.cbSize=sizeof(image);image.fMask=MIIM_BITMAP;check(GetMenuItemInfoW(activeMenu_,1,FALSE,&image)&&image.hbmpItem,"settings menu has bitmap");
         updateMenu();check(menus_.at("b").rows.front().second==rowID,"status update retains rule menu identity");
@@ -536,7 +556,7 @@ public:
     }
     LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
     LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),600,390);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,240);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,270);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
     void caught(const std::exception& exception){error(exception.what());}
 };
 template<class F>LRESULT dispatchWindow(HWND hwnd,UINT msg,WPARAM w,LPARAM l,F&& invoke){auto* app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));if(msg==WM_NCCREATE){app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));}if(app){try{return invoke(*app);}catch(const std::exception& e){app->caught(e);return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
@@ -562,7 +582,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             else if(args[1]==L"--test-ui-preview"&&(args.size()==2||args.size()==3)){
                 if(args.size()==3){if(args[2]!=L"96"&&args[2]!=L"144"&&args[2]!=L"192")throw std::runtime_error("Preview DPI must be 96, 144 or 192");previewDpi=static_cast<UINT>(std::stoi(args[2]));}
                 test=true;uiTest=true;uiPreview=true;start=false;directory=fs::temp_directory_path()/wide("LocalForwarder-preview-"+newId());ownedTestDirectory=directory;
-                Host a;a.id="a";a.name="개발 서버";a.description="개발 DB와 웹 서비스의 연결 용도를 설명하는 긴 한 줄 설명";a.target="development-server.example.invalid";a.forwards={{"db",true,15432,"database.internal.example.invalid",5432},{"web",true,18080,"localhost",80},{"disabled",false,16379,"cache.internal",6379}};
+                Host a;a.id="a";a.name="개발 서버";a.description="개발 DB와 웹 서비스의 연결 용도를 설명하는 긴 한 줄 설명";a.target="development-server.example.invalid";a.forwards={{"db",true,15432,"database.internal.example.invalid",5432,"개발 데이터베이스 조회와 관리 도구에서 사용하는 연결"},{"web",true,18080,"localhost",80,"로컬 웹 서비스 확인"},{"disabled",false,16379,"cache.internal",6379,"필요할 때만 사용하는 캐시 관리"}};
                 for(int i=0;i<8;++i)a.forwards.push_back({"extra-"+std::to_string(i),false,19000+i,"localhost",80});
                 Host b=a;b.id="b";b.name="수동 연결 서버";b.autoConnect=false;saveHost(directory,a);saveHost(directory,b);
             }

@@ -79,6 +79,9 @@ void temporaryAndSave() {
     auto count=f.sessions[0]->starts.size();f.disk.hosts[0].target="saved";f.manager.saved(f.disk.hosts[0]);
     check(!f.manager.runtime("a")->temporary && f.sessions[0]->starts.size()==count && f.manager.runtime("a")->executionHost->target=="temporary","save keeps active snapshot");
     f.manager.connect("a");check(f.sessions[0]->starts.back().target=="saved","saved applied next time");
+    auto beforeMetadata=f.sessions[0]->starts.size();auto execution=f.manager.runtime("a")->executionHost;
+    f.disk.hosts[0].forwards[0].description="저장된 DB 설명";f.manager.saved(f.disk.hosts[0]);
+    check(f.sessions[0]->starts.size()==beforeMetadata&&f.manager.runtime("a")->executionHost==execution&&f.manager.runtime("a")->state==ConnectionState::connected,"rule description save preserves live connection snapshot");
     f.disk.hosts[0].target="external";f.manager.connect("a");check(f.sessions[0]->starts.back().target=="external","manual reads disk");
     f.manager.connect(host("unsaved"),true);check(f.manager.hosts().size()==3,"temporary host visible");
     f.disk.hosts[1].autoConnect=false;f.manager.reconnectAll();

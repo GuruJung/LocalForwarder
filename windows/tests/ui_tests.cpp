@@ -29,13 +29,27 @@ int main(){try{
     RuleDraft newRule(Forward{"new",true,18080,"localhost",80});
     newRule.remotePort="bad";bool ruleInvalid=false;try{model.applyRule("a",newRule,true);}catch(...){ruleInvalid=true;}
     check(ruleInvalid&&model.drafts.at("a")==originalDraft,"invalid modal commit is atomic");
-    newRule.remotePort="80";model.drafts.at("a").host.target="";model.drafts.at("a").host.name="";
+    newRule.remotePort="80";newRule.rule.description="새 웹 규칙";model.drafts.at("a").host.target="";model.drafts.at("a").host.name="";
     model.applyRule("a",newRule,true);check(model.drafts.at("a").host.forwards.size()==2,"rules can be added before host fields");
     auto edited=newRule;edited.rule.remoteHost="new-destination";model.applyRule("a",edited,false);
-    check(model.drafts.at("a").host.forwards[1].id=="new"&&model.drafts.at("a").host.forwards[1].remoteHost=="new-destination","edit keeps ID and order");
+    check(model.drafts.at("a").host.forwards[1].id=="new"&&model.drafts.at("a").host.forwards[1].remoteHost=="new-destination"&&model.drafts.at("a").host.forwards[1].description=="새 웹 규칙","edit keeps ID and order");
     RuleDraft duplicate(Forward{"duplicate",true,18080,"localhost",80});ruleInvalid=false;try{model.applyRule("a",duplicate,true);}catch(...){ruleInvalid=true;}
     check(ruleInvalid,"modal validates active duplicates");duplicate.rule.enabled=false;model.applyRule("a",duplicate,true);
     check(model.drafts.at("b")==HostDraft(b),"modal leaves peer host unchanged");
+    SettingsModel metadata;metadata.load(Config{{a,b}}, {}, false);
+    RuleDraft metadataEdit(a.forwards[0]);metadataEdit.rule.description="개발 DB 접속";
+    metadata.applyRule("a",metadataEdit,false);
+    check(metadata.dirty("a")&&!metadata.dirty("b"),"description edit marks only selected host dirty");
+    auto described=metadata.validated();check(described.forwards[0].description=="개발 DB 접속"&&sameExecutionSettings(described,a),"description edit validated without execution difference");
+    auto authenticated=described;authenticated.identityFile="new-key";
+    metadata.authenticationFinished(a,authenticated);
+    check(metadata.drafts.at("a").host.forwards[0].description=="개발 DB 접속","authentication preserves unsaved rule description");
+    metadata.saved(authenticated);check(!metadata.dirty("a"),"description save resets dirty flag");
+    metadataEdit.rule.description.clear();metadata.applyRule("a",metadataEdit,false);
+    check(metadata.dirty("a")&&metadata.validated().forwards[0].description.empty(),"description clearing is a saved edit");
+    auto beforeInvalid=metadata.drafts.at("a");metadataEdit.rule.description="invalid\nline";ruleInvalid=false;
+    try{metadata.applyRule("a",metadataEdit,false);}catch(...){ruleInvalid=true;}
+    check(ruleInvalid&&metadata.drafts.at("a")==beforeInvalid,"invalid rule description commit is atomic");
     auto savedSnapshot=a;savedSnapshot.forwards.push_back({"disabled",false,12001,"db",5432});
     auto rows=menuForwards(savedSnapshot,nullptr);check(rows.size()==2&&rows[0].icon==MenuIcon::disconnected&&rows[1].icon==MenuIcon::disabled,"preconnection menu includes inactive rules");
     HostRuntime runtime;runtime.state=ConnectionState::connected;runtime.executionHost=savedSnapshot;

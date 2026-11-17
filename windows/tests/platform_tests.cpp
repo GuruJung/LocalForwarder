@@ -220,9 +220,10 @@ int main(int argc,char** argv) {
      check(loadHost(directory,a.id).name==edited.name,"save succeeds after restoring destination attributes");
    }
    stage="initial config CRUD";
-   a.description="개발 DB";saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
+   a.description="개발 DB";a.forwards={{"db",true,15432,"localhost",5432,"분석용 데이터베이스"}};saveHost(root,a); auto b=a;b.id="b";b.name="B";saveHost(root,b);
    check(loadConfig(root).hosts.size()==2,"merge different hosts");
-   check(loadHost(root,"a").description=="개발 DB","other host save preserves description");
+   check(loadHost(root,"a").description=="개발 DB"&&loadHost(root,"a").forwards==a.forwards,"other host save preserves host and rule descriptions");
+   auto unchangedBytes=readBytes(root/L"config.json");loadConfig(root);check(readBytes(root/L"config.json")==unchangedBytes,"v2 description read preserves exact file bytes");
    a.name="Updated";saveHost(root,a);check(loadHost(root,"a").name=="Updated","fresh load");
    deleteHost(root,"b");check(loadConfig(root).hosts.size()==1,"delete");
    stage="concurrent config saves (100 per writer)";
@@ -247,13 +248,13 @@ int main(int argc,char** argv) {
    auto both=loadConfig(concurrent);
    check(both.hosts.size()==2,"distinct process writes preserve both hosts");
    check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"right").name=="right-79","all process writes retained");
-   auto describedIdentity=loadHost(concurrent,"left");describedIdentity.description="설명 보존";saveHost(concurrent,describedIdentity);
+   auto describedIdentity=loadHost(concurrent,"left");describedIdentity.description="설명 보존";describedIdentity.forwards={{"db",true,15432,"localhost",5432,"인증 갱신 중 설명 보존"}};saveHost(concurrent,describedIdentity);
    Child identity(executablePath(),{"--identity-many",utf8(concurrent.wstring()),"left"},ignore);
    Child edit(executablePath(),{"--save-many",utf8(concurrent.wstring()),"right"},ignore);
    check(identity.wait(60000)==0 && edit.wait(60000)==0,"identity and editor processes complete");
    check(loadHost(concurrent,"left").name=="left-79" && loadHost(concurrent,"left").identityFile=="key-79","identity mutation preserves latest other fields");
    check(loadHost(concurrent,"right").name=="right-79","identity mutation preserves other host");
-   check(loadHost(concurrent,"left").description=="설명 보존","identity mutation preserves description");
+   check(loadHost(concurrent,"left").description=="설명 보존"&&loadHost(concurrent,"left").forwards==describedIdentity.forwards,"identity mutation preserves host and rule descriptions");
    bool emptyRejected=false;try{setIdentity(concurrent,"left","");}catch(...){emptyRejected=true;}
    check(emptyRejected && loadHost(concurrent,"left").identityFile=="key-79","empty helper key update rejected");
    deleteHost(concurrent,"left");bool deletedRejected=false;

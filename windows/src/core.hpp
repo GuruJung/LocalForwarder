@@ -12,6 +12,7 @@ struct Forward {
     int localPort = 0;
     std::string remoteHost = "localhost";
     int remotePort = 0;
+    std::string description;
     bool operator==(const Forward&) const = default;
 };
 struct Host {

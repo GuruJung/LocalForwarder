@@ -23,6 +23,26 @@ int main() {
         auto data=std::string(R"({"version":2,"hosts":[{"id":"h","name":"h","target":"s","forwards":[],"description":)")+value+"}]}";
         rejects([&]{parseConfig(data);});
     }
+    auto describedRule=h;describedRule.forwards[0].description="개발 DB 조회";
+    describedRule.forwards.push_back({"disabled",false,15433,"localhost",80,"사용 중지 웹 서비스"});
+    auto undescribedRules=describedRule;for(auto& rule:undescribedRules.forwards)rule.description.clear();
+    check(parseConfig(writeConfig({{describedRule}})).hosts[0]==describedRule,"rule descriptions UTF-8 round trip");
+    check(sshArguments(describedRule)==sshArguments(undescribedRules)&&sameExecutionSettings(describedRule,undescribedRules),"all rule descriptions excluded from execution settings");
+    check(describedRule!=undescribedRules,"rule descriptions participate in dirty equality");
+    auto changedPort=describedRule;changedPort.forwards[0].remotePort++;
+    check(!sameExecutionSettings(changedPort,undescribedRules),"real forwarding changes remain execution differences");
+    auto ruleJSON=[](int version,const std::string& suffix){return std::string("{\"version\":")+std::to_string(version)+R"(,"hosts":[{"id":"h","name":"h","target":"s","forwards":[{"id":"f","enabled":true,"localPort":1234,"remoteHost":"localhost","remotePort":80)"+suffix+"}]}]}";};
+    for(int version:{1,2})for(auto suffix:{"",",\"description\":null",",\"description\":\"\""}){
+        auto old=parseConfig(ruleJSON(version,suffix));
+        check(old.hosts[0].forwards[0].description.empty(),"v1/v2 missing nullable empty rule description");
+        check(writeConfig(old).find("description")==std::string::npos,"empty rule description omitted on save");
+    }
+    for(auto value:{"1","true","[]","{}","\"a\\nb\"","\"a\\rb\"","\"a\\u0000b\"","\"a\\u0085b\"","\"a\\u2028b\"","\"a\\u2029b\""})
+        rejects([&]{parseConfig(ruleJSON(2,std::string(",\"description\":")+value));});
+    for(const auto& invalid:std::vector<std::string>{"a\nb","a\rb",std::string("a\0b",3),"a\xc2\x85" "b","a\xe2\x80\xa8" "b","a\xe2\x80\xa9" "b"}){
+        auto bad=h;bad.forwards[0].description=invalid;
+        rejects([&]{validateForward(bad.forwards[0]);});rejects([&]{writeConfig({{bad}});});
+    }
     rejects([] {parseConfig("{bad");}); rejects([] {parseConfig("{\"version\":99,\"hosts\":[]}");});
     rejects([&] {auto bad=h;bad.target="-oProxyCommand=bad";validate(bad);});
     rejects([&] {auto bad=h;bad.target="a\nb";validate(bad);});
