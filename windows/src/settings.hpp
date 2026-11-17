@@ -32,6 +32,19 @@ struct HostDraft {
     }
     bool operator==(const HostDraft&) const = default;
 };
+// A modal owns its buffer; validation never requires an otherwise-complete host.
+struct RuleDraft {
+    Forward rule;
+    std::string localPort, remotePort;
+    explicit RuleDraft(const Forward& f) : rule(f),localPort(std::to_string(f.localPort)),remotePort(std::to_string(f.remotePort)) {}
+    Forward validated(const Host& host) const {
+        auto result=rule;result.localPort=HostDraft::parsePort(localPort);result.remotePort=HostDraft::parsePort(remotePort);
+        validateForward(result);
+        for(const auto& other:host.forwards) if(other.id!=result.id&&other.enabled&&result.enabled&&other.localPort==result.localPort)
+            throw std::runtime_error("활성 규칙의 로컬 포트가 중복됩니다.");
+        return result;
+    }
+};
 class SettingsModel {
 public:
     std::map<std::string,HostDraft> drafts, baseline;
@@ -59,6 +72,13 @@ public:
     }
     void showStatus(){if(modalHost.empty()&&drafts.contains(selected))modalHost=selected;}
     void closeStatus(){modalHost.clear();}
+    void applyRule(const std::string& hostID,const RuleDraft& draft,bool creating) {
+        auto& hostDraft=drafts.at(hostID);auto rule=draft.validated(hostDraft.host);
+        auto it=std::find_if(hostDraft.host.forwards.begin(),hostDraft.host.forwards.end(),[&](const auto& f){return f.id==rule.id;});
+        if(creating) {if(it!=hostDraft.host.forwards.end())throw std::runtime_error("규칙 ID가 중복됩니다.");hostDraft.host.forwards.push_back(rule);}
+        else {if(it==hostDraft.host.forwards.end())throw std::runtime_error("편집할 규칙이 없습니다.");*it=rule;}
+        hostDraft.rulePorts[rule.id]={std::to_string(rule.localPort),std::to_string(rule.remotePort)};
+    }
     bool close(bool accepted){bool connect=accepted&&startup;open=false;startup=false;drafts.clear();baseline.clear();order.clear();selected.clear();modalHost.clear();return connect;}
 };
 }

@@ -1096,7 +1096,10 @@ class MultiHostSSHTests(unittest.TestCase):
         echo(temporary["forwards"][0]["localPort"])
         before = len(session.host_events)
         session.send("connect", id="host-0")
-        session.wait_host("host-0", "connected", after=before, temporary=False)
+        # Late diagnostics can still report the old connected session after our
+        # event cursor. Require the new attempt before accepting connected.
+        connecting, _, _ = session.wait_host("host-0", "connecting", after=before, temporary=False)
+        session.wait_host("host-0", "connected", after=connecting + 1, temporary=False)
         echo(original)
         wait_port_closed(temporary["forwards"][0]["localPort"])
 
@@ -1569,6 +1572,16 @@ class MultiHostSSHTests(unittest.TestCase):
     def test_15_shared_configuration_validation_corpus(self):
         cases = [
             ("defaults", {}, True),
+            ("description-null", {"description": None}, True),
+            ("description-empty", {"description": ""}, True),
+            ("description-korean", {"description": "개발 DB · 15432 → 5432"}, True),
+            ("description-number", {"description": 42}, False),
+            ("description-lf", {"description": "first\nsecond"}, False),
+            ("description-cr", {"description": "first\rsecond"}, False),
+            ("description-nel", {"description": "first\u0085second"}, False),
+            ("description-ls", {"description": "first\u2028second"}, False),
+            ("description-ps", {"description": "first\u2029second"}, False),
+            ("description-nul", {"description": "first\u0000second"}, False),
             ("nullable", {"user": None, "identityFile": None, "port": None,
                           "autoConnect": None, "exitOnForwardFailure": None,
                           "retryOnConnectionRefused": None}, True),

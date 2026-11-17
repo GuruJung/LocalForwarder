@@ -41,6 +41,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
+"$bundle/Contents/MacOS/LocalForwarder" --test-ui
 python3 tests/integration.py --behavior multi-host-v2 --app "$bundle/Contents/MacOS/LocalForwarder"
 ditto -c -k --keepParent "$bundle" dist/LocalForwarder-macos-arm64.zip
 stat -f 'macOS artifact bytes: %z' dist/LocalForwarder-macos-arm64.zip

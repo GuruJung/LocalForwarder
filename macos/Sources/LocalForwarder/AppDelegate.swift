@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var tray: NSStatusItem!
     private var trayMenu = NSMenu()
     private var hostMenuItems: [String: NSMenuItem] = [:]
+    private var forwardMenuItems: [String: [String: NSMenuItem]] = [:]
     private var allReconnectItem: NSMenuItem?
     private let loginItem = LoginItemController(service: MacLoginItemService())
     private var loginMenuItem: NSMenuItem?
@@ -96,7 +97,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private func openFromSecondLaunch() {
         guard launchReady else { pendingOpenRequest = true; return }
-        guard !settings.isOpen else { return }
         trayMenu.cancelTrackingWithoutAnimation()
         openSettings()
     }
@@ -157,30 +157,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     private func populateMenu(_ menu: NSMenu) {
-        menu.removeAllItems(); hostMenuItems = [:]
+        menu.removeAllItems(); hostMenuItems = [:]; forwardMenuItems = [:]
         func item(_ title: String, _ action: Selector?, in menu: NSMenu, id: String? = nil, tag: Int = 0) -> NSMenuItem {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self; item.representedObject = id; item.tag = tag; return item
         }
-        _ = item("설정", #selector(openSettings), in: menu)
+        item("설정", #selector(openSettings), in: menu).image = menuImage("gearshape", "설정")
         loginMenuItem = item("로그인 자동 시작", #selector(toggleLoginItem), in: menu)
         allReconnectItem = item("전체 재연결", #selector(reconnectAll), in: menu)
+        allReconnectItem?.image = menuImage("arrow.clockwise", "전체 재연결")
         menu.addItem(.separator())
         for host in manager.hosts {
             let hostItem = item(host.name, nil, in: menu)
             let submenu = NSMenu(); submenu.autoenablesItems = false; hostItem.submenu = submenu
             hostMenuItems[host.id] = hostItem
-            for tag in 1...4 {
-                let description = item("", nil, in: submenu, tag: tag)
-                description.isEnabled = false
-            }
+            item("", nil, in: submenu, tag: 1).isEnabled = false
             submenu.addItem(.separator())
-            _ = item("연결", #selector(connectHost(_:)), in: submenu, id: host.id, tag: 5)
-            _ = item("끊기", #selector(disconnectHost(_:)), in: submenu, id: host.id, tag: 6)
-            _ = item("호스트 설정", #selector(hostSettings(_:)), in: submenu, id: host.id, tag: 7)
+            // Stable boundary for insertions/removals in the dynamic forward region.
+            let boundary = NSMenuItem.separator(); boundary.tag = 9; submenu.addItem(boundary)
+            item("연결", #selector(connectHost(_:)), in: submenu, id: host.id, tag: 5).image = menuImage("link", "연결")
+            item("끊기", #selector(disconnectHost(_:)), in: submenu, id: host.id, tag: 6).image = menuImage("xmark.circle", "끊기")
+            item("호스트 설정", #selector(hostSettings(_:)), in: submenu, id: host.id, tag: 7).image = menuImage("slider.horizontal.3", "호스트 설정")
         }
-        menu.addItem(.separator()); _ = item("종료", #selector(quit), in: menu)
+        menu.addItem(.separator()); item("종료", #selector(quit), in: menu).image = menuImage("power", "종료")
         updateMenuPresentation()
+    }
+    private func menuImage(_ symbol: String, _ label: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        image?.size = NSSize(width: 16, height: 16)
+        return image
+    }
+    private func updateForwardItems(_ host: Host, runtime: HostRuntime?, menu: NSMenu) {
+        let rows = TrayPresentation.forwards(host: host, runtime: runtime)
+        var items = forwardMenuItems[host.id] ?? [:]
+        let ids = rows.isEmpty ? ["empty"] : rows.map(\.id)
+        for id in Array(items.keys) where !ids.contains(id) {
+            if let item = items.removeValue(forKey: id) { menu.removeItem(item) }
+        }
+        for (offset, id) in ids.enumerated() {
+            let item: NSMenuItem
+            if let existing = items[id] { item = existing }
+            else { item = NSMenuItem(title: "", action: nil, keyEquivalent: ""); item.isEnabled = false; items[id] = item }
+            let index = offset + 2
+            if menu.index(of: item) != index {
+                if item.menu != nil { menu.removeItem(item) }
+                menu.insertItem(item, at: index)
+            }
+            if rows.isEmpty { item.title = "포워딩 규칙 없음"; item.image = nil; item.toolTip = nil }
+            else {
+                let row = rows[offset]
+                item.title = row.text
+                item.image = menuImage(row.state.symbol, row.state.title)
+                item.toolTip = row.state.title + (row.detail.isEmpty ? "" : "\n" + row.detail)
+            }
+        }
+        forwardMenuItems[host.id] = items
     }
     /// While tracking, mutate existing rows so status changes do not dismiss or rebuild the user's menu.
     private func updateMenuPresentation() {
@@ -199,38 +230,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let runtime = manager.runtime(id)
             let connected = runtime?.state == .connected
             let busy = runtime?.state == .connecting || runtime?.state == .stopping
-            let warning = connected && runtime?.forwards.contains(where: { $0.state == .failed }) == true
-            let temporary = runtime?.temporary == true ? " · 임시" : ""
-            let progress = busy ? " · 작업 중…" : ""
-            item.title = host.name + temporary + progress + (warning ? " · 포워딩 경고" : "")
-            let symbol: String
-            let state: String
-            if busy { symbol = "arrow.triangle.2.circlepath"; state = "연결 작업 중" }
-            else if warning { symbol = "exclamationmark.triangle.fill"; state = "SSH 연결됨, 포워딩 경고" }
-            else if connected { symbol = "checkmark.circle.fill"; state = "연결됨" }
-            else if host.autoConnect { symbol = "circle"; state = "연결 안 됨" }
-            else { symbol = "minus.circle"; state = "자동 연결 꺼짐, 연결 안 됨" }
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: state)
-            item.image?.size = NSSize(width: 16, height: 16)
+            let presentation = TrayPresentation.host(host, runtime: runtime)
+            item.title = presentation.title
+            item.image = menuImage(presentation.state.symbol, presentation.state.title)
             guard let menu = item.submenu else { continue }
             menu.item(withTag: 1)?.title = connectionSummary(runtime)
-            let error = runtime?.lastError ?? ""
-            menu.item(withTag: 2)?.isHidden = error.isEmpty
-            menu.item(withTag: 2)?.title = "최근 오류: " + String(error.replacingOccurrences(of: "\n", with: " ").prefix(140))
-            menu.item(withTag: 2)?.toolTip = error
-            var executionNote = ""
-            if runtime?.temporary == true { executionNote = "이번 실행의 임시 설정 사용 중" }
-            else if let execution = runtime?.executionHost, execution != host, connected || busy {
-                executionNote = "현재 실행 설정과 저장된 설정이 다릅니다"
-            }
-            menu.item(withTag: 3)?.isHidden = executionNote.isEmpty
-            menu.item(withTag: 3)?.title = executionNote
-            menu.item(withTag: 4)?.isHidden = runtime?.recentErrors.isEmpty != false
-            if let error = runtime?.recentErrors.last {
-                menu.item(withTag: 4)?.title = DateFormatter.localizedString(from: error.time, dateStyle: .short, timeStyle: .medium) + " · " + String(error.message.prefix(120))
-                menu.item(withTag: 4)?.toolTip = error.message
-            }
+            updateForwardItems(host, runtime: runtime, menu: menu)
             menu.item(withTag: 5)?.title = connected ? "재연결" : (busy ? "연결 작업 중…" : "연결")
+            menu.item(withTag: 5)?.image = menuImage(connected ? "arrow.clockwise" : "link", connected ? "재연결" : "연결")
             menu.item(withTag: 5)?.isEnabled = !busy && !terminating
             menu.item(withTag: 6)?.isHidden = !connected && !busy
             menu.item(withTag: 6)?.isEnabled = !terminating
