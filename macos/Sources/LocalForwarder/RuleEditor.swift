@@ -18,7 +18,7 @@ final class RuleEditor: NSObject, NSWindowDelegate {
         draft = RuleDraft(rule ?? Forward()); self.rules = rules; replacing = rule?.id
         self.completion = completion
         let available = parent.screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: min(470, available.width - 40), height: 220),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: min(470, available.width - 40, parent.frame.width - 32), height: 220),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = rule == nil ? "새 규칙" : "규칙 편집"
@@ -27,18 +27,24 @@ final class RuleEditor: NSObject, NSWindowDelegate {
         localPort.stringValue = draft.localPort; remotePort.stringValue = draft.remotePort
         remoteHost.stringValue = draft.rule.remoteHost
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
+        body.detachesHiddenViews = false
         func row(_ title: String, _ field: NSTextField) -> NSStackView {
             let label = NSTextField(labelWithString: title); label.widthAnchor.constraint(equalToConstant: 100).isActive = true
             let row = NSStackView(views: [label, field]); row.spacing = 10
+            row.detachesHiddenViews = false
+            for view in row.arrangedSubviews { row.setVisibilityPriority(.mustHold, for: view) }
             field.setContentHuggingPriority(.defaultLow, for: .horizontal)
             return row
         }
         for view in [enabled, row("로컬 포트", localPort), row("목적지 호스트", remoteHost), row("목적지 포트", remotePort)] as [NSView] {
-            body.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+            body.addArrangedSubview(view); body.setVisibilityPriority(.mustHold, for: view)
+            view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
         let cancel = NSButton(title: "취소", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         let okay = NSButton(title: "확인", target: self, action: #selector(confirm)); okay.keyEquivalent = "\r"
         let footer = NSStackView(views: [cancel, okay]); footer.spacing = 8
+        footer.detachesHiddenViews = false
+        for view in footer.arrangedSubviews { footer.setVisibilityPriority(.mustHold, for: view) }
         let content = window.contentView!
         body.translatesAutoresizingMaskIntoConstraints = false; footer.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(body); content.addSubview(footer)

@@ -61,10 +61,20 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private var selectedID: String?
     private var loading = false
     private var authTimers: [String: Timer] = [:]
+    private var rootStack: NSStackView!
+    private var sidebarStack: NSStackView!
+    private var formScrollView: NSScrollView!
+    private var formDocumentView: NSView!
+    private var formStack: NSStackView!
+    private var footerStack: NSStackView!
+    private var widePaneConstraints: [NSLayoutConstraint] = []
+    private var narrowPaneConstraints: [NSLayoutConstraint] = []
+    private var adaptiveRows: [AdaptiveStack] = []
+    private var narrowPanes = false
 
-    init(store: ConfigurationStore, manager: ConnectionManager) {
+    init(store: ConfigurationStore, manager: ConnectionManager, availableFrame: NSRect? = nil) {
         self.store = store; self.manager = manager
-        super.init(); makeWindow()
+        super.init(); makeWindow(availableFrame: availableFrame)
     }
     func open(select id: String? = nil, startup: Bool = false) {
         if isOpen {
@@ -462,16 +472,19 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         }
         return result
     }
-    private func makeWindow() {
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
+    private func makeWindow(availableFrame: NSRect?) {
+        let visible = availableFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
         let size = NSSize(width: min(900, visible.width - 40), height: min(650, visible.height - 70))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "LocalForwarder 설정"; window.delegate = self; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: min(800, size.width), height: min(430, size.height)); window.center()
         let content = window.contentView!
         let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
+        sidebar.detachesHiddenViews = false; sidebarStack = sidebar
         let hostActions = NSStackView(views: [button("새로 만들기", #selector(addHost)), button("호스트 삭제…", #selector(deleteHost))])
         hostActions.spacing = 8
+        hostActions.detachesHiddenViews = false
+        for view in hostActions.arrangedSubviews { hostActions.setVisibilityPriority(.mustHold, for: view) }
         sidebar.addArrangedSubview(hostActions)
         let hostColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("host")); hostColumn.title = "호스트 · ● 미저장"; hostColumn.width = 185
         hostsTable.addTableColumn(hostColumn); hostsTable.dataSource = self; hostsTable.delegate = self; hostsTable.rowHeight = 28
@@ -480,16 +493,23 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         sidebar.addArrangedSubview(hostScroll)
         hostScroll.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true
         let formScroll = NSScrollView(); formScroll.hasVerticalScroller = true; formScroll.autohidesScrollers = true
+        formScrollView = formScroll
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; formScroll.documentView = document
+        formDocumentView = document
         let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10; form.translatesAutoresizingMaskIntoConstraints = false
+        form.detachesHiddenViews = false; formStack = form
         document.addSubview(form)
         let sidebarWidth: CGFloat = 205
         let paneSpacing: CGFloat = 16
         let root = NSStackView(views: [sidebar, formScroll]); root.orientation = .horizontal; root.alignment = .top; root.spacing = paneSpacing
+        root.detachesHiddenViews = false; rootStack = root
+        root.setVisibilityPriority(.mustHold, for: sidebar); root.setVisibilityPriority(.mustHold, for: formScroll)
         root.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(root)
         let okay = button("OK", #selector(okay)); okay.keyEquivalent = "\r"
         let cancel = button("Cancel", #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         let footer = NSStackView(views: [cancel, okay]); footer.spacing = 8
+        footer.detachesHiddenViews = false; footerStack = footer
+        footer.setVisibilityPriority(.mustHold, for: cancel); footer.setVisibilityPriority(.mustHold, for: okay)
         footer.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(footer)
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
@@ -497,38 +517,48 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             footer.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
             footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth), sidebar.heightAnchor.constraint(equalTo: root.heightAnchor),
-            formScroll.heightAnchor.constraint(equalTo: root.heightAnchor),
-            // A scroll view has no useful intrinsic width; fill the space beside the sidebar.
-            formScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -(sidebarWidth + paneSpacing)),
             document.leadingAnchor.constraint(equalTo: formScroll.contentView.leadingAnchor), document.topAnchor.constraint(equalTo: formScroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor),
             form.leadingAnchor.constraint(equalTo: document.leadingAnchor), form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -8),
             form.topAnchor.constraint(equalTo: document.topAnchor), form.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        widePaneConstraints = [
+            sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth),
+            sidebar.heightAnchor.constraint(equalTo: root.heightAnchor),
+            formScroll.heightAnchor.constraint(equalTo: root.heightAnchor),
+            formScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -(sidebarWidth + paneSpacing))]
+        narrowPaneConstraints = [
+            sidebar.widthAnchor.constraint(equalTo: root.widthAnchor),
+            hostScroll.heightAnchor.constraint(equalToConstant: 72),
+            formScroll.widthAnchor.constraint(equalTo: root.widthAnchor)]
+        NSLayoutConstraint.activate(widePaneConstraints)
+        for view in sidebar.arrangedSubviews { sidebar.setVisibilityPriority(.mustHold, for: view) }
         func add(_ view: NSView, fullWidth: Bool = true) {
             form.addArrangedSubview(view)
+            form.setVisibilityPriority(.mustHold, for: view)
             if fullWidth { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         }
-        func fieldRow(_ label: String, _ field: NSTextField) -> NSStackView {
-            let title = NSTextField(labelWithString: label); title.widthAnchor.constraint(equalToConstant: 112).isActive = true
+        func adaptive(_ views: [NSView], spacing: CGFloat = 10, constraints: [NSLayoutConstraint] = []) -> AdaptiveStack {
+            let row = AdaptiveStack(views: views, spacing: spacing, horizontalConstraints: constraints)
+            adaptiveRows.append(row); return row
+        }
+        func fieldRow(_ label: String, _ field: NSTextField, trailing: NSView? = nil) -> AdaptiveStack {
+            let title = NSTextField(labelWithString: label)
             field.delegate = self; field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let row = NSStackView(views: [title, field]); row.spacing = 10
-            return row
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+            return adaptive([title, field] + (trailing.map { [$0] } ?? []),
+                            constraints: [title.widthAnchor.constraint(equalToConstant: 112)])
         }
         add(fieldRow("이름", nameField))
         add(fieldRow("설명 (선택)", descriptionField))
         add(fieldRow("SSH 별칭 / 주소", targetField))
-        let credentials = NSStackView(views: [fieldRow("사용자명 (선택)", userField), fieldRow("SSH 포트 (선택)", portField)])
-        credentials.spacing = 12
-        portField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        let credentials = adaptive([fieldRow("사용자명 (선택)", userField), fieldRow("SSH 포트 (선택)", portField)], spacing: 12)
         add(credentials)
-        let keyRow = fieldRow("개인키 (선택)", keyField)
-        keyRow.addArrangedSubview(button("개인키 파일 선택…", #selector(chooseKey)))
+        let keyRow = fieldRow("개인키 (선택)", keyField, trailing: button("개인키 파일 선택…", #selector(chooseKey)))
         add(keyRow)
         targetField.placeholderString = "예: my-server 또는 server.example.com"; keyField.placeholderString = "비워두면 기존 SSH 설정 사용"
         for control in [autoConnect, exitOnFailure, retryRefused] { control.target = self; control.action = #selector(changed) }
-        let options = NSStackView(views: [autoConnect, exitOnFailure, retryRefused]); options.spacing = 12; add(options, fullWidth: false)
-        add(NSTextField(labelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
+        add(adaptive([autoConnect, exitOnFailure, retryRefused], spacing: 12))
+        add(NSTextField(wrappingLabelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
         for (id, title, width) in [("enabled", "사용", 48.0), ("localPort", "로컬 포트", 90.0), ("remoteHost", "목적지 호스트", 270.0), ("remotePort", "목적지 포트", 100.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = id == "enabled"
             if id == "enabled" { let cell = NSButtonCell(); cell.setButtonType(.switch); cell.title = ""; column.dataCell = cell }
@@ -538,14 +568,78 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         rulesTable.target = self; rulesTable.doubleAction = #selector(editRule)
         add(scroll(rulesTable, height: 120))
         editRuleButton = button("규칙 편집…", #selector(editRule)); deleteRuleButton = button("규칙 삭제", #selector(deleteRule))
-        add(NSStackView(views: [button("새 규칙…", #selector(addRule)), editRuleButton, deleteRuleButton]), fullWidth: false)
-        add(NSTextField(labelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 64))
+        add(adaptive([button("새 규칙…", #selector(addRule)), editRuleButton, deleteRuleButton]))
+        add(NSTextField(wrappingLabelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 64))
         for (id, title, width) in [("description", "포워딩", 260.0), ("source", "출처", 90.0), ("state", "상태", 90.0), ("detail", "상세", 280.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = false; runtimeTable.addTableColumn(column)
         }
         runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24
         connectButton = button("연결·재연결", #selector(connectSelected)); authButton = button("인증 설정…", #selector(setupAuthentication))
-        add(NSStackView(views: [button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton, button("연결 상태…", #selector(showConnectionStatus))]), fullWidth: false)
+        add(adaptive([button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton, button("연결 상태…", #selector(showConnectionStatus))]))
+        updateResponsiveLayout()
+    }
+    func windowDidResize(_ notification: Notification) { updateResponsiveLayout() }
+    private func updateResponsiveLayout() {
+        guard let root = rootStack, let content = window.contentView else { return }
+        let narrow = content.bounds.width < 720
+        if narrow != narrowPanes {
+            NSLayoutConstraint.deactivate(narrow ? widePaneConstraints : narrowPaneConstraints)
+            root.orientation = narrow ? .vertical : .horizontal; root.alignment = narrow ? .leading : .top
+            NSLayoutConstraint.activate(narrow ? narrowPaneConstraints : widePaneConstraints)
+            narrowPanes = narrow
+        }
+        let formWidth = content.bounds.width - 32 - (narrow ? 0 : 221) - 24
+        for row in adaptiveRows { row.reflow(compact: formWidth < 560) }
+    }
+}
+
+extension SettingsController {
+    /// Exercise production windows and constraints, including resize back to the normal sidebar.
+    static func checkNativeLayout(store: ConfigurationStore, manager: ConnectionManager) throws {
+        for (area, sizes) in [
+            (NSSize(width: 940, height: 720), [NSSize(width: 900, height: 650), NSSize(width: 800, height: 430), NSSize(width: 900, height: 650)]),
+            (NSSize(width: 520, height: 360), [NSSize(width: 480, height: 290)])
+        ] {
+            let controller = SettingsController(store: store, manager: manager, availableFrame: NSRect(origin: .zero, size: area))
+            controller.open()
+            defer { controller.finish(accepted: false) }
+            let expectedForm = NativeLayoutChecks.leaves(controller.formStack)
+            let expectedSidebar = NativeLayoutChecks.leaves(controller.sidebarStack)
+            let expectedFooter = NativeLayoutChecks.leaves(controller.footerStack)
+            try NativeLayoutChecks.require(expectedForm.count == 27 && expectedSidebar.count == 3 && expectedFooter.count == 2,
+                                           "unexpected control inventory; update the coverage when adding controls")
+            for size in sizes {
+                controller.window.setContentSize(size)
+                controller.updateResponsiveLayout()
+                NativeLayoutChecks.settle(controller.window)
+                let content = controller.window.contentView!
+                let context = "settings \(Int(size.width))x\(Int(size.height))"
+                try NativeLayoutChecks.require(abs(content.bounds.width - size.width) < 1 && abs(content.bounds.height - size.height) < 1,
+                                               context + " expanded beyond requested bounds: \(content.bounds)")
+                try NativeLayoutChecks.require(controller.rootStack.orientation == (size.width < 720 ? .vertical : .horizontal), context + " wrong pane orientation")
+                try NativeLayoutChecks.check(expectedSidebar + expectedFooter + [controller.formScrollView!], in: content, context: context)
+                try NativeLayoutChecks.require(controller.formScrollView.contentView.bounds.height >= 60, context + " form viewport unusable")
+                try NativeLayoutChecks.check(expectedForm, in: controller.formDocumentView, scroll: controller.formScrollView, context: context)
+                let before = controller.drafts
+                for editing in [nil, controller.drafts[controller.selectedID!]!.host.forwards.first] as [Forward?] {
+                    controller.showRuleEditor(editing: editing)
+                    guard let editor = controller.ruleEditor else { throw AppError(context + " missing rule sheet") }
+                    NativeLayoutChecks.settle(editor.window)
+                    try NativeLayoutChecks.require(controller.window.attachedSheet === editor.window, context + " rule editor is not modal")
+                    try NativeLayoutChecks.require(editor.window.frame.width <= area.width && editor.window.frame.height <= area.height,
+                                                   context + " rule sheet exceeds available work area")
+                    let modalContent = editor.window.contentView!
+                    let controls = modalContent.subviews.flatMap { NativeLayoutChecks.leaves($0) }
+                    try NativeLayoutChecks.require(controls.count == 9, context + " missing rule controls")
+                    try NativeLayoutChecks.check(controls, in: modalContent, context: context + " rule sheet")
+                    editor.cancel()
+                    NativeLayoutChecks.settle(controller.window)
+                    try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.drafts == before,
+                                                   context + " cancelling changed the draft or left a modal open")
+                }
+                writeLine("LF_UI_LAYOUT " + context + " passed")
+            }
+        }
     }
 }
 

@@ -86,7 +86,10 @@ func runTestManager(directory: String, configuration: String, start: Bool, singl
 
 let arguments = CommandLine.arguments
 ProcessTools.sshLauncher = Bundle.main.executableURL?.path
-if arguments.count >= 2 && arguments[1] == "--run-ssh" {
+if arguments.count == 2 && arguments[1] == "--test-ui" {
+    do { try NativeLayoutChecks.run(); writeLine("Native AppKit layout checks passed (900x650, 800x430, 520x360 work area + rule sheets)"); exit(0) }
+    catch { fputs((error.localizedDescription + "\n").cString(using: .utf8)!, stderr); exit(1) }
+} else if arguments.count >= 2 && arguments[1] == "--run-ssh" {
     signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); signal(SIGHUP, SIG_DFL)
     guard setpgid(0, 0) == 0 || getpgrp() == getpid() else { exit(125) }
     let values = [SSHCommand.executable] + Array(arguments.dropFirst(2))
