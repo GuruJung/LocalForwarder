@@ -190,7 +190,7 @@ public:
         HWND dialog=ruleWindow_?ruleWindow_:(status_?status_:(settings_.open?settingsWindow_:nullptr));
         if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_ESCAPE){if(ruleWindow_)closeRule(false);else if(status_)closeStatus();else closeSettings(false);return true;}
         if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_RETURN&&dialog==status_){closeStatus();return true;}
-        if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_RETURN&&dialog==ruleWindow_){closeRule(true);return true;}
+        if(dialog&&message.message==WM_KEYDOWN&&message.wParam==VK_RETURN&&dialog==ruleWindow_){closeRule(GetFocus()!=control(RuleCancel));return true;}
         if(dialog&&IsDialogMessageW(dialog,&message)){ensureFocusVisible();return true;}return false;
     }
 private:
@@ -486,9 +486,17 @@ public:
         set(LocalPort,L"invalid");closeRule(true);check(ruleWindow_&&!IsWindowEnabled(settingsWindow_)&&get(LocalPort)==L"invalid"&&settings_.drafts.at("a").host.forwards==originalRules,"invalid modal warns and stays open with input and draft preserved");
         openSettings("b");check(settings_.selected=="a"&&ruleWindow_,"second open preserves rule modal target");
         closeRule(false);check(IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a").host.forwards==originalRules,"cancel new rule preserves draft");
-        showRule(true);set(LocalPort,L"18080");closeRule(true);check(!ruleWindow_&&ListView_GetItemCount(control(Rules))==2,"new modal inserts confirmed rule");
-        auto added=settings_.drafts.at("a").host.forwards.back();showRule(false);set(RemoteHost,L"cancelled.example");closeRule(false);check(settings_.drafts.at("a").host.forwards.back()==added,"cancel edit preserves rule");
-        showRule(false);set(RemoteHost,L"accepted.example");closeRule(true);check(settings_.drafts.at("a").host.forwards.back().id==added.id&&settings_.drafts.at("a").host.forwards.back().remoteHost=="accepted.example","edit preserves ID");
+        auto enterFocused=[&](int id){
+            SetFocus(control(id));check(GetFocus()==control(id),"rule keyboard target receives focus");
+            MSG key{};key.hwnd=GetFocus();key.message=WM_KEYDOWN;key.wParam=VK_RETURN;
+            check(preprocess(key),"rule Enter key is handled");
+        };
+        auto beforeNew=settings_.drafts.at("a");showRule(true);set(LocalPort,L"18081");enterFocused(RuleCancel);
+        check(!ruleWindow_&&IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a")==beforeNew,"Cancel Enter discards valid new rule without changing draft");
+        showRule(true);set(LocalPort,L"18080");enterFocused(LocalPort);check(!ruleWindow_&&ListView_GetItemCount(control(Rules))==2,"Enter in field confirms new rule");
+        auto added=settings_.drafts.at("a").host.forwards.back();auto beforeEdit=settings_.drafts.at("a");showRule(false);set(RemoteHost,L"cancelled.example");enterFocused(RuleCancel);
+        check(!ruleWindow_&&IsWindowEnabled(settingsWindow_)&&settings_.drafts.at("a")==beforeEdit,"Cancel Enter discards rule edit without changing draft");
+        showRule(false);set(RemoteHost,L"accepted.example");enterFocused(RuleOkay);check(!ruleWindow_&&settings_.drafts.at("a").host.forwards.back().id==added.id&&settings_.drafts.at("a").host.forwards.back().remoteHost=="accepted.example","OK Enter confirms edit and preserves ID");
         command(RuleDelete,BN_CLICKED);check(settings_.drafts.at("a").host.forwards==originalRules,"delete selected rule after modal");
         set(Name,L"A edited");set(Port,L"invalid");
         SendMessageW(control(Hosts),LB_SETCURSEL,1,0);command(Hosts,LBN_SELCHANGE);
