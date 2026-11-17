@@ -1,9 +1,9 @@
 import Foundation
 
 public enum LoginItemStatus: String, Equatable {
-    case notRegistered, enabled, requiresApproval
+    case notPresent, notRegistered, enabled, requiresApproval
 
-    public var isRegistered: Bool { self != .notRegistered }
+    public var isRegistered: Bool { self == .enabled || self == .requiresApproval }
 }
 
 /// Registration belongs to this machine and user, never to the shared host configuration.
@@ -32,6 +32,7 @@ public final class LoginItemController {
     public var menuTitle: String {
         if isBusy { return "로그인 자동 시작 (변경 중…)" }
         guard let status else { return "로그인 자동 시작 (상태 확인 실패)" }
+        if status == .notPresent { return "로그인 자동 시작 (등록 필요)" }
         return status == .requiresApproval ? "로그인 자동 시작 (승인 필요)" : "로그인 자동 시작"
     }
     public var isChecked: Bool { status?.isRegistered == true }
@@ -52,7 +53,7 @@ public final class LoginItemController {
         defer { isBusy = false }
         await Task.yield()
         try readStatus()
-        let enable = status == .notRegistered
+        let enable = status == .notRegistered || status == .notPresent
         var mutationError: Error?
         do {
             if enable { try await service.register() } else { try await service.unregister() }

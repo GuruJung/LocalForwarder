@@ -57,6 +57,42 @@ final class LoginItemTests: XCTestCase {
         XCTAssertEqual(service.removals, 1)
     }
 
+    @MainActor func testColdAbsentRecordOnlyRegistersAfterExplicitToggle() async throws {
+        for registeredState in [LoginItemStatus.enabled, .requiresApproval] {
+            let service = FakeLoginItemService()
+            service.current = .notPresent
+            service.registeredState = registeredState
+            let model = LoginItemController(service: service)
+            model.refresh()
+            XCTAssertEqual(model.status, .notPresent)
+            XCTAssertEqual(model.menuTitle, "로그인 자동 시작 (등록 필요)")
+            XCTAssertFalse(model.isChecked)
+            XCTAssertTrue(model.canToggle)
+            XCTAssertEqual(service.registrations, 0)
+            try await model.toggle()
+            XCTAssertEqual(model.status, registeredState)
+            XCTAssertTrue(model.isChecked)
+            XCTAssertEqual(service.registrations, 1)
+            try await model.toggle()
+            XCTAssertEqual(model.status, .notRegistered)
+            XCTAssertFalse(model.isChecked)
+            XCTAssertEqual(service.removals, 1)
+        }
+    }
+
+    @MainActor func testFailedColdRegistrationPreservesAbsentRecord() async {
+        let service = FakeLoginItemService()
+        service.current = .notPresent
+        service.mutationFails = true
+        service.applyMutation = false
+        let model = LoginItemController(service: service)
+        do { try await model.toggle(); XCTFail("Expected registration failure") } catch {}
+        XCTAssertEqual(model.status, .notPresent)
+        XCTAssertFalse(model.isChecked)
+        XCTAssertTrue(model.canToggle)
+        XCTAssertEqual(service.registrations, 1)
+    }
+
     @MainActor func testApprovalRequiredIsCheckedAndCanBeRemoved() async throws {
         let service = FakeLoginItemService(); service.registeredState = .requiresApproval
         let model = LoginItemController(service: service)

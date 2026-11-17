@@ -13,7 +13,7 @@ struct LoginItemFixture {
         withExtendedLifetime(delegate) { application.run() }
     }
 
-    @MainActor static func exercise() {
+    @MainActor static func exercise() async {
         let env = ProcessInfo.processInfo.environment
         guard env["GITHUB_ACTIONS"] == "true", env["RUNNER_ENVIRONMENT"] == "github-hosted",
               let identifier = Bundle.main.bundleIdentifier,
@@ -34,40 +34,40 @@ struct LoginItemFixture {
         let service = MacLoginItemService()
         evidence["initialRawServiceStatus"] = SMAppService.mainApp.status.rawValue
         var failure: Error?
-        var registrationAttempted = false
         do {
             guard launchServicesResult == noErr else {
                 throw LoginItemError("LaunchServices registration failed: \(launchServicesResult)")
             }
-            let initial = try service.status()
+            let controller = LoginItemController(service: service)
+            controller.refresh()
+            guard let initial = controller.status else {
+                throw LoginItemError(controller.errorMessage ?? "Initial status query failed")
+            }
             evidence["initialStatus"] = initial.rawValue
+            evidence["initialMenuTitle"] = controller.menuTitle
+            evidence["initialChecked"] = controller.isChecked
             if mode == "exercise" {
-                guard initial == .notRegistered else { throw LoginItemError("Unique fixture was unexpectedly registered") }
-                registrationAttempted = true
-                try service.register()
-                let registered = try service.status()
+                guard initial == .notRegistered || initial == .notPresent else {
+                    throw LoginItemError("Unique fixture was unexpectedly registered")
+                }
+                try await controller.toggle()
+                guard let registered = controller.status else { throw LoginItemError("Post-registration status unavailable") }
                 evidence["registeredStatus"] = registered.rawValue
+                evidence["registeredRawServiceStatus"] = SMAppService.mainApp.status.rawValue
                 evidence["eligibleToRunAtLogin"] = registered == .enabled
                 evidence["requiresUserApproval"] = registered == .requiresApproval
                 guard registered.isRegistered else { throw LoginItemError("Registration did not persist") }
+                try await controller.toggle()
+                evidence["unregisteredStatus"] = controller.status?.rawValue ?? "unknown"
+                evidence["unregisteredRawServiceStatus"] = SMAppService.mainApp.status.rawValue
+                guard controller.status == .notRegistered else {
+                    throw LoginItemError("Controller did not remove the login item")
+                }
             } else if mode != "cleanup" { throw LoginItemError("Unknown fixture operation") }
         } catch {
             failure = error
             evidence["error"] = error.localizedDescription
             evidence["errorDetails"] = errorDetails(error)
-        }
-
-        // Diagnose a failed initial query without treating a successful diagnostic as a passing test.
-        // Only the disposable, uniquely identified fixture ever reaches this branch.
-        if failure != nil, !registrationAttempted, mode == "exercise" {
-            do {
-                try service.register()
-                evidence["diagnosticRegisterSucceeded"] = true
-            } catch {
-                evidence["diagnosticRegisterSucceeded"] = false
-                evidence["diagnosticRegisterError"] = errorDetails(error)
-            }
-            evidence["rawStatusAfterDiagnosticRegister"] = SMAppService.mainApp.status.rawValue
         }
 
         // Always attempt cleanup, including after a partially successful register() throws.
@@ -106,6 +106,6 @@ struct LoginItemFixture {
 private final class LoginItemFixtureDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Exercise on the first run-loop turn after the ordinary application launch callback.
-        DispatchQueue.main.async { LoginItemFixture.exercise() }
+        Task { @MainActor in await LoginItemFixture.exercise() }
     }
 }

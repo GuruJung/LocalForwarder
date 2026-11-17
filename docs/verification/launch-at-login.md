@@ -21,3 +21,5 @@ Windows 메뉴에서 설정 다음에 체크 항목이 있고, 상태 재조회�
 - 2026-11-17 Windows 11 x64 호스트에서 상태 모델 및 네이티브 메뉴·임시 레지스트리 등록/해제 검사를 통과했다. 실제 Run 값은 변경하지 않았다.
 - Linux에서 공통 CTest 4개를 통과하고 Windows x64·ARM64 교차 빌드를 완료했다.
 - macOS 실제 등록과 세 플랫폼의 전체 네이티브 CI는 대기 중이다. 실제 재로그인, macOS 승인 화면, 제품 트레이를 직접 클릭하는 수동 검증은 수행하지 않았다.
+
+macOS 15의 새로운 앱은 `SMAppService.mainApp.status`가 `.notFound`를 반환할 수 있다. CI의 유효한 ad-hoc 앱에서 시스템 로그의 `record not found`와 실제 등록 후 `.enabled`, 해제 후 `.notRegistered` 전이를 확인했다. 이 알려진 기록 부재 상태는 최초 등록 대상으로 표시하고, 알 수 없는 상태·조회 오류는 비활성 상태로 구분한다.

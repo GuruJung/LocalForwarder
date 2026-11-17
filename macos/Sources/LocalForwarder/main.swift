@@ -104,14 +104,17 @@ if arguments.count >= 2 && arguments[1] == "--run-ssh" {
 } else if (arguments.count == 4 || (arguments.count == 5 && arguments[4] == "--no-start")) && arguments[1] == "--test-manager" {
     runTestManager(directory: arguments[2], configuration: arguments[3], start: arguments.count == 4)
 } else if arguments.count == 1 || (arguments.count == 2 && arguments[1] == "--open-config") {
-    do {
-        let instance = SingleInstance()
-        guard try instance.acquire() else { exit(0) }
-        let app = NSApplication.shared
-        let delegate = AppDelegate(instance: instance, openConfiguration: arguments.contains("--open-config"))
-        app.delegate = delegate
-        withExtendedLifetime((instance, delegate)) { app.run() }
-    } catch { fputs((error.localizedDescription + "\n").cString(using: .utf8)!, stderr); exit(1) }
+    // This executable enters AppKit synchronously on the main thread.
+    MainActor.assumeIsolated {
+        do {
+            let instance = SingleInstance()
+            guard try instance.acquire() else { exit(0) }
+            let app = NSApplication.shared
+            let delegate = AppDelegate(instance: instance, openConfiguration: arguments.contains("--open-config"))
+            app.delegate = delegate
+            withExtendedLifetime((instance, delegate)) { app.run() }
+        } catch { fputs((error.localizedDescription + "\n").cString(using: .utf8)!, stderr); exit(1) }
+    }
 } else {
     fputs("Usage: LocalForwarder [--open-config | --setup-auth PROFILE_ID]\n", stderr); exit(2)
 }

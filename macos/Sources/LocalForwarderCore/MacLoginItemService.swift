@@ -12,7 +12,10 @@ public final class MacLoginItemService: LoginItemService {
         case .enabled: return .enabled
         case .requiresApproval: return .requiresApproval
         case .notFound:
-            throw LoginItemError("macOS에서 이 앱의 로그인 항목을 찾을 수 없습니다. 앱을 보관할 위치에서 다시 실행해 주세요.")
+            // A fresh main-app ID can have no Background Task Management record yet.
+            // Keep this distinct from notRegistered, but permit an explicit register request.
+            // Never treat absence as enabled or create a record merely by reading the status.
+            return .notPresent
         @unknown default:
             throw LoginItemError("macOS가 알 수 없는 로그인 항목 상태를 반환했습니다.")
         }
