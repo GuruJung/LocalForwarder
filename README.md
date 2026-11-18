@@ -32,13 +32,15 @@ The app stays in the menu bar or system tray. On first launch, or when launched 
 
 1. Create a host and enter its name and SSH alias or address. Aliases from `~/.ssh/config` work. An optional one-line description can help you identify the host.
 2. Set a username, SSH port, or private key path if needed. Blank connection fields use your SSH configuration.
-3. Choose **New rule (`새 규칙…`)** and enter a local port, destination host, and destination port. Add an optional description. Edit with **Edit rule (`규칙 편집…`)** or a double-click; disable a rule with its checkbox. Confirming the rule updates the draft, not the saved file.
+3. Choose **New Rule…** and enter a local port, destination host, and destination port. Add an optional description. Edit with **Edit Rule…** or a double-click; disable a rule with its checkbox. Confirming the rule updates the draft, not the saved file.
 4. **Save** the selected host. Auto-connect, `ExitOnForwardFailure`, and retry on connection refusal are enabled by default.
 5. Connect the host. Reconnecting with unsaved edits offers save and reconnect, reconnect without saving, or cancel. The Settings **OK** button does not save automatically.
 
 For example, `15432 → 127.0.0.1:5432` makes `127.0.0.1:15432` on your computer reach `127.0.0.1:5432` **as seen by the SSH server**. Point your database client at the local address. App-defined rules listen only on IPv4 loopback (`127.0.0.1`). Existing SSH `LocalForward`, `RemoteForward`, and `DynamicForward` directives also run with their original binding addresses.
 
 When starting through Settings, **OK** connects saved hosts with auto-connect enabled; **Cancel** enters tray mode without connecting. Normal startup with an existing valid configuration connects auto-connect hosts. Closing Settings or a connection failure does not exit the app. Use **Quit** in the tray menu to stop all connections and exit.
+
+Use **Sort by Local Port** below the forwarding list to arrange the selected host’s rules by local port, from lowest to highest. Disabled rules are included; rules with the same local port keep their relative order. Sorting changes the draft without reconnecting SSH. Save the selected host to keep the order after reopening Settings or restarting the app. Sorting happens only when you press the button; new and edited rules are not sorted automatically.
 
 ## Display language
 
@@ -50,15 +52,15 @@ Changes apply immediately without reconnecting SSH or losing unsaved edits. Clos
 
 ## Connections and the tray
 
-The tray menu provides Settings, Language, Launch at Login, Reconnect All, Disconnect All, host menus, About..., and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
+The tray menu provides Settings, Language, Launch at Login, Reconnect All, Disconnect All, host menus, About…, and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status…** in Settings for detailed errors and differences between saved settings and the running connection.
 
 Saving changes only the selected host and leaves active connections and other unsaved drafts intact. Changes take effect on the next connection. A connection made without saving keeps its temporary settings for manual reconnects and automatic recovery; cancelling later edits does not undo the running settings. Explicitly saving that host clears the temporary override for its next connection. A new host connected without saving exists only until the app exits.
 
 **Reconnect All** clears temporary overrides and reconnects only saved hosts with auto-connect enabled. You can manually connect hosts with auto-connect disabled. Disconnecting manually prevents automatic recovery during the current run without changing the saved auto-connect option.
 
-**Disconnect All (`전체 연결 끊기`)** asks for confirmation, then stops every managed host, including manual connections and unsaved temporary hosts, and cancels pending connection attempts, retries, and recovery. Cancel is the default. The app stays in the tray; saved auto-connect options, unsaved edits, and temporary execution settings are preserved. Connections remain off until you connect again or restart the app under its normal startup policy. The menu is disabled when there is nothing to stop.
+**Disconnect All** asks for confirmation, then stops every managed host, including manual connections and unsaved temporary hosts, and cancels pending connection attempts, retries, and recovery. Cancel is the default. The app stays in the tray; saved auto-connect options, unsaved edits, and temporary execution settings are preserved. Connections remain off until you connect again or restart the app under its normal startup policy. The menu is disabled when there is nothing to stop.
 
-**About...** opens a modal with the app icon, name, product version, an MIT License link below the version, and a GitHub link. The license link opens the repository’s LICENSE text. Opening About leaves connections running; either link opens your default browser only when clicked. Close it with the close button or Escape.
+**About…** opens a modal with the app icon, name, product version, an MIT License link below the version, and a GitHub link. The license link opens the repository’s LICENSE text. Opening About leaves connections running; either link opens your default browser only when clicked. Close it with the close button or Escape.
 
 After waking from sleep or a network transition from unavailable to available, recovery runs **5 seconds after the last event**. Only disconnected hosts that should still be connected are retried. Healthy, connecting, and manually disconnected hosts are left alone. Going offline again cancels pending recovery. Opening Settings or focusing the app does not trigger recovery. A disconnection detected after that recovery waits for another event or a manual connection.
 
@@ -68,9 +70,9 @@ Forwarding states are preparing, ready, failed to open, disconnected, or unknown
 
 ## Launch at login
 
-Check **Launch at Login (`로그인 자동 시작`)** in the tray menu to register the app for your current user; uncheck it to remove the registration. It is off by default and separate from each host's auto-connect option. Changing it does not interrupt current connections, and quitting the app keeps the registration.
+Check **Launch at Login** in the tray menu to register the app for your current user; uncheck it to remove the registration. It is off by default and separate from each host's auto-connect option. Changing it does not interrupt current connections, and quitting the app keeps the registration.
 
-- **macOS:** `등록 필요` means registration is needed. `승인 필요` means the registration is checked but needs system approval; selecting it opens the login item settings. Unchecking also removes a pending registration.
+- **macOS:** **Launch at Login (registration needed)** means registration is needed. **Launch at Login (approval needed)** means the registration is checked but needs system approval; selecting it opens the login item settings. Unchecking also removes a pending registration.
 - **Windows:** the checkmark shows the app's registration. If Task Manager, Windows settings, or system policy disables startup separately, check those settings; the app does not override them.
 
 Put the app in its intended folder before enabling this option. Moving or deleting it can break startup. After moving it, uncheck and recheck the option from the new location. With a valid configuration, login starts the app in the tray and connects auto-connect hosts. Missing or damaged configuration receives the usual setup or error handling. The OS determines when login startup occurs.

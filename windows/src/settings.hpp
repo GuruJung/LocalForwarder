@@ -70,6 +70,18 @@ public:
         if(it->second.host.identityFile==original.identityFile)it->second.host.identityFile=updated.identityFile;
         baseline.insert_or_assign(original.id,HostDraft(updated));
     }
+    bool canSortRules() const {
+        auto draft=drafts.find(selected);
+        return open&&modalHost.empty()&&draft!=drafts.end()&&draft->second.host.forwards.size()>=2;
+    }
+    bool sortRulesByLocalPort() {
+        if(!canSortRules())return false;
+        auto& rules=drafts.at(selected).host.forwards;
+        auto less=[](const Forward& left,const Forward& right){return left.localPort<right.localPort;};
+        if(std::is_sorted(rules.begin(),rules.end(),less))return false;
+        std::stable_sort(rules.begin(),rules.end(),less);
+        return true;
+    }
     void showStatus(){if(modalHost.empty()&&drafts.contains(selected))modalHost=selected;}
     void closeStatus(){modalHost.clear();}
     void applyRule(const std::string& hostID,const RuleDraft& draft,bool creating) {

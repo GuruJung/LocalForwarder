@@ -50,7 +50,7 @@ constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
 constexpr wchar_t ProjectURL[]=L"https://github.com/GuruJung/LocalForwarder";
 constexpr wchar_t LicenseURL[]=L"https://github.com/GuruJung/LocalForwarder/blob/main/LICENSE";
-enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleDescription,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
+enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleDescription,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose,RuleSort};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
 RECT availableWorkArea(HMONITOR display){
     if(previewWorkArea)return *previewWorkArea;
@@ -387,7 +387,7 @@ private:
         make(form_,Rules,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP|WS_BORDER);
         ListView_SetExtendedListViewStyle(control(Rules),LVS_EX_CHECKBOXES|LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);
         const wchar_t* titles[]={tw("win.enabled"),tw("win.local_port"),tw("win.destination_host"),tw("win.destination_port"),tw("win.description")};for(int i=0;i<5;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(titles[i]);col.cx=scale(i==2?260:90);ListView_InsertColumn(control(Rules),i,&col);}
-        make(form_,RuleNew,L"BUTTON",tw("win.new_rule"),WS_TABSTOP);make(form_,RuleEdit,L"BUTTON",tw("win.edit_rule"),WS_TABSTOP);make(form_,RuleDelete,L"BUTTON",tw("win.delete_rule"),WS_TABSTOP);
+        make(form_,RuleNew,L"BUTTON",tw("win.new_rule"),WS_TABSTOP);make(form_,RuleEdit,L"BUTTON",tw("win.edit_rule"),WS_TABSTOP);make(form_,RuleDelete,L"BUTTON",tw("win.delete_rule"),WS_TABSTOP);make(form_,RuleSort,L"BUTTON",tw("win.sort_by_local_port"),WS_TABSTOP);
         label(309,tw("win.command_preview_edited_values"));make(form_,CommandPreview,L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP);
         make(form_,Save,L"BUTTON",tw("win.save_selected_host"),WS_TABSTOP);make(form_,Connect,L"BUTTON",tw("win.connect_reconnect"),WS_TABSTOP);make(form_,Authentication,L"BUTTON",tw("win.authentication_setup"),WS_TABSTOP);make(form_,ConnectionStatus,L"BUTTON",tw("win.connection_status"),WS_TABSTOP);
         layoutSettings();
@@ -439,7 +439,7 @@ private:
             y+=((index+columns-1)/columns)*(bh+gap)-gap;
         };
         heading(305);add(Rules,0,y,content,100);y+=100+gap;
-        buttons({RuleNew,RuleEdit,RuleDelete},content>=324?3:(content>=216?2:1));y+=section;
+        buttons({RuleNew,RuleEdit,RuleDelete,RuleSort},content>=432?4:(content>=324?3:(content>=216?2:1)));y+=section;
         heading(309);add(CommandPreview,0,y,content,64);y+=64+section;
         buttons({Save,Connect,Authentication,ConnectionStatus},content>=564?4:(content>=278?2:1));y+=Spacing::margin;
         SCROLLINFO si{sizeof(si),SIF_RANGE|SIF_PAGE|SIF_POS,0,y-1,static_cast<UINT>(std::max(1,h)),scroll_,0};SetScrollInfo(form_,SB_VERT,&si,TRUE);si.fMask=SIF_POS;GetScrollInfo(form_,SB_VERT,&si);scroll_=si.nPos;
@@ -457,7 +457,22 @@ private:
     void fillRules(){loading_=true;ListView_DeleteAllItems(control(Rules));if(settings_.drafts.contains(settings_.selected)){auto& draft=settings_.drafts.at(settings_.selected);for(size_t i=0;i<draft.host.forwards.size();++i){auto& f=draft.host.forwards[i];LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=static_cast<int>(i);item.pszText=const_cast<LPWSTR>(L"");ListView_InsertItem(control(Rules),&item);auto ports=draft.rulePorts.at(f.id);auto local=wide(ports.first),host=wide(f.remoteHost),remote=wide(ports.second),description=wide(f.description);ListView_SetItemText(control(Rules),item.iItem,1,local.data());ListView_SetItemText(control(Rules),item.iItem,2,host.data());ListView_SetItemText(control(Rules),item.iItem,3,remote.data());ListView_SetItemText(control(Rules),item.iItem,4,description.data());ListView_SetCheckState(control(Rules),item.iItem,f.enabled);}}
         loading_=false;
     }
-    void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);}
+    void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);EnableWindow(control(RuleSort),settings_.canSortRules());}
+    void sortRulesByLocalPort(){
+        if(!settings_.canSortRules())return;
+        capture();const auto& before=settings_.drafts.at(settings_.selected).host.forwards;
+        int selectedRow=ListView_GetNextItem(control(Rules),-1,LVNI_SELECTED);
+        std::string selectedID=selectedRow>=0&&static_cast<size_t>(selectedRow)<before.size()?before[selectedRow].id:"";
+        if(!settings_.sortRulesByLocalPort())return;
+        rule_=-1;fillRules();
+        const auto& rules=settings_.drafts.at(settings_.selected).host.forwards;
+        if(!selectedID.empty())for(size_t i=0;i<rules.size();++i)if(rules[i].id==selectedID){
+            rule_=static_cast<int>(i);loading_=true;
+            ListView_SetItemState(control(Rules),rule_,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+            ListView_EnsureVisible(control(Rules),rule_,FALSE);loading_=false;break;
+        }
+        fillRuleEditor();populateHosts();preview();
+    }
     void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=uiFont(uiDpi(ruleWindow_));for(int id:std::initializer_list<int>{RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
     void layoutRule(){if(!ruleWindow_||!control(RuleOkay))return;RECT rect{};GetClientRect(ruleWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(ruleWindow_)),h=MulDiv(rect.bottom,96,uiDpi(ruleWindow_));
         const int m=Spacing::margin,gap=Spacing::gap,ih=Spacing::input,bh=Spacing::button;
@@ -638,6 +653,7 @@ private:
         else if(id==DeleteHost){capture();if(choose(tw("win.delete_this_host"),tw("win.remove_this_host_s_connection_and_saved_settings"),{{1001,tw("win.delete_host_173")},{IDCANCEL,tw("win.cancel")}},IDCANCEL)==1001){auto selected=settings_.selected;manager_->remove(selected);settings_.remove(selected);if(settings_.order.empty())addHost();else fill();}}
         else if(id==RuleNew)showRule(true);
         else if(id==RuleEdit)showRule(false);
+        else if(id==RuleSort)sortRulesByLocalPort();
         else if(id==RuleDelete){capture();auto& draft=settings_.drafts.at(settings_.selected);if(rule_>=0&&static_cast<size_t>(rule_)<draft.host.forwards.size()){draft.rulePorts.erase(draft.host.forwards[rule_].id);draft.host.forwards.erase(draft.host.forwards.begin()+rule_);rule_=-1;fillRules();fillRuleEditor();populateHosts();preview();}}
         else if(id==Save)saveSelected();else if(id==Connect)connectSelected();else if(id==Authentication)authenticate();else if(id==ConnectionStatus)showStatus();else if(id==ChooseKey)chooseKey();else if(id==Okay||id==IDOK)closeSettings(true);else if(id==CancelButton||id==IDCANCEL)closeSettings(false);
         else if((notification==EN_CHANGE&&(id==Name||id==Description||id==Target||id==User||id==Port||id==Key))||id==AutoConnect||id==ExitFailure||id==RetryRefused){capture();populateHosts();preview();}
@@ -671,13 +687,14 @@ public:
             check(form.bottom<=std::min(okay.top,cancel.top),"scrolling form cannot cover footer");
             check(inside(bounds(control(Hosts),settingsWindow_),client),"host list remains inside settings");
             disjoint({NewHost,DeleteHost,Hosts,CancelButton,Okay},settingsWindow_);
-            std::vector<int> ids={Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,CommandPreview,Save,Connect,Authentication,ConnectionStatus,300,301,302,303,304,305,309,310};
+            std::vector<int> ids={Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleSort,CommandPreview,Save,Connect,Authentication,ConnectionStatus,300,301,302,303,304,305,309,310};
             disjoint(ids,form_);
             for(auto [labelID,editID]:{std::pair{300,Name},{310,Description},{301,Target},{302,User},{303,Port},{304,Key}})verifyLabel(labelID,editID,form_);
-            for(int id:{ChooseKey,RuleNew,RuleEdit,RuleDelete,Save,Connect,Authentication,ConnectionStatus}){
+            for(int id:{ChooseKey,RuleNew,RuleEdit,RuleDelete,RuleSort,Save,Connect,Authentication,ConnectionStatus}){
                 auto button=bounds(control(id),form_);check(button.bottom-button.top==okay.bottom-okay.top,"all ordinary buttons share the footer height");
             }
             for(int id:ids){auto rect=bounds(control(id),form_);check(rect.left>=formClient.left&&rect.right<=formClient.right,"form controls fit horizontally");}
+            auto sortButton=bounds(control(RuleSort),form_);check(sortButton.right-sortButton.left>=scale(textWidth(RuleSort)+20),"localized sort button text fits at every size and DPI");
             SetFocus(control(ConnectionStatus));ensureFocusVisible();check(inside(bounds(control(ConnectionStatus),form_),formClient),"keyboard focus scrolls final action into view");
             SetFocus(control(Name));ensureFocusVisible();check(inside(bounds(control(Name),form_),formClient),"keyboard focus scrolls first input into view");
             check(Header_GetItemCount(ListView_GetHeader(control(Rules)))==5,"rule list has final description column");
@@ -892,6 +909,47 @@ public:
         dialogTest_=[&](HWND dialog,const TASKDIALOGCONFIG& config){check(config.hwndParent==window_&&!IsWindowEnabled(window_),"tray-only About owns the hidden application window");PostMessageW(dialog,TDM_CLICK_BUTTON,IDCANCEL,0);};
         showAbout();dialogTest_={};check(!settings_.open&&manager_->runtime("a")->state==ConnectionState::connected,"tray-only About does not open settings or stop SSH");
     }
+    void nativeSortChecks(){
+        auto check=[](bool value,const char* why){if(!value)throw LocalizedError(why);};
+        Host fixture=loadHost(directory_,"a");
+        fixture.forwards={{"high",true,10000,"high.example",90,"high description"},{"tie-off",false,1000,"off.example",91,"disabled tie"},{"low",true,80,"low.example",92,"low description"},{"tie-on",true,1000,"on.example",93,"active tie"},{"nine",false,9,"nine.example",94,"single digit"}};
+        auto expected=std::vector<Forward>{fixture.forwards[4],fixture.forwards[2],fixture.forwards[1],fixture.forwards[3],fixture.forwards[0]};
+        saveHost(directory_,fixture);manager_->saved(fixture);manager_->connect(fixture,false);openSettings("a");
+        settings_.drafts.at("b").host.description="unsaved peer";auto peer=settings_.drafts.at("b");
+        auto disk=loadConfig(directory_);auto execution=manager_->runtime("a")->executionHost;auto forwards=manager_->runtime("a")->forwards;
+        check(IsWindowEnabled(control(RuleSort)),"sort button enabled with multiple rules");
+        SetFocus(control(RuleSort));ensureFocusVisible();check(GetFocus()==control(RuleSort),"sort button receives keyboard focus");
+        set(Name,L"");set(Target,L"");set(Port,L"invalid");
+        ListView_SetItemState(control(Rules),0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+        SendMessageW(control(RuleSort),BM_CLICK,0,0);
+        check(settings_.drafts.at("a").host.forwards==expected&&rule_==4&&ListView_GetNextItem(control(Rules),-1,LVNI_SELECTED)==4,"sort preserves selected rule by ID after numeric stable reorder");
+        check(get(Name).empty()&&get(Target).empty()&&get(Port)==L"invalid"&&settings_.drafts.at("b")==peer,"sort preserves unfinished input and peer draft");
+        check(loadConfig(directory_)==disk&&manager_->runtime("a")->executionHost==execution&&manager_->runtime("a")->forwards==forwards&&manager_->runtime("a")->state==ConnectionState::connected&&manager_->runtime("a")->desiredConnected,"sort does not save or change running forwarding state");
+        command(RuleEdit,BN_CLICKED);check(ruleWindow_&&ruleDraft_->rule.id=="high","edit after sort opens the preserved rule");set(RuleDescription,L"edited high");closeRule(true);
+        check(settings_.drafts.at("a").host.forwards[4].id=="high"&&settings_.drafts.at("a").host.forwards[4].description=="edited high","edit after sort updates the correct rule");
+        ListView_SetCheckState(control(Rules),4,FALSE);
+        check(!settings_.drafts.at("a").host.forwards[4].enabled&&settings_.drafts.at("a").host.forwards[1].enabled,"checkbox after sort updates the correct rule");
+        command(RuleDelete,BN_CLICKED);
+        const auto& deleted=settings_.drafts.at("a").host.forwards;
+        check(deleted.size()==4&&std::none_of(deleted.begin(),deleted.end(),[](const auto& rule){return rule.id=="high";}),"delete after sort removes the selected ID");
+        settings_.drafts.at("a").host.forwards=fixture.forwards;settings_.drafts.at("a").rulePorts=HostDraft(fixture).rulePorts;fillRules();fillRuleEditor();
+        check(ListView_GetNextItem(control(Rules),-1,LVNI_SELECTED)==-1,"unselected fixture has no selected row");command(RuleSort,BN_CLICKED);
+        check(rule_==-1&&ListView_GetNextItem(control(Rules),-1,LVNI_SELECTED)==-1&&!IsWindowEnabled(control(RuleEdit))&&!IsWindowEnabled(control(RuleDelete)),"sorting without selection keeps none and disables row actions");
+        auto sorted=settings_.drafts.at("a");command(RuleSort,BN_CLICKED);check(settings_.drafts.at("a")==sorted,"native already-sorted click is a no-op");
+        settings_.drafts.at("a").host.forwards=fixture.forwards;fillRules();showRule(true);auto modalDraft=settings_.drafts;
+        command(RuleSort,BN_CLICKED);check(settings_.drafts==modalDraft&&ruleWindow_,"rule modal blocks sort");closeRule(false);
+        showStatus();command(RuleSort,BN_CLICKED);check(settings_.drafts==modalDraft&&status_,"status modal blocks sort");closeStatus();
+        auto selected=settings_.selected;settings_.selected.clear();fillRuleEditor();check(!IsWindowEnabled(control(RuleSort)),"sort disabled without host selection");command(RuleSort,BN_CLICKED);settings_.selected=selected;
+        auto fullRules=settings_.drafts.at(selected).host.forwards;settings_.drafts.at(selected).host.forwards.resize(1);fillRuleEditor();check(!IsWindowEnabled(control(RuleSort)),"sort disabled with one rule");settings_.drafts.at(selected).host.forwards.clear();fillRuleEditor();check(!IsWindowEnabled(control(RuleSort)),"sort disabled with zero rules");settings_.drafts.at(selected).host.forwards=fullRules;fillRules();fillRuleEditor();
+        set(Name,wide(fixture.name));set(Target,wide(fixture.target));set(Port,fixture.port?wide(std::to_string(*fixture.port)):L"");command(RuleSort,BN_CLICKED);
+        auto commandText=get(CommandPreview);auto lowPosition=commandText.find(L"127.0.0.1:80:"),tiePosition=commandText.find(L"127.0.0.1:1000:"),highPosition=commandText.find(L"127.0.0.1:10000:");check(lowPosition!=std::wstring::npos&&tiePosition!=std::wstring::npos&&highPosition!=std::wstring::npos&&lowPosition<tiePosition&&tiePosition<highPosition,"command preview follows sorted active-rule order");
+        command(Save,BN_CLICKED);check(loadHost(directory_,"a").forwards==expected&&!settings_.dirty("a")&&settings_.drafts.at("b")==peer,"explicit save persists sort without changing peer draft");
+        check(manager_->runtime("a")->executionHost==execution&&manager_->runtime("a")->forwards==forwards,"sort save preserves current execution snapshot");
+        closeSettings(false);openSettings("a");check(settings_.drafts.at("a").host.forwards==expected,"saved order survives closing and reopening");
+        closeSettings(false);saveHost(directory_,fixture);manager_->saved(fixture);openSettings("a");command(RuleSort,BN_CLICKED);check(settings_.dirty("a"),"unsaved sort marks dirty");closeSettings(false);openSettings("a");
+        check(settings_.drafts.at("a").host.forwards==fixture.forwards&&!settings_.dirty("a"),"discarded sort restores original saved order");
+        closeSettings(false);outputLine("native local-port sort checks passed");
+    }
     void nativeChecks(const std::wstring& instanceKey){
         auto check=[](bool value,const char* why){if(!value)throw LocalizedError(why);};
         openSettings({},true);check(settings_.startup&&settings_.order.size()==2,"startup settings load");
@@ -971,6 +1029,7 @@ public:
         check(manager_->runtime("a")->state==ConnectionState::connected,"native close keeps existing connection");
         outputLine("native existing controller checks passed");
         nativeAppDialogChecks();
+        nativeSortChecks();
         manager_->quit();outputLine("native UI controller tests passed");
     }
     LRESULT message(HWND hwnd,UINT msg,WPARAM w,LPARAM l){

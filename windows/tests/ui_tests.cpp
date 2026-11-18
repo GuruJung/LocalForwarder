@@ -3,7 +3,37 @@
 #include <iostream>
 using namespace lf;
 static void check(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
+static void sortChecks(){
+    Host host;host.id="sort";host.name="Sort host";host.target="server";
+    host.forwards={{"high",true,10000,"high.example",90,"high description"},{"tie-off",false,1000,"off.example",91,"disabled tie"},{"low",true,80,"low.example",92,"low description"},{"tie-on",true,1000,"on.example",93,"active tie"},{"nine",false,9,"nine.example",94,"single digit"}};
+    Host peer=host;peer.id="peer";SettingsModel model;model.load(Config{{host,peer}},{});
+    auto expected=std::vector<Forward>{host.forwards[4],host.forwards[2],host.forwards[1],host.forwards[3],host.forwards[0]};
+    model.drafts.at("sort").host.name.clear();model.drafts.at("sort").host.target.clear();model.drafts.at("sort").port="invalid";
+    model.drafts.at("peer").host.name="unsaved peer";auto peerDraft=model.drafts.at("peer");auto rawPorts=model.drafts.at("sort").rulePorts;
+    check(model.canSortRules()&&model.sortRulesByLocalPort(),"numeric sort works with incomplete host input");
+    check(model.drafts.at("sort").host.forwards==expected,"numeric ascending sort includes disabled rules and preserves equal-port order and metadata");
+    check(model.drafts.at("sort").host.name.empty()&&model.drafts.at("sort").host.target.empty()&&model.drafts.at("sort").port=="invalid"&&model.drafts.at("sort").rulePorts==rawPorts,"sort preserves incomplete fields and raw per-rule input");
+    check(model.drafts.at("peer")==peerDraft&&model.dirty("sort"),"sort preserves peer draft and marks changed order dirty");
+    auto afterSort=model.drafts;check(!model.sortRulesByLocalPort()&&model.drafts==afterSort,"already sorted draft is unchanged");
+    model.drafts.at("sort").host.name=host.name;model.drafts.at("sort").host.target=host.target;model.drafts.at("sort").port.clear();
+    Host saved=model.validated();model.saved(saved);check(!model.dirty("sort")&&model.drafts.at("peer")==peerDraft,"explicit selected save clears only its dirty state");
+    auto persisted=parseConfig(writeConfig(Config{{saved,peer}}));model.close(false);model.load(persisted,{});
+    check(model.drafts.at("sort").host.forwards==expected&&!model.dirty("sort"),"saved sorted order survives serialized reload");
+    check(!model.sortRulesByLocalPort()&&!model.dirty("sort"),"sort no-op does not dirty a clean sorted host");
+    RuleDraft added(Forward{"last",false,1,"new.example",80,"added after sort"});model.applyRule("sort",added,true);
+    check(model.drafts.at("sort").host.forwards.back().id=="last","adding a rule does not auto-sort");
+    RuleDraft edited(model.drafts.at("sort").host.forwards[4]);edited.localPort="2";model.applyRule("sort",edited,false);
+    check(model.drafts.at("sort").host.forwards[4].id=="high"&&model.drafts.at("sort").host.forwards[4].localPort==2,"editing a port does not auto-sort");
+    model.close(false);model.load(Config{{host,peer}},{});model.sortRulesByLocalPort();model.close(false);model.load(Config{{host,peer}},{});
+    check(model.drafts.at("sort").host.forwards==host.forwards&&!model.dirty("sort"),"discard restores original saved ordering");
+    auto beforeModal=model.drafts;model.showStatus();check(!model.canSortRules()&&!model.sortRulesByLocalPort()&&model.drafts==beforeModal,"modal blocks sorting without mutations");model.closeStatus();
+    model.selected="missing";check(!model.canSortRules()&&!model.sortRulesByLocalPort(),"missing selection cannot sort");model.selected="sort";
+    model.drafts.at("sort").host.forwards.resize(1);check(!model.canSortRules()&&!model.sortRulesByLocalPort(),"one rule cannot sort");
+    model.drafts.at("sort").host.forwards.clear();check(!model.canSortRules()&&!model.sortRulesByLocalPort(),"empty rule list cannot sort");
+    model.close(false);check(!model.canSortRules()&&!model.sortRulesByLocalPort(),"closed settings cannot sort");
+}
 int main(){try{
+    sortChecks();
     Host a;a.id="a";a.name="A";a.target="server-a";a.forwards.push_back({"f",true,12000,"localhost",80});
     Host b=a;b.id="b";b.name="B";b.target="server-b";
     SettingsModel model;model.load(Config{{a,b}}, {}, true);
