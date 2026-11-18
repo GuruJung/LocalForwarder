@@ -26,6 +26,22 @@ using namespace lf;
 namespace {
 UINT previewDpi=0;
 std::optional<RECT> previewWorkArea;
+std::wstring previewScene=L"settings";
+struct Spacing {
+    static constexpr int input=26,button=30,gap=8,margin=12,section=16;
+};
+HFONT uiFont(UINT dpi,int weight=FW_NORMAL,const wchar_t* face=L"Segoe UI"){
+    return CreateFontW(-MulDiv(10,dpi,72),0,0,0,weight,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,face);
+}
+// STATICs, read-only edits and checkboxes share their parent's system surface.
+// Leave selection, focus and themed button drawing to Windows.
+LRESULT surfaceColor(WPARAM value,LPARAM child){
+    HDC dc=reinterpret_cast<HDC>(value);
+    SetTextColor(dc,GetSysColor(IsWindowEnabled(reinterpret_cast<HWND>(child))?COLOR_WINDOWTEXT:COLOR_GRAYTEXT));
+    SetBkColor(dc,GetSysColor(COLOR_WINDOW));
+    return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+}
 UINT uiDpi(HWND window){return previewDpi?previewDpi:GetDpiForWindow(window);}
 constexpr UINT WM_TASK=WM_APP+1,WM_TRAY=WM_APP+2,WM_OPEN_SETTINGS=WM_APP+3;
 constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
@@ -159,7 +175,7 @@ class App{
     std::shared_ptr<EventLoop> loop_=std::make_shared<EventLoop>();std::shared_ptr<int> lifetime_=std::make_shared<int>(0);
     LoginStartupController loginStartup_;
     std::unique_ptr<ConnectionManager> manager_;SettingsModel settings_;NetworkMonitor network_;
-    HWND window_=nullptr,settingsWindow_=nullptr,form_=nullptr,status_=nullptr,ruleWindow_=nullptr;HFONT font_=nullptr,statusFont_=nullptr,ruleFont_=nullptr;HICON icon_=nullptr;
+    HWND window_=nullptr,settingsWindow_=nullptr,form_=nullptr,status_=nullptr,ruleWindow_=nullptr;HFONT font_=nullptr,headingFont_=nullptr,previewFont_=nullptr,statusFont_=nullptr,statusHeadingFont_=nullptr,ruleFont_=nullptr;HICON icon_=nullptr;
     std::map<int,HWND> controls_;int rule_=-1,scroll_=0;UINT taskbarCreated_=0;NOTIFYICONDATAW tray_{};std::set<std::string> authPending_;
     std::optional<RuleDraft> ruleDraft_;bool creatingRule_=false;
     bool appModal_=false;
@@ -254,15 +270,41 @@ class App{
     void set(int id,const std::wstring& value){if(control(id))setText(control(id),value);}
     std::wstring get(int id)const{return control(id)?textOf(control(id)):L"";}
     void error(const std::string& text){if(test_&&!uiPreview_){auto flat=text;std::replace(flat.begin(),flat.end(),'\n',' ');outputLine("LF_ERROR "+flat);}else MessageBoxW(ruleWindow_?ruleWindow_:(status_?status_:(settings_.open?settingsWindow_:window_)),wide(text).c_str(),L"LocalForwarder",MB_OK|MB_ICONWARNING);}
-    HWND make(HWND parent,int id,const wchar_t* kind,const wchar_t* text,DWORD style){auto h=CreateWindowExW((std::wstring(kind)==L"EDIT")?WS_EX_CLIENTEDGE:0,kind,text,WS_CHILD|WS_VISIBLE|style,0,0,1,1,parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);if(!h)throw std::runtime_error(winError());controls_[id]=h;if(std::wstring(kind)==L"EDIT")SetWindowSubclass(h,editProc,1,0);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);return h;}
+    HWND make(HWND parent,int id,const wchar_t* kind,const wchar_t* text,DWORD style){auto h=CreateWindowExW((std::wstring(kind)==L"EDIT")?WS_EX_CLIENTEDGE:0,kind,text,WS_CHILD|WS_VISIBLE|style,0,0,1,1,parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);if(!h)throw std::runtime_error(winError());controls_[id]=h;if(std::wstring(kind)==L"EDIT")SetWindowSubclass(h,editProc,1,0);HFONT font=id==CommandPreview?previewFont_:((id==305||id==309)?headingFont_:font_);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);return h;}
     void place(int id,int x,int y,int width,int height){if(control(id)){UINT dpi=uiDpi(GetParent(control(id)));MoveWindow(control(id),MulDiv(x,dpi,96),MulDiv(y,dpi,96),MulDiv(std::max(1,width),dpi,96),MulDiv(std::max(1,height),dpi,96),TRUE);}}
-    void label(int id,const wchar_t* text){make(form_,id,L"STATIC",text,0);}
-    void updateFont(){HFONT old=font_;font_=CreateFontW(-MulDiv(10,uiDpi(settingsWindow_?settingsWindow_:window_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(auto& [id,h]:controls_)SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font_),TRUE);if(old)DeleteObject(old);if(status_)updateStatusFont();if(ruleWindow_)updateRuleFont();}
-    void updateStatusFont(){if(!status_)return;HFONT old=statusFont_;statusFont_=CreateFontW(-MulDiv(10,uiDpi(status_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(statusFont_),TRUE);if(old)DeleteObject(old);}
+    void label(int id,const wchar_t* text){make(form_,id,L"STATIC",text,(id==305||id==309)?0:SS_CENTERIMAGE);}
+    // Measure the selected font, including Korean glyph fallback, before arranging rows.
+    int textWidth(int id)const{
+        HWND child=control(id);HDC dc=GetDC(child);auto old=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(child,WM_GETFONT,0,0)));
+        RECT bounds{};auto text=textOf(child);DrawTextW(dc,text.c_str(),-1,&bounds,DT_CALCRECT|DT_SINGLELINE|DT_NOPREFIX);
+        SelectObject(dc,old);ReleaseDC(child,dc);UINT dpi=uiDpi(GetParent(child));
+        return (bounds.right*96+static_cast<int>(dpi)-1)/dpi;
+    }
+    int headingHeight(int id,int width)const{
+        HWND child=control(id);UINT dpi=uiDpi(GetParent(child));HDC dc=GetDC(child);
+        auto old=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(child,WM_GETFONT,0,0)));
+        RECT bounds{0,0,MulDiv(width,dpi,96),0};auto text=textOf(child);
+        DrawTextW(dc,text.c_str(),-1,&bounds,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);
+        SelectObject(dc,old);ReleaseDC(child,dc);
+        return (bounds.bottom*96+static_cast<int>(dpi)-1)/dpi;
+    }
+    void updateFont(){
+        HFONT old=font_,oldHeading=headingFont_,oldPreview=previewFont_;UINT dpi=uiDpi(settingsWindow_?settingsWindow_:window_);
+        font_=uiFont(dpi);headingFont_=uiFont(dpi,FW_SEMIBOLD);previewFont_=uiFont(dpi,FW_NORMAL,L"Consolas");
+        for(auto& [id,h]:controls_){HFONT font=id==CommandPreview?previewFont_:((id==305||id==309)?headingFont_:font_);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);}
+        for(auto font:{old,oldHeading,oldPreview})if(font)DeleteObject(font);
+        if(status_)updateStatusFont();if(ruleWindow_)updateRuleFont();
+    }
+    void updateStatusFont(){
+        if(!status_)return;HFONT old=statusFont_,oldHeading=statusHeadingFont_;
+        statusFont_=uiFont(uiDpi(status_));statusHeadingFont_=uiFont(uiDpi(status_),FW_SEMIBOLD);
+        for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(id==StatusHeading?statusHeadingFont_:statusFont_),TRUE);
+        if(old)DeleteObject(old);if(oldHeading)DeleteObject(oldHeading);
+    }
     int choose(const wchar_t* title,const wchar_t* body,const std::vector<std::pair<int,const wchar_t*>>& choices,int defaultButton){std::vector<TASKDIALOG_BUTTON> buttons;for(auto& choice:choices)buttons.push_back({choice.first,choice.second});TASKDIALOGCONFIG config{};config.cbSize=sizeof(config);config.hwndParent=settingsWindow_;config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"LocalForwarder";config.pszMainInstruction=title;config.pszContent=body;config.cButtons=static_cast<UINT>(buttons.size());config.pButtons=buttons.data();config.nDefaultButton=defaultButton;return appDialog(config);}
 public:
     App(HINSTANCE instance,fs::path directory,bool test,bool start,bool openConfig,std::string config,bool uiTest=false,bool uiPreview=false,std::shared_ptr<LoginStartup> startup={}):instance_(instance),directory_(std::move(directory)),test_(test),start_(start),openConfig_(openConfig),uiTest_(uiTest),uiPreview_(uiPreview),sshConfig_(std::move(config)),loginStartup_(startup?std::move(startup):(test?std::shared_ptr<LoginStartup>(std::make_shared<PreviewLoginStartup>()):std::make_shared<RegistryLoginStartup>(executablePath()))){}
-    ~App(){lifetime_.reset();network_.stop();if(loop_)loop_->detach();manager_.reset();if(trayAdded_)Shell_NotifyIconW(NIM_DELETE,&tray_);if(ruleWindow_)DestroyWindow(ruleWindow_);if(status_)DestroyWindow(status_);if(settingsWindow_)DestroyWindow(settingsWindow_);if(window_)DestroyWindow(window_);if(font_)DeleteObject(font_);if(statusFont_)DeleteObject(statusFont_);if(ruleFont_)DeleteObject(ruleFont_);clearMenuBitmaps();if(icon_)DestroyIcon(icon_);}
+    ~App(){lifetime_.reset();network_.stop();if(loop_)loop_->detach();manager_.reset();if(trayAdded_)Shell_NotifyIconW(NIM_DELETE,&tray_);if(ruleWindow_)DestroyWindow(ruleWindow_);if(status_)DestroyWindow(status_);if(settingsWindow_)DestroyWindow(settingsWindow_);if(window_)DestroyWindow(window_);for(auto font:{font_,headingFont_,previewFont_,statusFont_,statusHeadingFont_,ruleFont_})if(font)DeleteObject(font);clearMenuBitmaps();if(icon_)DestroyIcon(icon_);}
     void create(const std::wstring& title){
         WNDCLASSW cls{};cls.hInstance=instance_;cls.lpfnWndProc=appProc;cls.lpszClassName=AppClass;cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);if(!RegisterClassW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw std::runtime_error(winError());
         cls.lpfnWndProc=formProc;cls.lpszClassName=FormClass;if(!RegisterClassW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw std::runtime_error(winError());cls.lpfnWndProc=statusProc;cls.lpszClassName=StatusClass;if(!RegisterClassW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)throw std::runtime_error(winError());
@@ -276,6 +318,19 @@ public:
         try{manager_->reloadConfiguration();if(uiPreview_){manager_->connect("a");openSettings({},true);}else if(test_){if(start_)manager_->startAll();}else if(openConfig_||!fs::exists(directory_/L"config.json"))openSettings({},true);else manager_->startAll();}
         catch(const std::exception& e){if(!test_)openSettings({},true);error(std::string(e.what())+"\n기존 설정 파일은 보존했습니다.");}
         if(test_&&!uiTest_){snapshot();outputLine("LF_READY");startInput();}
+        if(uiPreview_)loop_->post([this]{
+            if(previewScene==L"rule"){rule_=0;showRule(false);}
+            else if(previewScene==L"status")showStatus();
+            else if(previewScene==L"about")showAbout();
+            else if(previewScene==L"confirm")confirmDisconnectAll();
+            else if(previewScene==L"error"){showRule(true);set(LocalPort,L"invalid");closeRule(true);}
+            else if(previewScene==L"tray")trayMenu();
+            else if(previewScene==L"tray-host"){
+                createTrayMenu();RECT area{};GetWindowRect(settingsWindow_,&area);SetForegroundWindow(window_);menuOpen_=true;
+                TrackPopupMenuEx(menus_.at("a").menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,area.left+scale(24),area.top+scale(60),window_,nullptr);
+                menuOpen_=false;destroyTrayMenu();
+            }
+        });
     }
     HWND settingsWindow()const{return settingsWindow_;}HWND statusWindow()const{return status_;}
     bool preprocess(MSG& message){
@@ -310,37 +365,63 @@ private:
         layoutSettings();
     }
     void layoutSettings(){if(!settingsWindow_||!form_)return;RECT rect{};GetClientRect(settingsWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(settingsWindow_)),h=MulDiv(rect.bottom,96,uiDpi(settingsWindow_));
+        const int m=Spacing::margin,gap=Spacing::gap,bh=Spacing::button;
         const int sidebar=w>=740?216:std::clamp(w/4,120,180);bool stacked=sidebar<216;
-        if(stacked){place(NewHost,12,12,sidebar,30);place(DeleteHost,12,48,sidebar,30);}
-        else{place(NewHost,12,12,102,30);place(DeleteHost,120,12,108,30);}
-        int listTop=stacked?86:50;place(Hosts,12,listTop,sidebar,std::max(24,h-listTop-68));
-        place(Okay,w-190,h-44,82,30);place(CancelButton,w-96,h-44,82,30);
-        int formLeft=sidebar+24;MoveWindow(form_,scale(formLeft),scale(12),scale(std::max(1,w-formLeft-12)),scale(std::max(32,h-70)),TRUE);layoutForm();
+        if(stacked){place(NewHost,m,m,sidebar,bh);place(DeleteHost,m,m+bh+gap,sidebar,bh);}
+        else{place(NewHost,m,m,100,bh);place(DeleteHost,m+108,m,108,bh);}
+        int listTop=m+(stacked?2:1)*(bh+gap);place(Hosts,m,listTop,sidebar,std::max(24,h-listTop-68));
+        place(Okay,w-m-2*82-gap,h-m-bh,82,bh);place(CancelButton,w-m-82,h-m-bh,82,bh);
+        int formLeft=sidebar+2*m;MoveWindow(form_,scale(formLeft),scale(m),scale(std::max(1,w-formLeft-m)),scale(std::max(32,h-70)),TRUE);layoutForm();
     }
-    void layoutForm(){if(!form_)return;RECT rect{};GetClientRect(form_,&rect);int w=MulDiv(rect.right,96,uiDpi(settingsWindow_)),h=MulDiv(rect.bottom,96,uiDpi(settingsWindow_));
+    void layoutForm(){if(!form_)return;RECT rect{};GetClientRect(form_,&rect);int w=rect.right*96/uiDpi(settingsWindow_),h=rect.bottom*96/uiDpi(settingsWindow_);
         struct Placement{int id,x,y,width,height;};std::vector<Placement> places;
         auto add=[&](int id,int x,int y,int width,int height){places.push_back({id,x,y,width,height});};
-        int content=std::max(1,w-12),y=0;bool narrow=content<490;
-        auto field=[&](int labelID,int editID){if(narrow){add(labelID,0,y,content,22);add(editID,0,y+24,content,26);y+=58;}else{add(labelID,0,y+4,110,22);add(editID,115,y,content-115,26);y+=34;}};
+        const int gap=Spacing::gap,ih=Spacing::input,bh=Spacing::button,section=Spacing::section;
+        int content=std::max(1,w-Spacing::margin),y=0,labelWidth=0;
+        for(int id:{300,310,301,302,303,304})labelWidth=std::max(labelWidth,textWidth(id)+4);
+        int inputLeft=labelWidth+gap;bool narrow=content<std::max(490,inputLeft+220);
+        auto field=[&](int labelID,int editID){
+            if(narrow){add(labelID,0,y,content,ih);add(editID,0,y+ih+4,content,ih);y+=2*ih+4+gap;}
+            else{add(labelID,0,y,labelWidth,ih);add(editID,inputLeft,y,content-inputLeft,ih);y+=ih+gap;}
+        };
         field(300,Name);field(310,Description);field(301,Target);
-        if(narrow){field(302,User);field(303,Port);field(304,Key);add(ChooseKey,0,y,content,28);y+=36;}
-        else{int userWidth=content-310;add(302,0,y+4,110,22);add(User,115,y,userWidth,26);add(303,125+userWidth,y+4,100,22);add(Port,225+userWidth,y,content-225-userWidth,26);y+=34;add(304,0,y+4,110,22);add(Key,115,y,content-255,26);add(ChooseKey,content-132,y,132,26);y+=34;}
-        if(narrow){for(int id:{AutoConnect,ExitFailure,RetryRefused}){add(id,0,y,content,26);y+=32;}}
-        else{add(AutoConnect,0,y+4,110,26);add(ExitFailure,115,y+4,175,26);add(RetryRefused,295,y+4,content-295,26);y+=38;}
-        add(305,0,y,content,narrow?40:22);y+=narrow?46:28;add(Rules,0,y,content,118);y+=126;
-        int ruleColumns=content>=324?3:(content>=216?2:1),ruleWidth=(content-(ruleColumns-1)*8)/ruleColumns;
-        int ruleIndex=0;for(int id:{RuleNew,RuleEdit,RuleDelete}){add(id,(ruleIndex%ruleColumns)*(ruleWidth+8),y+(ruleIndex/ruleColumns)*34,ruleWidth,28);++ruleIndex;}y+=((3+ruleColumns-1)/ruleColumns)*34+6;
-        add(309,0,y,content,22);y+=26;add(CommandPreview,0,y,content,64);y+=76;
-        int actionColumns=content>=554?4:(content>=270?2:1),button=(content-(actionColumns-1)*6)/actionColumns;
-        int actionIndex=0;for(int id:{Save,Connect,Authentication,ConnectionStatus}){add(id,(actionIndex%actionColumns)*(button+6),y+(actionIndex/actionColumns)*38,button,32);++actionIndex;}y+=((4+actionColumns-1)/actionColumns)*38+6;
+        int portLabel=textWidth(303)+4,portWidth=80;
+        if(!narrow&&content>=inputLeft+140+section+portLabel+gap+portWidth){
+            int portLeft=content-portWidth,portLabelLeft=portLeft-gap-portLabel;
+            add(302,0,y,labelWidth,ih);add(User,inputLeft,y,portLabelLeft-section-inputLeft,ih);
+            add(303,portLabelLeft,y,portLabel,ih);add(Port,portLeft,y,portWidth,ih);y+=ih+gap;
+        }else{field(302,User);field(303,Port);}
+        if(narrow){field(304,Key);add(ChooseKey,0,y,content,bh);y+=bh+gap;}
+        else{
+            int chooseWidth=std::max(132,textWidth(ChooseKey)+20),offset=(bh-ih)/2;
+            add(304,0,y+offset,labelWidth,ih);add(Key,inputLeft,y+offset,content-inputLeft-gap-chooseWidth,ih);
+            add(ChooseKey,content-chooseWidth,y,chooseWidth,bh);y+=bh+gap;
+        }
+        int optionWidth=0;for(int id:{AutoConnect,ExitFailure,RetryRefused})optionWidth+=textWidth(id)+30;
+        bool stackOptions=optionWidth+2*gap>content;int x=0;
+        for(int id:{AutoConnect,ExitFailure,RetryRefused}){
+            int width=stackOptions?content:textWidth(id)+30;add(id,x,y,width,ih);
+            if(stackOptions)y+=ih+gap;else x+=width+gap;
+        }
+        y+=stackOptions?section-gap:ih+section;
+        auto heading=[&](int id){int height=headingHeight(id,content);add(id,0,y,content,height);y+=height+gap;};
+        auto buttons=[&](std::initializer_list<int> ids,int columns){
+            int width=(content-(columns-1)*gap)/columns,index=0;
+            for(int id:ids){add(id,(index%columns)*(width+gap),y+(index/columns)*(bh+gap),width,bh);++index;}
+            y+=((index+columns-1)/columns)*(bh+gap)-gap;
+        };
+        heading(305);add(Rules,0,y,content,100);y+=100+gap;
+        buttons({RuleNew,RuleEdit,RuleDelete},content>=324?3:(content>=216?2:1));y+=section;
+        heading(309);add(CommandPreview,0,y,content,64);y+=64+section;
+        buttons({Save,Connect,Authentication,ConnectionStatus},content>=564?4:(content>=278?2:1));y+=Spacing::margin;
         SCROLLINFO si{sizeof(si),SIF_RANGE|SIF_PAGE|SIF_POS,0,y-1,static_cast<UINT>(std::max(1,h)),scroll_,0};SetScrollInfo(form_,SB_VERT,&si,TRUE);si.fMask=SIF_POS;GetScrollInfo(form_,SB_VERT,&si);scroll_=si.nPos;
         for(const auto& item:places)place(item.id,item.x,item.y-scroll_,item.width,item.height);
-        int enabledWidth=content<360?36:48,portWidth=content<360?70:90;
-        int available=content-enabledWidth-2*portWidth-4,hostWidth=std::max(140,available/2);
-        ListView_SetColumnWidth(control(Rules),0,scale(enabledWidth));ListView_SetColumnWidth(control(Rules),1,scale(portWidth));ListView_SetColumnWidth(control(Rules),2,scale(hostWidth));ListView_SetColumnWidth(control(Rules),3,scale(portWidth));ListView_SetColumnWidth(control(Rules),4,scale(std::max(160,available-hostWidth)));
+        int enabledWidth=content<360?36:48,portWidthColumn=content<360?70:90;
+        int available=content-enabledWidth-2*portWidthColumn-4,hostWidth=std::max(140,available/2);
+        ListView_SetColumnWidth(control(Rules),0,scale(enabledWidth));ListView_SetColumnWidth(control(Rules),1,scale(portWidthColumn));ListView_SetColumnWidth(control(Rules),2,scale(hostWidth));ListView_SetColumnWidth(control(Rules),3,scale(portWidthColumn));ListView_SetColumnWidth(control(Rules),4,scale(std::max(160,available-hostWidth)));
     }
     void scrollForm(int code,int wheel=0){SCROLLINFO si{sizeof(si),SIF_ALL};GetScrollInfo(form_,SB_VERT,&si);int next=si.nPos;switch(code){case SB_LINEUP:next-=24;break;case SB_LINEDOWN:next+=24;break;case SB_PAGEUP:next-=si.nPage;break;case SB_PAGEDOWN:next+=si.nPage;break;case SB_THUMBPOSITION:case SB_THUMBTRACK:next=si.nTrackPos;break;default:next-=wheel;}scroll_=next;layoutForm();}
-    void ensureFocusVisible(){if(!form_)return;HWND focus=GetFocus();if(!focus||!IsChild(form_,focus))return;RECT area{},client{};GetWindowRect(focus,&area);MapWindowPoints(nullptr,form_,reinterpret_cast<POINT*>(&area),2);GetClientRect(form_,&client);if(area.top<0)scroll_+=MulDiv(area.top,96,uiDpi(settingsWindow_));else if(area.bottom>client.bottom)scroll_+=MulDiv(area.bottom-client.bottom,96,uiDpi(settingsWindow_));layoutForm();}
+    void ensureFocusVisible(){if(!form_)return;HWND focus=GetFocus();if(!focus||!IsChild(form_,focus))return;RECT area{},client{};GetWindowRect(focus,&area);MapWindowPoints(nullptr,form_,reinterpret_cast<POINT*>(&area),2);GetClientRect(form_,&client);int dpi=uiDpi(settingsWindow_);if(area.top<0)scroll_-=(-area.top*96+dpi-1)/dpi;else if(area.bottom>client.bottom)scroll_+=((area.bottom-client.bottom)*96+dpi-1)/dpi;layoutForm();}
     void populateHosts(){if(!settings_.open)return;loading_=true;SendMessageW(control(Hosts),LB_RESETCONTENT,0,0);int selected=-1;for(size_t i=0;i<settings_.order.size();++i){auto& id=settings_.order[i];auto& h=settings_.drafts.at(id).host;auto runtime=manager_->runtime(id);std::string title=(settings_.dirty(id)?"● ":"")+h.name+(runtime&&runtime->temporary?" · 임시":"");SendMessageW(control(Hosts),LB_ADDSTRING,0,reinterpret_cast<LPARAM>(wide(title).c_str()));if(id==settings_.selected)selected=static_cast<int>(i);}SendMessageW(control(Hosts),LB_SETCURSEL,selected,0);loading_=false;}
     void capture(){if(loading_||!settings_.open||!settings_.drafts.contains(settings_.selected))return;auto& draft=settings_.drafts.at(settings_.selected);draft.host.name=utf8(get(Name));draft.host.description=utf8(get(Description));draft.host.target=utf8(get(Target));draft.host.user=utf8(get(User));draft.host.identityFile=utf8(get(Key));draft.port=utf8(get(Port));draft.host.autoConnect=SendMessageW(control(AutoConnect),BM_GETCHECK,0,0)==BST_CHECKED;draft.host.exitOnForwardFailure=SendMessageW(control(ExitFailure),BM_GETCHECK,0,0)==BST_CHECKED;draft.host.retryOnConnectionRefused=SendMessageW(control(RetryRefused),BM_GETCHECK,0,0)==BST_CHECKED;
     }
@@ -349,10 +430,16 @@ private:
         loading_=false;
     }
     void fillRuleEditor(){bool valid=settings_.drafts.contains(settings_.selected)&&rule_>=0&&static_cast<size_t>(rule_)<settings_.drafts.at(settings_.selected).host.forwards.size();for(int id:{RuleEdit,RuleDelete})EnableWindow(control(id),valid);}
-    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=CreateFontW(-MulDiv(10,uiDpi(ruleWindow_),72),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");for(int id:std::initializer_list<int>{RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
+    void updateRuleFont(){if(!ruleWindow_)return;HFONT old=ruleFont_;ruleFont_=uiFont(uiDpi(ruleWindow_));for(int id:std::initializer_list<int>{RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323})if(control(id))SendMessageW(control(id),WM_SETFONT,reinterpret_cast<WPARAM>(ruleFont_),TRUE);if(old)DeleteObject(old);}
     void layoutRule(){if(!ruleWindow_||!control(RuleOkay))return;RECT rect{};GetClientRect(ruleWindow_,&rect);int w=MulDiv(rect.right,96,uiDpi(ruleWindow_)),h=MulDiv(rect.bottom,96,uiDpi(ruleWindow_));
-        int row=h<260?30:36,first=h<260?36:48,footer=h-44;
-        place(RuleEnabled,16,8,w-32,24);place(323,16,first+4,110,22);place(RuleDescription,136,first,w-152,26);place(320,16,first+row+4,110,22);place(LocalPort,136,first+row,w-152,26);place(321,16,first+row*2+4,110,22);place(RemoteHost,136,first+row*2,w-152,26);place(322,16,first+row*3+4,110,22);place(RemotePort,136,first+row*3,w-152,26);place(RuleOkay,w-196,footer,84,30);place(RuleCancel,w-100,footer,84,30);
+        const int m=Spacing::margin,gap=Spacing::gap,ih=Spacing::input,bh=Spacing::button;
+        int row=h<240?30:ih+gap,first=h<240?36:44,footer=h-m-bh,labelWidth=0;
+        for(int id:{323,320,321,322})labelWidth=std::max(labelWidth,textWidth(id)+4);
+        place(RuleEnabled,m,6,w-2*m,ih);int index=0;
+        for(auto [labelID,editID]:{std::pair{323,RuleDescription},{320,LocalPort},{321,RemoteHost},{322,RemotePort}}){
+            int y=first+row*index++;place(labelID,m,y,labelWidth,ih);place(editID,m+labelWidth+gap,y,w-2*m-labelWidth-gap,ih);
+        }
+        place(RuleOkay,w-m-2*84-gap,footer,84,bh);place(RuleCancel,w-m-84,footer,84,bh);
     }
     void showRule(bool creating){if(appModal_){foregroundModal();return;}if(ruleWindow_){SetForegroundWindow(ruleWindow_);return;}if(status_||!settings_.open)return;capture();auto& host=settings_.drafts.at(settings_.selected).host;
         if(!creating&&(rule_<0||static_cast<size_t>(rule_)>=host.forwards.size()))return;
@@ -363,7 +450,7 @@ private:
         AdjustWindowRectExForDpi(&desiredClient,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_STYLE)),FALSE,static_cast<DWORD>(GetWindowLongPtrW(ruleWindow_,GWL_EXSTYLE)),GetDpiForWindow(ruleWindow_));
         centerInWorkArea(ruleWindow_,460,MulDiv(desiredClient.bottom-desiredClient.top,96,uiDpi(ruleWindow_)),settingsWindow_);
         make(ruleWindow_,RuleEnabled,L"BUTTON",L"사용",BS_AUTOCHECKBOX|WS_TABSTOP);SendMessageW(control(RuleEnabled),BM_SETCHECK,ruleDraft_->rule.enabled?BST_CHECKED:BST_UNCHECKED,0);
-        make(ruleWindow_,323,L"STATIC",L"설명 (선택)",0);make(ruleWindow_,320,L"STATIC",L"로컬 포트",0);make(ruleWindow_,321,L"STATIC",L"목적지 호스트",0);make(ruleWindow_,322,L"STATIC",L"목적지 포트",0);
+        make(ruleWindow_,323,L"STATIC",L"설명 (선택)",SS_CENTERIMAGE);make(ruleWindow_,320,L"STATIC",L"로컬 포트",SS_CENTERIMAGE);make(ruleWindow_,321,L"STATIC",L"목적지 호스트",SS_CENTERIMAGE);make(ruleWindow_,322,L"STATIC",L"목적지 포트",SS_CENTERIMAGE);
         for(int id:{RuleDescription,LocalPort,RemoteHost,RemotePort})make(ruleWindow_,id,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP);
         set(RuleDescription,wide(ruleDraft_->rule.description));set(LocalPort,wide(ruleDraft_->localPort));set(RemoteHost,wide(ruleDraft_->rule.remoteHost));set(RemotePort,wide(ruleDraft_->remotePort));
         make(ruleWindow_,RuleOkay,L"BUTTON",L"확인",WS_TABSTOP|BS_DEFPUSHBUTTON);make(ruleWindow_,RuleCancel,L"BUTTON",L"취소",WS_TABSTOP);
@@ -391,11 +478,11 @@ private:
     void refreshButtons(){if(!settings_.open)return;auto runtime=manager_->runtime(settings_.selected);bool busy=runtime&&(runtime->state==ConnectionState::connecting||runtime->state==ConnectionState::stopping);EnableWindow(control(Connect),!busy&&!quitting_);EnableWindow(control(Authentication),!uiPreview_&&!quitting_&&!authPending_.contains(settings_.selected));}
     void chooseKey(){std::vector<wchar_t> file(32768,0);auto value=get(Key);std::copy_n(value.begin(),std::min(value.size(),file.size()-1),file.begin());OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);dialog.hwndOwner=settingsWindow_;dialog.lpstrFile=file.data();dialog.nMaxFile=static_cast<DWORD>(file.size());dialog.lpstrTitle=L"개인키 파일 선택";dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;if(GetOpenFileNameW(&dialog)){set(Key,file.data());capture();preview();populateHosts();}}
     void showStatus(){if(appModal_){foregroundModal();return;}if(ruleWindow_)return;capture();if(status_){SetForegroundWindow(status_);return;}settings_.showStatus();if(settings_.modalHost.empty())return;status_=CreateWindowExW(WS_EX_CONTROLPARENT,StatusClass,L"현재 연결 상태",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,CW_USEDEFAULT,CW_USEDEFAULT,scale(760),scale(520),settingsWindow_,nullptr,instance_,this);if(!status_){settings_.closeStatus();throw std::runtime_error(winError());}centerInWorkArea(status_,760,520,settingsWindow_);
-        make(status_,StatusHeading,L"STATIC",L"",0);make(status_,StatusSummary,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusForwards,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP|WS_BORDER);ListView_SetExtendedListViewStyle(control(StatusForwards),LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);const wchar_t* names[]={L"규칙",L"출처",L"상태",L"상세"};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(names[i]);col.cx=scale(i==0?200:120);ListView_InsertColumn(control(StatusForwards),i,&col);}
+        make(status_,StatusHeading,L"STATIC",L"",SS_CENTERIMAGE|SS_ENDELLIPSIS);make(status_,StatusSummary,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusForwards,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP|WS_BORDER);ListView_SetExtendedListViewStyle(control(StatusForwards),LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);const wchar_t* names[]={L"규칙",L"출처",L"상태",L"상세"};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<LPWSTR>(names[i]);col.cx=scale(i==0?200:120);ListView_InsertColumn(control(StatusForwards),i,&col);}
         make(status_,StatusErrors,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP);make(status_,StatusClose,L"BUTTON",L"닫기",WS_TABSTOP|BS_DEFPUSHBUTTON);EnableWindow(settingsWindow_,FALSE);updateStatusFont();layoutStatus();refreshStatus();ShowWindow(status_,SW_SHOW);SetForegroundWindow(status_);SetFocus(control(StatusClose));
     }
-    void closeStatus(){if(!status_)return;HWND old=status_;status_=nullptr;for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})controls_.erase(id);DestroyWindow(old);if(statusFont_){DeleteObject(statusFont_);statusFont_=nullptr;}settings_.closeStatus();if(settingsWindow_){EnableWindow(settingsWindow_,TRUE);if(settings_.open)SetForegroundWindow(settingsWindow_);}}
-    void layoutStatus(){if(!status_||!control(StatusClose))return;RECT rect{};GetClientRect(status_,&rect);UINT dpi=uiDpi(status_);auto statusScale=[dpi](int value){return MulDiv(value,dpi,96);};int w=MulDiv(rect.right,96,dpi),h=MulDiv(rect.bottom,96,dpi);int footer=h-44,summaryHeight=std::clamp((h-150)/3,40,76),forwardsTop=54+summaryHeight,errorsHeight=std::clamp((h-150)/2,40,92),errorsTop=footer-10-errorsHeight;place(StatusHeading,12,12,w-24,26);place(StatusSummary,12,44,w-24,summaryHeight);place(StatusForwards,12,forwardsTop,w-24,std::max(24,errorsTop-forwardsTop-10));place(StatusErrors,12,errorsTop,w-24,errorsHeight);place(StatusClose,w-100,footer,88,30);ListView_SetColumnWidth(control(StatusForwards),0,statusScale(180));ListView_SetColumnWidth(control(StatusForwards),1,statusScale(85));ListView_SetColumnWidth(control(StatusForwards),2,statusScale(90));ListView_SetColumnWidth(control(StatusForwards),3,statusScale(std::max(160,w-395)));}
+    void closeStatus(){if(!status_)return;HWND old=status_;status_=nullptr;for(int id:{StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose})controls_.erase(id);DestroyWindow(old);if(statusFont_){DeleteObject(statusFont_);statusFont_=nullptr;}if(statusHeadingFont_){DeleteObject(statusHeadingFont_);statusHeadingFont_=nullptr;}settings_.closeStatus();if(settingsWindow_){EnableWindow(settingsWindow_,TRUE);if(settings_.open)SetForegroundWindow(settingsWindow_);}}
+    void layoutStatus(){if(!status_||!control(StatusClose))return;RECT rect{};GetClientRect(status_,&rect);UINT dpi=uiDpi(status_);auto statusScale=[dpi](int value){return MulDiv(value,dpi,96);};int w=MulDiv(rect.right,96,dpi),h=MulDiv(rect.bottom,96,dpi);int footer=h-Spacing::margin-Spacing::button,summaryHeight=std::clamp((h-150)/3,40,76),forwardsTop=54+summaryHeight,errorsHeight=std::clamp((h-150)/2,40,92),errorsTop=footer-10-errorsHeight;place(StatusHeading,12,12,w-24,26);place(StatusSummary,12,44,w-24,summaryHeight);place(StatusForwards,12,forwardsTop,w-24,std::max(24,errorsTop-forwardsTop-10));place(StatusErrors,12,errorsTop,w-24,errorsHeight);place(StatusClose,w-Spacing::margin-88,footer,88,Spacing::button);ListView_SetColumnWidth(control(StatusForwards),0,statusScale(180));ListView_SetColumnWidth(control(StatusForwards),1,statusScale(85));ListView_SetColumnWidth(control(StatusForwards),2,statusScale(90));ListView_SetColumnWidth(control(StatusForwards),3,statusScale(std::max(160,w-395)));}
     static std::wstring forwardTitle(ForwardState state){switch(state){case ForwardState::preparing:return L"준비 중";case ForwardState::ready:return L"준비됨";case ForwardState::failed:return L"개설 실패";case ForwardState::disconnected:return L"연결 끊김";case ForwardState::unknown:return L"확인 불가";}return L"확인 불가";}
     void refreshStatus(){if(!status_||settings_.modalHost.empty())return;auto runtime=manager_->runtime(settings_.modalHost);Host host;auto draft=settings_.drafts.find(settings_.modalHost);if(draft!=settings_.drafts.end())host=draft->second.host;if(runtime&&runtime->executionHost)host=*runtime->executionHost;set(StatusHeading,wide(host.name+" · "+host.target));std::string summary=runtime?runtime->summary():"SSH 연결 끊김 · 포워딩 준비 0 / 실패 0";if(runtime&&runtime->temporary)summary+="\n이번 실행의 임시 설정 사용 중";else if(runtime&&runtime->executionHost&&draft!=settings_.drafts.end()&&!sameExecutionSettings(*runtime->executionHost,draft->second.host))summary+="\n현재 실행 설정과 편집한 설정이 다릅니다.";set(StatusSummary,nativeLines(summary));
         SendMessageW(control(StatusForwards),WM_SETREDRAW,FALSE,0);ListView_DeleteAllItems(control(StatusForwards));if(runtime){for(size_t i=0;i<runtime->forwards.size();++i){auto& f=runtime->forwards[i];auto description=wide(f.description);LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=static_cast<int>(i);item.pszText=description.data();ListView_InsertItem(control(StatusForwards),&item);auto source=wide(f.source),state=forwardTitle(f.state),detail=wide(f.detail);ListView_SetItemText(control(StatusForwards),item.iItem,1,source.data());ListView_SetItemText(control(StatusForwards),item.iItem,2,state.data());ListView_SetItemText(control(StatusForwards),item.iItem,3,detail.data());}}
@@ -417,8 +504,10 @@ private:
         COLORREF color=GetSysColor(COLOR_MENUTEXT);if(color==RGB(0,0,0))color=RGB(32,32,32);
         HIGHCONTRASTW contrast{sizeof(contrast)};SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0);
         if(!(contrast.dwFlags&HCF_HIGHCONTRASTON)){if(icon==MenuIcon::ready)color=RGB(32,140,70);else if(icon==MenuIcon::failed)color=RGB(195,48,48);else if(icon==MenuIcon::preparing)color=RGB(40,112,190);else if(icon==MenuIcon::disabled||icon==MenuIcon::disconnected)color=RGB(116,116,116);}
-        HPEN pen=CreatePen(PS_SOLID,std::max(1,n/10),color);auto oldPen=SelectObject(dc,pen);auto oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
-        auto x=[n](int value){return MulDiv(value,n-1,16);};
+        int stroke=std::max(1,MulDiv(1,menuDpi_,96));
+        HPEN pen=CreatePen(PS_SOLID,stroke,color);auto oldPen=SelectObject(dc,pen);auto oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+        int inset=std::max(1,MulDiv(1,menuDpi_,96));
+        auto x=[n,inset](int value){return inset+MulDiv(value,n-1-2*inset,16);};
         auto line=[&](int a,int b,int c,int d){MoveToEx(dc,x(a),x(b),nullptr);LineTo(dc,x(c),x(d));};
         auto circle=[&]{Ellipse(dc,x(2),x(2),x(15),x(15));};
         switch(icon){
@@ -427,7 +516,7 @@ private:
         case MenuIcon::disconnected:circle();break;
         case MenuIcon::disabled:circle();line(5,8,11,8);break;
         case MenuIcon::preparing:case MenuIcon::reconnect:Arc(dc,x(2),x(2),x(15),x(15),x(3),x(5),x(13),x(5));line(13,2,13,6);line(13,6,9,6);break;
-        case MenuIcon::unknown:{circle();SetBkMode(dc,TRANSPARENT);SetTextColor(dc,color);HFONT font=CreateFontW(-n+3,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,L"Segoe UI");auto oldFont=SelectObject(dc,font);RECT area{0,-1,n,n};DrawTextW(dc,L"?",1,&area,DT_CENTER|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,oldFont);DeleteObject(font);break;}
+        case MenuIcon::unknown:{circle();SetBkMode(dc,TRANSPARENT);SetTextColor(dc,color);HFONT font=CreateFontW(-(n-2*inset),0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,L"Segoe UI");auto oldFont=SelectObject(dc,font);RECT area{inset,inset,n-inset,n-inset};DrawTextW(dc,L"?",1,&area,DT_CENTER|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,oldFont);DeleteObject(font);break;}
         case MenuIcon::settings:for(int i=0;i<8;++i){double angle=i*3.141592653589793/4;line(8+static_cast<int>(4*std::cos(angle)),8+static_cast<int>(4*std::sin(angle)),8+static_cast<int>(7*std::cos(angle)),8+static_cast<int>(7*std::sin(angle)));}Ellipse(dc,x(4),x(4),x(13),x(13));Ellipse(dc,x(6),x(6),x(11),x(11));break;
         case MenuIcon::connect:line(2,8,14,8);line(10,4,14,8);line(14,8,10,12);break;
         case MenuIcon::disconnect:Rectangle(dc,x(4),x(4),x(13),x(13));break;
@@ -510,6 +599,16 @@ public:
                 for(size_t j=i+1;j<ids.size();++j){auto b=bounds(control(ids[j]),parent);RECT overlap{};if(IntersectRect(&overlap,&a,&b))throw std::runtime_error("native controls overlap: "+std::to_string(ids[i])+" / "+std::to_string(ids[j])+" at simulated DPI "+std::to_string(previewDpi));}
             }
         };
+        auto verifyLabel=[&](int labelID,int editID,HWND parent){
+            auto label=bounds(control(labelID),parent),edit=bounds(control(editID),parent);
+            check((GetWindowLongPtrW(control(labelID),GWL_STYLE)&SS_CENTERIMAGE)!=0,"field label vertically centers text");
+            if(label.right<=edit.left)check(label.top==edit.top&&label.bottom==edit.bottom,"label occupies the full input row");
+            else check(label.bottom<edit.top,"stacked label has space before its input");
+            HDC dc=GetDC(control(labelID));auto old=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(control(labelID),WM_GETFONT,0,0)));
+            RECT text{};auto value=textOf(control(labelID));DrawTextW(dc,value.c_str(),-1,&text,DT_CALCRECT|DT_SINGLELINE|DT_NOPREFIX);
+            SelectObject(dc,old);ReleaseDC(control(labelID),dc);
+            check(text.right<=label.right-label.left&&text.bottom<=label.bottom-label.top,"label glyphs fit without clipping");
+        };
         auto verifySettings=[&]{
             RECT client{},formClient{};GetClientRect(settingsWindow_,&client);GetClientRect(form_,&formClient);
             auto okay=bounds(control(Okay),settingsWindow_),cancel=bounds(control(CancelButton),settingsWindow_),form=bounds(form_,settingsWindow_);
@@ -520,6 +619,10 @@ public:
             disjoint({NewHost,DeleteHost,Hosts,CancelButton,Okay},settingsWindow_);
             std::vector<int> ids={Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,CommandPreview,Save,Connect,Authentication,ConnectionStatus,300,301,302,303,304,305,309,310};
             disjoint(ids,form_);
+            for(auto [labelID,editID]:{std::pair{300,Name},{310,Description},{301,Target},{302,User},{303,Port},{304,Key}})verifyLabel(labelID,editID,form_);
+            for(int id:{ChooseKey,RuleNew,RuleEdit,RuleDelete,Save,Connect,Authentication,ConnectionStatus}){
+                auto button=bounds(control(id),form_);check(button.bottom-button.top==okay.bottom-okay.top,"all ordinary buttons share the footer height");
+            }
             for(int id:ids){auto rect=bounds(control(id),form_);check(rect.left>=formClient.left&&rect.right<=formClient.right,"form controls fit horizontally");}
             SetFocus(control(ConnectionStatus));ensureFocusVisible();check(inside(bounds(control(ConnectionStatus),form_),formClient),"keyboard focus scrolls final action into view");
             SetFocus(control(Name));ensureFocusVisible();check(inside(bounds(control(Name),form_),formClient),"keyboard focus scrolls first input into view");
@@ -534,9 +637,10 @@ public:
             SetWindowPos(window,nullptr,0,0,outer.right-outer.left,outer.bottom-outer.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         };
         UINT previousDpi=previewDpi;RECT original{};GetWindowRect(settingsWindow_,&original);
-        for(UINT dpi:{96u,144u,192u}){
+        for(UINT dpi:{96u,120u,144u,192u,240u}){
             previewDpi=dpi;updateFont();
-            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{900,650},{800,430}}){
+            for(const auto& logicalSize:std::vector<std::pair<int,int>>{{900,650},{800,430},{740,430},{739,430},{820,430},{850,430}}){
+                outputLine("layout probe DPI "+std::to_string(dpi)+" size "+std::to_string(logicalSize.first)+"x"+std::to_string(logicalSize.second));
                 resizeClient(settingsWindow_,logicalSize.first,logicalSize.second,dpi);
                 scroll_=0;layoutSettings();verifySettings();
             }
@@ -565,6 +669,7 @@ public:
                 RECT client{};GetClientRect(ruleWindow_,&client);std::vector<int> ids={RuleEnabled,RuleDescription,LocalPort,RemoteHost,RemotePort,RuleOkay,RuleCancel,320,321,322,323};
                 disjoint(ids,ruleWindow_);for(int id:ids)check(inside(bounds(control(id),ruleWindow_),client),"rule modal controls fit within client area");
             }
+            for(auto [labelID,editID]:{std::pair{323,RuleDescription},{320,LocalPort},{321,RemoteHost},{322,RemotePort}})verifyLabel(labelID,editID,ruleWindow_);
             closeRule(false);showStatus();
             GetWindowRect(status_,&actual);check(inside(actual,*previewWorkArea),"status modal fits narrow work area");
             RECT statusClient{};GetClientRect(status_,&statusClient);
@@ -770,13 +875,14 @@ public:
         manager_->quit();outputLine("native UI controller tests passed");
     }
     LRESULT message(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
+        if(msg==WM_CTLCOLORSTATIC||msg==WM_CTLCOLORBTN)return surfaceColor(w,l);
         if(hwnd==window_){if(taskbarCreated_&&msg==taskbarCreated_){trayAdded_=false;updateTray();return 0;}switch(msg){case WM_TASK:{std::unique_ptr<std::function<void()>> task(reinterpret_cast<std::function<void()>*>(l));(*task)();return 0;}case WM_TIMER:loop_->timer(w);return 0;case WM_OPEN_SETTINGS:if(menuOpen_)EndMenu();openSettings();return 1;case WM_TRAY:if(LOWORD(l)==WM_CONTEXTMENU||LOWORD(l)==WM_RBUTTONUP||LOWORD(l)==NIN_SELECT||LOWORD(l)==NIN_KEYSELECT)trayMenu();return 0;case WM_POWERBROADCAST:if(w==PBT_APMSUSPEND)manager_->sleep();else if(w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND)manager_->wake();return TRUE;case WM_QUERYENDSESSION:return TRUE;case WM_ENDSESSION:if(w)quit();return 0;case WM_CLOSE:quit();return 0;}}
         else{switch(msg){case WM_COMMAND:command(LOWORD(w),HIWORD(w));return 0;case WM_NOTIFY:{auto* notification=reinterpret_cast<NMHDR*>(l);if(notification->idFrom==Rules){if(notification->code==LVN_ITEMCHANGED)ruleChanged(reinterpret_cast<NMLISTVIEW*>(l));else if(notification->code==NM_DBLCLK)showRule(false);}return 0;}case WM_SIZE:layoutSettings();return 0;case WM_GETMINMAXINFO:{constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),800,430);return 0;}case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateFont();layoutSettings();return 0;}case WM_CLOSE:closeSettings(false);return 0;}}
         return DefWindowProcW(hwnd,msg,w,l);
     }
-    LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),600,390);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
-    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,270);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:return surfaceColor(w,l);case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT statusMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:return surfaceColor(w,l);case WM_COMMAND:if(LOWORD(w)==StatusClose||LOWORD(w)==IDOK||LOWORD(w)==IDCANCEL)closeStatus();return 0;case WM_CLOSE:closeStatus();return 0;case WM_SIZE:layoutStatus();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),600,390);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateStatusFont();layoutStatus();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
+    LRESULT ruleMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:return surfaceColor(w,l);case WM_COMMAND:if(LOWORD(w)==RuleOkay||LOWORD(w)==IDOK)closeRule(true);else if(LOWORD(w)==RuleCancel||LOWORD(w)==IDCANCEL)closeRule(false);return 0;case WM_CLOSE:closeRule(false);return 0;case WM_SIZE:layoutRule();return 0;case WM_GETMINMAXINFO:constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),400,270);return 0;case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateRuleFont();layoutRule();return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
     void caught(const std::exception& exception){error(exception.what());}
 };
 template<class F>LRESULT dispatchWindow(HWND hwnd,UINT msg,WPARAM w,LPARAM l,F&& invoke){auto* app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));if(msg==WM_NCCREATE){app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));}if(app){try{return invoke(*app);}catch(const std::exception& e){app->caught(e);return 0;}}return DefWindowProcW(hwnd,msg,w,l);}
@@ -798,11 +904,14 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
             if(args[1]==L"--test-instance-peer"&&args.size()==3){if(!safeId(utf8(args[2])))throw std::runtime_error("Invalid test instance key");SingleInstance peer;if(peer.acquire(args[2]))throw std::runtime_error("Test instance was not already running");if(SUCCEEDED(com))CoUninitialize();return 0;}
             if(args[1]==L"--open-config"&&args.size()==2)open=true;
             else if(args[1]==L"--test-manager"&&(args.size()==4||(args.size()==5&&args[4]==L"--no-start"))){test=true;directory=args[2];config=utf8(args[3]);start=args.size()==4;}
-            else if(args[1]==L"--test-ui-preview"&&(args.size()==2||args.size()==3)){
-                if(args.size()==3){if(args[2]!=L"96"&&args[2]!=L"144"&&args[2]!=L"192")throw std::runtime_error("Preview DPI must be 96, 144 or 192");previewDpi=static_cast<UINT>(std::stoi(args[2]));}
+            else if(args[1]==L"--test-ui-preview"&&(args.size()>=2&&args.size()<=4)){
+                if(args.size()>=3){if(args[2]!=L"96"&&args[2]!=L"120"&&args[2]!=L"144"&&args[2]!=L"192"&&args[2]!=L"240")throw std::runtime_error("Preview DPI must be 96, 120, 144, 192 or 240");previewDpi=static_cast<UINT>(std::stoi(args[2]));}
+                if(args.size()==4){previewScene=args[3];if(std::set<std::wstring>{L"settings",L"long",L"empty",L"rule",L"status",L"about",L"confirm",L"error",L"tray",L"tray-host"}.count(previewScene)==0)throw std::runtime_error("Unknown preview scene");}
                 test=true;uiTest=true;uiPreview=true;start=false;directory=fs::temp_directory_path()/wide("LocalForwarder-preview-"+newId());ownedTestDirectory=directory;
                 Host a;a.id="a";a.name="개발 서버";a.description="개발 DB와 웹 서비스의 연결 용도를 설명하는 긴 한 줄 설명";a.target="development-server.example.invalid";a.forwards={{"db",true,15432,"database.internal.example.invalid",5432,"개발 데이터베이스 조회와 관리 도구에서 사용하는 연결"},{"web",true,18080,"localhost",80,"로컬 웹 서비스 확인"},{"disabled",false,16379,"cache.internal",6379,"필요할 때만 사용하는 캐시 관리"}};
                 for(int i=0;i<8;++i)a.forwards.push_back({"extra-"+std::to_string(i),false,19000+i,"localhost",80});
+                if(previewScene==L"empty")a.forwards.clear();
+                if(previewScene==L"long"){a.name="개발 서버 — 긴 한글 이름과 English name";a.user="developer";a.port=2222;a.identityFile="C:\\Users\\developer\\Documents\\SSH keys\\development-environment-very-long-key-name";}
                 Host b=a;b.id="b";b.name="수동 연결 서버";b.autoConnect=false;saveHost(directory,a);saveHost(directory,b);
             }
             else if(args[1]==L"--test-ui"&&args.size()==2){test=true;uiTest=true;start=false;directory=fs::temp_directory_path()/wide("LocalForwarder-ui-"+newId());ownedTestDirectory=directory;Host a;a.id="a";a.name="A";a.target="server-a";a.forwards.push_back({"f",true,12000,"localhost",80});Host b=a;b.id="b";b.name="B";b.target="server-b";b.autoConnect=false;saveHost(directory,a);saveHost(directory,b);}
