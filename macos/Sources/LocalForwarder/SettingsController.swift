@@ -600,7 +600,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         add(adaptive([autoConnect, exitOnFailure, retryRefused], spacing: 12))
         add(localizedLabel("mac.edit.forwarding.local.access.only.127.0.0.1", wrapping: true))
         for (id, title, width) in [("enabled", "mac.enabled", 48.0), ("localPort", "mac.local.port", 90.0), ("remoteHost", "mac.destination.host", 270.0), ("remotePort", "mac.destination.port", 100.0), ("description", "mac.description", 220.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(width, column.headerCell.cellSize.width + 16);
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(CGFloat(width), column.headerCell.cellSize.width + 16);
             languageBindings.append { [weak column] in if let column { column.title = L10n.text(title); column.width = max(column.width, column.headerCell.cellSize.width + 16) } }; column.isEditable = id == "enabled"
             if id == "enabled" { let cell = NSButtonCell(); cell.setButtonType(.switch); cell.title = ""; column.dataCell = cell }
             rulesTable.addTableColumn(column)
@@ -612,7 +612,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         add(adaptive([button("mac.new.rule.2", #selector(addRule)), editRuleButton, deleteRuleButton]))
         add(localizedLabel("mac.ssh.command.for.your.edits.read.only", wrapping: true)); add(scroll(command, height: 64))
         for (id, title, width) in [("description", "mac.forwarding", 260.0), ("source", "mac.source", 90.0), ("state", "mac.status", 90.0), ("detail", "mac.details", 280.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(width, column.headerCell.cellSize.width + 16);
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(CGFloat(width), column.headerCell.cellSize.width + 16);
             languageBindings.append { [weak column] in if let column { column.title = L10n.text(title); column.width = max(column.width, column.headerCell.cellSize.width + 16) } }; column.isEditable = false; runtimeTable.addTableColumn(column)
         }
         runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24
