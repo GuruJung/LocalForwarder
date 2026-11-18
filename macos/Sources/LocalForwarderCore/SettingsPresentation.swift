@@ -1,5 +1,15 @@
 import Foundation
 
+/// Explicit editor action; equal ports preserve their original relative order, including disabled rules.
+public enum ForwardOrder {
+    public static func byLocalPort(_ rules: [Forward]) -> [Forward] {
+        rules.enumerated().sorted { left, right in
+            if left.element.localPort == right.element.localPort { return left.offset < right.offset }
+            return left.element.localPort < right.element.localPort
+        }.map(\.element)
+    }
+}
+
 /// A modal owns this value until validation succeeds; cancelling never touches the host draft.
 public struct RuleDraft {
     public var rule: Forward

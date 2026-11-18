@@ -121,6 +121,7 @@ enum NativeLayoutChecks {
             L10n.configure(selection: language)
             writeLine("LF_UI_LANGUAGE " + language)
             try SettingsController.checkNativeLayout(store: store, manager: manager)
+            try SettingsController.checkForwardSorting()
             try MainActor.assumeIsolated { try AppDelegate.checkAppDialogs(store: store) }
         }
     }

@@ -53,6 +53,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private let statusHeading = NSTextField(wrappingLabelWithString: "")
     private var editRuleButton: NSButton!
     private var deleteRuleButton: NSButton!
+    private var sortRuleButton: NSButton!
     private var connectButton: NSButton!
     private var authButton: NSButton!
     private var order: [String] = []
@@ -328,6 +329,25 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private func updateRuleButtons() {
         let valid = selectedID.flatMap { drafts[$0]?.host.forwards.indices.contains(rulesTable.selectedRow) } ?? false
         editRuleButton?.isEnabled = valid; deleteRuleButton?.isEnabled = valid
+        sortRuleButton?.isEnabled = selectedID.flatMap { drafts[$0]?.host.forwards.count }.map { $0 >= 2 } ?? false
+    }
+    @objc private func sortRulesByLocalPort() {
+        guard window.attachedSheet == nil, ruleEditor == nil, statusSheet == nil, NSApp.modalWindow == nil else { return }
+        finishEditing()
+        guard let id = selectedID, var draft = drafts[id], draft.host.forwards.count >= 2 else { return }
+        let selectedRule = draft.host.forwards.indices.contains(rulesTable.selectedRow) ? draft.host.forwards[rulesTable.selectedRow].id : nil
+        let sorted = ForwardOrder.byLocalPort(draft.host.forwards)
+        guard sorted != draft.host.forwards else { return }
+        draft.host.forwards = sorted
+        drafts[id] = draft
+        rulesTable.reloadData()
+        rulesTable.deselectAll(nil)
+        if let selectedRule, let row = sorted.firstIndex(where: { $0.id == selectedRule }) {
+            rulesTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        updateRuleButtons()
+        hostsTable.reloadData()
+        updateCommand()
     }
     @objc private func deleteRule() {
         let row = rulesTable.selectedRow; finishEditing()
@@ -609,7 +629,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         rulesTable.target = self; rulesTable.doubleAction = #selector(editRule)
         add(scroll(rulesTable, height: 120))
         editRuleButton = button("mac.edit.rule.2", #selector(editRule)); deleteRuleButton = button("mac.delete.rule", #selector(deleteRule))
-        add(adaptive([button("mac.new.rule.2", #selector(addRule)), editRuleButton, deleteRuleButton]))
+        sortRuleButton = button("mac.sort.by.local.port", #selector(sortRulesByLocalPort))
+        add(adaptive([button("mac.new.rule.2", #selector(addRule)), editRuleButton, deleteRuleButton, sortRuleButton]))
         add(localizedLabel("mac.ssh.command.for.your.edits.read.only", wrapping: true)); add(scroll(command, height: 64))
         for (id, title, width) in [("description", "mac.forwarding", 260.0), ("source", "mac.source", 90.0), ("state", "mac.status", 90.0), ("detail", "mac.details", 280.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(CGFloat(width), column.headerCell.cellSize.width + 16);
@@ -665,6 +686,119 @@ extension SettingsController {
                                            "language switch preserves scroll position")
         }
     }
+    /// Exercise the real action and table selection independently of the host validation/save path.
+    static func checkForwardSorting() throws {
+        final class Session: SSHSessionProtocol {
+            var state: ConnectionState = .disconnected
+            let lastError = ""
+            var forwards: [ForwardRuntime] = []
+            var onChange: (() -> Void)?
+            var onError: ((String) -> Void)?
+            var starts = 0, stops = 0
+            func start(_ host: Host) {
+                starts += 1; state = .connected
+                forwards = ForwardTracker(host: host).forwards
+                for index in forwards.indices { forwards[index].state = .ready }
+                onChange?()
+            }
+            func stop(completion: @escaping () -> Void) { stops += 1; state = .disconnected; onChange?(); completion() }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("LocalForwarder-sort-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(directory: directory)
+        let original = Host(id: "sorted-host", name: "Sort fixture", target: "sort.invalid", forwards: [
+            Forward(id: "high", localPort: 10000, remoteHost: "high.invalid", remotePort: 1, description: "high"),
+            Forward(id: "tie-first", enabled: false, localPort: 1000, remoteHost: "first.invalid", remotePort: 2, description: "first"),
+            Forward(id: "low", localPort: 80, remoteHost: "low.invalid", remotePort: 3, description: "low"),
+            Forward(id: "tie-second", enabled: false, localPort: 1000, remoteHost: "second.invalid", remotePort: 4, description: "second"),
+            Forward(id: "middle", localPort: 443, remoteHost: "middle.invalid", remotePort: 5, description: "middle")], autoConnect: false)
+        let other = Host(id: "other-host", name: "Other", target: "other.invalid", autoConnect: false)
+        try store.save(original); try store.save(other)
+        let file = try Data(contentsOf: store.file)
+        var sessions: [Session] = []
+        var scheduled = 0, cancelled = 0
+        let manager = ConnectionManager(store: store, sessionFactory: {
+            let session = Session(); sessions.append(session); return session
+        }, schedule: { _, _ in scheduled += 1; return ConnectionCancellation { cancelled += 1 } })
+        defer { manager.quit() }
+        try manager.connect(original.id)
+        manager.networkChanged(available: false); manager.networkChanged(available: true)
+        let runtime = manager.runtime(original.id)!
+        let starts = sessions.map(\.starts), stops = sessions.map(\.stops)
+        let scheduledBefore = scheduled, cancelledBefore = cancelled
+        let controller = SettingsController(store: store, manager: manager)
+        controller.open(select: original.id)
+        defer { controller.finish(accepted: false) }
+        controller.drafts[other.id]!.host.description = "unsaved other host"
+        let otherDraft = controller.drafts[other.id]
+        controller.nameField.stringValue = ""
+        controller.targetField.stringValue = ""
+        controller.portField.stringValue = "unfinished"
+        controller.changed()
+        let unsorted = controller.drafts[original.id]!
+        controller.rulesTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        try NativeLayoutChecks.require(controller.sortRuleButton.isEnabled, "sort available for unfinished host with multiple rules")
+        controller.sortRuleButton.performClick(nil)
+        let sorted = controller.drafts[original.id]!
+        try NativeLayoutChecks.require(sorted.host.forwards == [original.forwards[2], original.forwards[4], original.forwards[1], original.forwards[3], original.forwards[0]],
+                                       "numeric stable sort includes disabled rules and preserves every rule field")
+        try NativeLayoutChecks.require(controller.rulesTable.selectedRow == 4 && sorted.host.forwards[4].id == "high", "selected rule follows its ID")
+        try NativeLayoutChecks.require(sorted.rulePorts == unsorted.rulePorts && sorted.host.name.isEmpty && sorted.host.target.isEmpty && sorted.portText == "unfinished" && controller.portField.stringValue == "unfinished", "sort preserves incomplete input and port text cache")
+        try NativeLayoutChecks.require(controller.drafts[other.id] == otherDraft && controller.dirty(original.id), "sort preserves other drafts and marks changed order dirty")
+        try NativeLayoutChecks.require(try Data(contentsOf: store.file) == file, "sort does not save")
+        // Editing after reorder must target the moved rule and must not automatically re-sort.
+        controller.editRule()
+        guard let editor = controller.ruleEditor else { throw AppError("Sort test: missing selected rule editor") }
+        try NativeLayoutChecks.settle(editor.window)
+        let fields = editor.window.contentView!.subviews.flatMap { NativeLayoutChecks.leaves($0) }.compactMap { $0 as? NSTextField }.filter(\.isEditable)
+        try NativeLayoutChecks.require(fields.count == 4 && fields[0].stringValue == "high", "edit targets the selected ID after sort")
+        let modalDrafts = controller.drafts
+        controller.sortRulesByLocalPort()
+        try NativeLayoutChecks.require(controller.drafts == modalDrafts, "rule modal blocks sorting")
+        fields[0].stringValue = "edited high"; fields[1].stringValue = "79"
+        let buttons = editor.window.contentView!.subviews.flatMap { NativeLayoutChecks.leaves($0) }.compactMap { $0 as? NSButton }
+        guard let confirm = buttons.first(where: { $0.title == L10n.text("mac.ok") }) else { throw AppError("Sort test: missing rule confirmation") }
+        confirm.performClick(nil)
+        try NativeLayoutChecks.settle(controller.window)
+        try NativeLayoutChecks.require(controller.ruleEditor == nil && controller.rulesTable.selectedRow == 4 && controller.drafts[original.id]!.host.forwards[4].id == "high" && controller.drafts[original.id]!.host.forwards[4].localPort == 79 && controller.drafts[original.id]!.host.forwards[4].description == "edited high", "edit changes the correct rule without automatic sorting")
+        let enabled = controller.rulesTable.tableColumns.first { $0.identifier.rawValue == "enabled" }!
+        controller.tableView(controller.rulesTable, setObjectValue: NSNumber(value: false), for: enabled, row: controller.rulesTable.selectedRow)
+        try NativeLayoutChecks.require(!controller.drafts[original.id]!.host.forwards[4].enabled && controller.drafts[original.id]!.host.forwards[0].enabled, "checkbox targets moved selection only")
+        controller.deleteRule()
+        try NativeLayoutChecks.require(controller.drafts[original.id]!.host.forwards.map(\.id) == ["low", "middle", "tie-first", "tie-second"], "delete targets moved selection only")
+        // Restore this isolated draft and check no-selection, no-op, disabled and save/cancel behavior.
+        controller.drafts[original.id] = HostDraft(original); controller.select(original.id)
+        controller.rulesTable.deselectAll(nil)
+        controller.sortRuleButton.performClick(nil)
+        try NativeLayoutChecks.require(controller.rulesTable.selectedRow == -1, "sort does not invent a selection")
+        let once = controller.drafts
+        controller.sortRuleButton.performClick(nil)
+        try NativeLayoutChecks.require(controller.drafts == once && controller.rulesTable.selectedRow == -1, "already sorted action is a no-op")
+        for count in [0, 1] {
+            controller.drafts[original.id]!.host.forwards = Array(original.forwards.prefix(count)); controller.updateRuleButtons()
+            try NativeLayoutChecks.require(!controller.sortRuleButton.isEnabled, "sort disabled with fewer than two rules")
+        }
+        controller.selectedID = nil; controller.updateRuleButtons()
+        try NativeLayoutChecks.require(!controller.sortRuleButton.isEnabled, "sort disabled without selected host")
+        controller.drafts = once; controller.select(original.id)
+        controller.cancel(); controller.open(select: original.id)
+        try NativeLayoutChecks.require(controller.drafts[original.id]!.host == original && !controller.dirty(original.id), "cancel and reopen discard unsaved order")
+        controller.sortRuleButton.performClick(nil)
+        let preview = controller.command.string
+        guard let low = preview.range(of: "127.0.0.1:80:"), let middle = preview.range(of: "127.0.0.1:443:"), let high = preview.range(of: "127.0.0.1:10000:") else { throw AppError("Sort test: missing forwarding command preview") }
+        try NativeLayoutChecks.require(low.lowerBound < middle.lowerBound && middle.lowerBound < high.lowerBound, "command preview follows numeric draft order")
+        let saved = try controller.saveSelected()
+        controller.sortRuleButton.performClick(nil)
+        try NativeLayoutChecks.require(!controller.dirty(original.id), "already sorted saved host stays clean")
+        controller.cancel(); controller.open(select: original.id)
+        try NativeLayoutChecks.require(controller.drafts[original.id]!.host == saved && saved.forwards.map(\.id) == ["low", "middle", "tie-first", "tie-second", "high"], "explicit save survives reopen")
+        try NativeLayoutChecks.require(try ConfigurationStore(directory: directory).host(original.id) == saved && store.host(other.id) == other, "saved order survives fresh store and leaves other host untouched")
+        let after = manager.runtime(original.id)!
+        try NativeLayoutChecks.require(after.state == runtime.state && after.desiredConnected == runtime.desiredConnected && after.executionHost == runtime.executionHost && after.forwards == runtime.forwards && sessions.map(\.starts) == starts && sessions.map(\.stops) == stops && scheduled == scheduledBefore && cancelled == cancelledBefore,
+                                       "sorting and saving preserve active SSH, forwarding state and recovery reservation")
+        writeLine("LF_UI_FORWARD_SORT " + L10n.language + " passed")
+    }
+
     static func checkNativeLayout(store: ConfigurationStore, manager: ConnectionManager) throws {
         for (area, sizes) in [
             (NSSize(width: 940, height: 720), [NSSize(width: 900, height: 650), NSSize(width: 800, height: 430), NSSize(width: 900, height: 650)]),
@@ -676,7 +810,7 @@ extension SettingsController {
             let expectedForm = NativeLayoutChecks.leaves(controller.formStack)
             let expectedSidebar = NativeLayoutChecks.leaves(controller.sidebarStack)
             let expectedFooter = NativeLayoutChecks.leaves(controller.footerStack)
-            try NativeLayoutChecks.require(expectedForm.count == 27 && expectedSidebar.count == 3 && expectedFooter.count == 2,
+            try NativeLayoutChecks.require(expectedForm.count == 28 && expectedSidebar.count == 3 && expectedFooter.count == 2,
                                            "unexpected control inventory; update the coverage when adding controls")
             for size in sizes {
                 controller.window.setContentSize(size)
