@@ -43,7 +43,7 @@ LRESULT surfaceColor(WPARAM value,LPARAM child){
     return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
 }
 UINT uiDpi(HWND window){return previewDpi?previewDpi:GetDpiForWindow(window);}
-constexpr UINT WM_TASK=WM_APP+1,WM_TRAY=WM_APP+2,WM_OPEN_SETTINGS=WM_APP+3;
+constexpr UINT WM_TASK=WM_APP+1,WM_TRAY=WM_APP+2,WM_OPEN_SETTINGS=WM_APP+3,WM_REMEMBER_SETTINGS_FOCUS=WM_APP+4;
 constexpr wchar_t AppClass[]=L"LocalForwarder.MultiHost.Window";
 constexpr wchar_t FormClass[]=L"LocalForwarder.MultiHost.Form";
 constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
@@ -164,6 +164,14 @@ LRESULT CALLBACK editProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_NCDESTROY)RemoveWindowSubclass(hwnd,editProc,1);
     return DefSubclassProc(hwnd,msg,w,l);
 }
+// Remember the settings child before Shell/menu activation clears thread focus.
+// This also covers moving to a button/list and caret changes made since WM_SETFOCUS.
+LRESULT CALLBACK settingsFocusProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR owner){
+    if(msg==WM_SETFOCUS||msg==WM_KILLFOCUS)
+        SendMessageW(reinterpret_cast<HWND>(owner),WM_REMEMBER_SETTINGS_FOCUS,reinterpret_cast<WPARAM>(hwnd),0);
+    if(msg==WM_NCDESTROY)RemoveWindowSubclass(hwnd,settingsFocusProc,2);
+    return DefSubclassProc(hwnd,msg,w,l);
+}
 class App;
 LRESULT CALLBACK appProc(HWND,UINT,WPARAM,LPARAM);
 LRESULT CALLBACK formProc(HWND,UINT,WPARAM,LPARAM);
@@ -181,6 +189,26 @@ class App{
     bool appModal_=false;
     HWND appModalWindow_=nullptr;
     std::function<void(HWND,const TASKDIALOGCONFIG&)> dialogTest_;
+    std::function<UINT(HMENU,HWND)> traySelectionTest_;
+    struct SettingsFocus { HWND child=nullptr;bool edit=false;DWORD begin=0,end=0; };
+    SettingsFocus settingsFocus_;
+    void rememberSettingsFocus(HWND child){
+        if(!settings_.open||!settingsWindow_||!child||!IsWindow(child)||!IsChild(settingsWindow_,child))return;
+        SettingsFocus value;value.child=child;wchar_t kind[32]{};GetClassNameW(child,kind,32);
+        value.edit=_wcsicmp(kind,L"EDIT")==0;
+        if(value.edit)SendMessageW(child,EM_GETSEL,reinterpret_cast<WPARAM>(&value.begin),reinterpret_cast<LPARAM>(&value.end));
+        settingsFocus_=value;
+    }
+    SettingsFocus languageFocusSnapshot(){rememberSettingsFocus(GetFocus());return settingsFocus_;}
+    void restoreSettingsFocus(const SettingsFocus& focus){
+        if(quitting_||appModal_||ruleWindow_||status_||!settings_.open||!settingsWindow_||
+           !IsWindowVisible(settingsWindow_)||IsIconic(settingsWindow_)||!IsWindowEnabled(settingsWindow_)||!focus.child||
+           !IsWindow(focus.child)||!IsChild(settingsWindow_,focus.child)||
+           !IsWindowVisible(focus.child)||!IsWindowEnabled(focus.child))return;
+        SetForegroundWindow(settingsWindow_);SetFocus(focus.child);
+        if(focus.edit)SendMessageW(focus.child,EM_SETSEL,focus.begin,focus.end);
+        settingsFocus_=focus;
+    }
     std::function<bool(HWND,const wchar_t*)> openURL_=[](HWND owner,const wchar_t* url){
         return reinterpret_cast<INT_PTR>(ShellExecuteW(owner,L"open",url,nullptr,nullptr,SW_SHOWNORMAL))>32;
     };
@@ -270,7 +298,7 @@ class App{
     void set(int id,const std::wstring& value){if(control(id))setText(control(id),value);}
     std::wstring get(int id)const{return control(id)?textOf(control(id)):L"";}
     void error(const std::string& text){if(test_&&!uiPreview_){auto flat=text;std::replace(flat.begin(),flat.end(),'\n',' ');outputLine("LF_ERROR "+flat);}else MessageBoxW(ruleWindow_?ruleWindow_:(status_?status_:(settings_.open?settingsWindow_:window_)),wide(text).c_str(),L"LocalForwarder",MB_OK|MB_ICONWARNING);}
-    HWND make(HWND parent,int id,const wchar_t* kind,const wchar_t* text,DWORD style){auto h=CreateWindowExW((std::wstring(kind)==L"EDIT")?WS_EX_CLIENTEDGE:0,kind,text,WS_CHILD|WS_VISIBLE|style,0,0,1,1,parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);if(!h)throw LocalizedError(winError());controls_[id]=h;auto translationKey=wideTranslationKey(text);if(!translationKey.empty())controlTranslations_[id]=translationKey;else controlTranslations_.erase(id);if(std::wstring(kind)==L"EDIT")SetWindowSubclass(h,editProc,1,0);HFONT font=id==CommandPreview?previewFont_:((id==305||id==309)?headingFont_:font_);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);return h;}
+    HWND make(HWND parent,int id,const wchar_t* kind,const wchar_t* text,DWORD style){auto h=CreateWindowExW((std::wstring(kind)==L"EDIT")?WS_EX_CLIENTEDGE:0,kind,text,WS_CHILD|WS_VISIBLE|style,0,0,1,1,parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);if(!h)throw LocalizedError(winError());controls_[id]=h;auto translationKey=wideTranslationKey(text);if(!translationKey.empty())controlTranslations_[id]=translationKey;else controlTranslations_.erase(id);if(std::wstring(kind)==L"EDIT")SetWindowSubclass(h,editProc,1,0);if(settingsWindow_&&(parent==settingsWindow_||IsChild(settingsWindow_,parent)))SetWindowSubclass(h,settingsFocusProc,2,reinterpret_cast<DWORD_PTR>(settingsWindow_));HFONT font=id==CommandPreview?previewFont_:((id==305||id==309)?headingFont_:font_);SendMessageW(h,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);return h;}
     void place(int id,int x,int y,int width,int height){if(control(id)){UINT dpi=uiDpi(GetParent(control(id)));MoveWindow(control(id),MulDiv(x,dpi,96),MulDiv(y,dpi,96),MulDiv(std::max(1,width),dpi,96),MulDiv(std::max(1,height),dpi,96),TRUE);}}
     void label(int id,const wchar_t* text){make(form_,id,L"STATIC",text,(id==305||id==309)?0:SS_CENTERIMAGE);}
     // Measure the selected font, including Korean glyph fallback, before arranging rows.
@@ -577,16 +605,18 @@ private:
         }
         updateTray();
     }
-    void changeLanguage(const std::string& requested){
+    void changeLanguage(const std::string& requested,const SettingsFocus* trayFocus=nullptr){
         if(quitting_||foregroundModal())return;
-        capture();HWND focus=GetFocus();
-        selectLanguage(requested,systemUILanguages(),test_?std::function<void(const std::string&)>{}:persistLanguage);
-        refreshLanguage();
-        if(focus&&IsWindow(focus)&&IsWindowEnabled(focus))SetFocus(focus);
+        capture();auto focus=trayFocus?*trayFocus:languageFocusSnapshot();
+        try{
+            selectLanguage(requested,systemUILanguages(),test_?std::function<void(const std::string&)>{}:persistLanguage);
+            refreshLanguage();
+        }catch(...){restoreSettingsFocus(focus);throw;}
+        restoreSettingsFocus(focus);
     }
     void destroyTrayMenu(){if(activeMenu_)DestroyMenu(activeMenu_);activeMenu_=nullptr;menus_.clear();clearMenuBitmaps();}
-    void trayMenu(){if(quitting_||menuOpen_||foregroundModal())return;createTrayMenu();POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);menuOpen_=true;UINT selected=TrackPopupMenuEx(activeMenu_,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,window_,nullptr);menuOpen_=false;destroyTrayMenu();PostMessageW(window_,WM_NULL,0,0);
-        try{if(selected>=20&&selected<21+languages().size()){changeLanguage(selected==20?"auto":languages().at(selected-21).id);}else if(selected==1)openSettings();else if(selected==4){auto message=loginStartup_.toggle();if(!message.empty()){if(test_)error(message);else MessageBoxW(window_,wide(message).c_str(),tw("win.launch_at_login"),MB_OK|MB_ICONWARNING);}}else if(selected==2)manager_->reconnectAll();else if(selected==5)confirmDisconnectAll();else if(selected==6)showAbout();else if(selected==3)quit();else if(menuActions_.contains(selected)){auto [id,operation]=menuActions_.at(selected);if(operation==1)manager_->connect(id);else if(operation==2)manager_->disconnect(id);else openSettings(id);}}catch(const std::exception& e){error(e.what());}menuActions_.clear();
+    void trayMenu(){if(quitting_||menuOpen_||foregroundModal())return;auto languageFocus=languageFocusSnapshot();createTrayMenu();POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);menuOpen_=true;UINT selected=test_&&traySelectionTest_?traySelectionTest_(activeMenu_,window_):TrackPopupMenuEx(activeMenu_,TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,window_,nullptr);menuOpen_=false;destroyTrayMenu();PostMessageW(window_,WM_NULL,0,0);
+        try{if(selected>=20&&selected<21+languages().size()){changeLanguage(selected==20?"auto":languages().at(selected-21).id,&languageFocus);}else if(selected==1)openSettings();else if(selected==4){auto message=loginStartup_.toggle();if(!message.empty()){if(test_)error(message);else MessageBoxW(window_,wide(message).c_str(),tw("win.launch_at_login"),MB_OK|MB_ICONWARNING);}}else if(selected==2)manager_->reconnectAll();else if(selected==5)confirmDisconnectAll();else if(selected==6)showAbout();else if(selected==3)quit();else if(menuActions_.contains(selected)){auto [id,operation]=menuActions_.at(selected);if(operation==1)manager_->connect(id);else if(operation==2)manager_->disconnect(id);else openSettings(id);}}catch(const std::exception& e){error(e.what());}menuActions_.clear();
     }
     void refresh(){if(!manager_)return;if(test_&&!uiTest_){snapshot();return;}updateTray();if(test_&&!uiPreview_&&menuOpen_)updateMenu();if(settings_.open){populateHosts();refreshButtons();refreshStatus();}}
     void quit(){if(quitting_)return;quitting_=true;if(appModalWindow_)SendMessageW(appModalWindow_,TDM_CLICK_BUTTON,IDCANCEL,0);network_.stop();closeRule(false);closeStatus();for(auto& [id,cancel]:authObservers_)if(cancel)cancel();authObservers_.clear();manager_->quit();}
@@ -750,10 +780,36 @@ public:
         check(probe->ran&&result==IDOK&&IsWindowEnabled(owner),"native warning closes and restores its owner");
         check(settings_.selected==selected&&settings_.drafts==drafts,"native warning probe preserves selection and drafts");
     }
+    void nativeTrayLanguageFocusChecks(){
+        auto check=[](bool value,const char* why){if(!value)throw LocalizedError(why);};
+        auto originalLanguage=languageSelection();auto originalPort=get(Port);int originalScroll=scroll_;
+        set(Port,L"invalid");capture();auto drafts=settings_.drafts;auto selected=settings_.selected;
+        auto saved=loadConfig(directory_);auto execution=manager_->runtime("a")->executionHost;
+        SetForegroundWindow(settingsWindow_);SetFocus(control(Name));SendMessageW(control(Name),EM_SETSEL,2,5);
+        scrollForm(SB_LINEDOWN);int scrollBefore=scroll_;bool popupCalled=false,focusMoved=false;
+        traySelectionTest_=[&](HMENU menu,HWND owner)->UINT{
+            popupCalled=menu&&owner==window_&&GetSubMenu(menu,1);
+            // The real tray path has already foregrounded its owner. Force loss of
+            // thread focus, as Shell/menu activation can do, before dispatching.
+            SetFocus(nullptr);focusMoved=GetFocus()!=control(Name);return 24; // German
+        };
+        // Simulate deactivation before WM_TRAY arrives, not merely before selection.
+        SetFocus(nullptr);SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
+        DWORD begin=0,end=0;SendMessageW(control(Name),EM_GETSEL,reinterpret_cast<WPARAM>(&begin),reinterpret_cast<LPARAM>(&end));
+        check(popupCalled&&focusMoved&&currentLanguage()=="de","WM_TRAY selects a language after owner focus changes");
+        check(GetFocus()==control(Name)&&begin==2&&end==5,"WM_TRAY restores cached settings edit focus and caret");
+        check(scroll_==scrollBefore&&settings_.drafts==drafts&&settings_.selected==selected&&get(Port)==L"invalid","WM_TRAY preserves scroll selected host and invalid input");
+        check(loadConfig(directory_)==saved&&manager_->runtime("a")->executionHost==execution&&manager_->runtime("a")->state==ConnectionState::connected&&manager_->runtime("a")->desiredConnected,"WM_TRAY preserves saved config and active connection");
+        showStatus();popupCalled=false;SendMessageW(window_,WM_TRAY,0,MAKELPARAM(WM_CONTEXTMENU,0));
+        check(!popupCalled&&currentLanguage()=="de"&&status_,"modal blocks the actual tray language path");closeStatus();
+        traySelectionTest_={};set(Port,originalPort);capture();changeLanguage(originalLanguage);
+        scroll_=originalScroll;layoutForm();
+    }
     void nativeAppDialogChecks(){
         outputLine("native app dialog checks started");
         auto check=[](bool value,const char* why){if(!value)throw LocalizedError(why);};
         openSettings();set(Name,L"About 모달 전 미저장 이름");capture();
+        nativeTrayLanguageFocusChecks();
         auto drafts=settings_.drafts;auto selected=settings_.selected;auto saved=loadConfig(directory_);
         auto execution=manager_->runtime("a")->executionHost;
         auto originalLanguage=languageSelection();
@@ -920,7 +976,7 @@ public:
     LRESULT message(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         if(msg==WM_CTLCOLORSTATIC||msg==WM_CTLCOLORBTN)return surfaceColor(w,l);
         if(hwnd==window_){if(taskbarCreated_&&msg==taskbarCreated_){trayAdded_=false;updateTray();return 0;}switch(msg){case WM_TASK:{std::unique_ptr<std::function<void()>> task(reinterpret_cast<std::function<void()>*>(l));(*task)();return 0;}case WM_TIMER:loop_->timer(w);return 0;case WM_OPEN_SETTINGS:if(menuOpen_)EndMenu();openSettings();return 1;case WM_TRAY:if(LOWORD(l)==WM_CONTEXTMENU||LOWORD(l)==WM_RBUTTONUP||LOWORD(l)==NIN_SELECT||LOWORD(l)==NIN_KEYSELECT)trayMenu();return 0;case WM_POWERBROADCAST:if(w==PBT_APMSUSPEND)manager_->sleep();else if(w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND)manager_->wake();return TRUE;case WM_QUERYENDSESSION:return TRUE;case WM_ENDSESSION:if(w)quit();return 0;case WM_CLOSE:quit();return 0;}}
-        else{switch(msg){case WM_COMMAND:command(LOWORD(w),HIWORD(w));return 0;case WM_NOTIFY:{auto* notification=reinterpret_cast<NMHDR*>(l);if(notification->idFrom==Rules){if(notification->code==LVN_ITEMCHANGED)ruleChanged(reinterpret_cast<NMLISTVIEW*>(l));else if(notification->code==NM_DBLCLK)showRule(false);}return 0;}case WM_SIZE:layoutSettings();return 0;case WM_GETMINMAXINFO:{constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),800,430);return 0;}case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateFont();layoutSettings();return 0;}case WM_CLOSE:closeSettings(false);return 0;}}
+        else{switch(msg){case WM_REMEMBER_SETTINGS_FOCUS:rememberSettingsFocus(reinterpret_cast<HWND>(w));return 0;case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE)rememberSettingsFocus(GetFocus());break;case WM_COMMAND:command(LOWORD(w),HIWORD(w));return 0;case WM_NOTIFY:{auto* notification=reinterpret_cast<NMHDR*>(l);if(notification->idFrom==Rules){if(notification->code==LVN_ITEMCHANGED)ruleChanged(reinterpret_cast<NMLISTVIEW*>(l));else if(notification->code==NM_DBLCLK)showRule(false);}return 0;}case WM_SIZE:layoutSettings();return 0;case WM_GETMINMAXINFO:{constrainMinimum(hwnd,reinterpret_cast<MINMAXINFO*>(l),800,430);return 0;}case WM_DPICHANGED:{auto* rect=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);updateFont();layoutSettings();return 0;}case WM_CLOSE:closeSettings(false);return 0;}}
         return DefWindowProcW(hwnd,msg,w,l);
     }
     LRESULT formMessage(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:return surfaceColor(w,l);case WM_COMMAND:case WM_NOTIFY:return SendMessageW(settingsWindow_,msg,w,l);case WM_VSCROLL:scrollForm(LOWORD(w));return 0;case WM_MOUSEWHEEL:scrollForm(-1,MulDiv(GET_WHEEL_DELTA_WPARAM(w),72,WHEEL_DELTA));return 0;}return DefWindowProcW(hwnd,msg,w,l);}
