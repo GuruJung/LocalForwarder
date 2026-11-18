@@ -33,6 +33,7 @@ constexpr wchar_t FormClass[]=L"LocalForwarder.MultiHost.Form";
 constexpr wchar_t RuleClass[]=L"LocalForwarder.MultiHost.Rule";
 constexpr wchar_t StatusClass[]=L"LocalForwarder.MultiHost.Status";
 constexpr wchar_t ProjectURL[]=L"https://github.com/GuruJung/LocalForwarder";
+constexpr wchar_t LicenseURL[]=L"https://github.com/GuruJung/LocalForwarder/blob/main/LICENSE";
 enum Control:int {Hosts=100,NewHost,DeleteHost,Name,Description,Target,User,Port,Key,ChooseKey,AutoConnect,ExitFailure,RetryRefused,Rules,RuleNew,RuleEdit,RuleDelete,RuleEnabled,RuleDescription,RuleOkay,RuleCancel,LocalPort,RemoteHost,RemotePort,Save,Connect,Authentication,ConnectionStatus,CommandPreview,Okay,CancelButton,StatusHeading,StatusSummary,StatusForwards,StatusErrors,StatusClose};
 std::wstring textOf(HWND control){int n=GetWindowTextLengthW(control);std::wstring out(n+1,0);GetWindowTextW(control,out.data(),n+1);out.resize(n);return out;}
 RECT availableWorkArea(HMONITOR display){
@@ -164,6 +165,9 @@ class App{
     bool appModal_=false;
     HWND appModalWindow_=nullptr;
     std::function<void(HWND,const TASKDIALOGCONFIG&)> dialogTest_;
+    std::function<bool(HWND,const wchar_t*)> openURL_=[](HWND owner,const wchar_t* url){
+        return reinterpret_cast<INT_PTR>(ShellExecuteW(owner,L"open",url,nullptr,nullptr,SW_SHOWNORMAL))>32;
+    };
     struct DialogContext { App* app; const TASKDIALOGCONFIG* config; std::exception_ptr error; };
     struct OwnerDialogProbe { std::function<void(HWND)> activate; std::exception_ptr error; };
     static inline thread_local OwnerDialogProbe* ownerDialogProbe_=nullptr;
@@ -201,8 +205,10 @@ class App{
             if(!context.error)context.error=std::make_exception_ptr(std::runtime_error("native TaskDialog test did not complete: "+utf8(context.config->pszWindowTitle)));
             PostMessageW(hwnd,TDM_CLICK_BUTTON,IDCANCEL,0);
         }else if(notification==TDN_DESTROYED)app.appModalWindow_=nullptr;
-        else if(notification==TDN_HYPERLINK_CLICKED&&value&&std::wstring(reinterpret_cast<const wchar_t*>(value))==ProjectURL){
-            if(reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd,L"open",ProjectURL,nullptr,nullptr,SW_SHOWNORMAL))<=32)
+        else if(notification==TDN_HYPERLINK_CLICKED&&value){
+            auto url=reinterpret_cast<const wchar_t*>(value);
+            if(std::wstring(url)!=ProjectURL&&std::wstring(url)!=LicenseURL)return S_OK;
+            if(!app.openURL_(hwnd,url))
                 SendMessageW(hwnd,TDM_SET_ELEMENT_TEXT,TDE_FOOTER,reinterpret_cast<LPARAM>(L"기본 브라우저를 열 수 없습니다. GitHub 주소를 직접 열어 주세요."));
         }
         return S_OK;
@@ -222,7 +228,7 @@ class App{
     }
     void showAbout(){
         if(quitting_||foregroundModal())return;
-        std::wstring content=L"버전 "+wide(productVersion)+L"\n개발자 GuruJung\n\n<a href=\""+ProjectURL+L"\">"+ProjectURL+L"</a>";
+        std::wstring content=L"버전 "+wide(productVersion)+L"\n<a href=\""+LicenseURL+L"\">MIT License</a>\n\n<a href=\""+ProjectURL+L"\">"+ProjectURL+L"</a>";
         TASKDIALOG_BUTTON close{IDCANCEL,L"닫기"};TASKDIALOGCONFIG config{};
         config.pszWindowTitle=L"About LocalForwarder";config.pszMainInstruction=L"LocalForwarder";config.pszContent=content.c_str();
         config.dwFlags=TDF_USE_HICON_MAIN|TDF_ENABLE_HYPERLINKS;config.hMainIcon=icon_;
@@ -623,8 +629,12 @@ public:
         auto execution=manager_->runtime("a")->executionHost;
         nativeOwnerModalChecks(settingsWindow_);
         nativeOwnerModalChecks(window_); // Login-startup warnings use this owner even while settings is open.
+        auto originalOpenURL=std::move(openURL_);
+        std::vector<std::wstring> openedURLs;
+        openURL_=[&](HWND,const wchar_t* url){openedURLs.emplace_back(url);return true;};
         int shown=0;
         for(int dismissal=0;dismissal<3;++dismissal){
+            openedURLs.clear();
             outputLine("native About dismissal probe "+std::to_string(dismissal));
             bool backgroundDelivered=false;
             dialogTest_=[&,dismissal](HWND dialog,const TASKDIALOGCONFIG& config){
@@ -632,8 +642,18 @@ public:
                 check(appModalWindow_==dialog&&!IsWindowEnabled(settingsWindow_),"About disables its settings owner");
                 check(config.hwndParent==settingsWindow_&&config.hMainIcon&&std::wstring(config.pszMainInstruction)==L"LocalForwarder","About has program icon and name");
                 auto content=std::wstring(config.pszContent);
-                check(content.find(wide(productVersion))!=std::wstring::npos&&content.find(L"GuruJung")!=std::wstring::npos&&content.find(ProjectURL)!=std::wstring::npos,"About has shared version developer and project link");
-                check((config.dwFlags&TDF_ENABLE_HYPERLINKS)!=0,"About project URL is clickable");
+                auto versionPosition=content.find(L"버전 "+wide(productVersion));
+                auto licensePosition=content.find(std::wstring(L"<a href=\"")+LicenseURL+L"\">MIT License</a>");
+                auto projectPosition=content.find(std::wstring(L"<a href=\"")+ProjectURL+L"\">"+ProjectURL+L"</a>");
+                check(versionPosition!=std::wstring::npos&&licensePosition!=std::wstring::npos&&projectPosition!=std::wstring::npos&&versionPosition<licensePosition&&licensePosition<projectPosition,"About has ordered version license and project links");
+                check(content.find(L"개발자 GuruJung")==std::wstring::npos,"About omits the developer row");
+                check((config.dwFlags&TDF_ENABLE_HYPERLINKS)!=0,"About URLs are clickable");
+                check(openedURLs.empty(),"About opening must not open browser");
+                for(auto url:{LicenseURL,ProjectURL,L"https://example.com",L"https://github.com/GuruJung/LocalForwarder/blob/main/LICENSE?other",L"file:///LICENSE"})
+                    config.pfCallback(dialog,TDN_HYPERLINK_CLICKED,0,reinterpret_cast<LPARAM>(url),config.lpCallbackData);
+                config.pfCallback(dialog,TDN_HYPERLINK_CLICKED,0,0,config.lpCallbackData);
+                check(openedURLs==std::vector<std::wstring>{LicenseURL,ProjectURL},"About opens each allowed link once and rejects other URLs");
+                check(appModalWindow_==dialog&&appModal_,"About remains open after link clicks");
                 showAbout();confirmDisconnectAll();openSettings("b");trayMenu();
                 check(appModalWindow_==dialog&&settings_.selected==selected&&!activeMenu_,"reentrant actions retain the current modal and selection");
                 loop_->post([&,dialog,dismissal]{
@@ -647,6 +667,7 @@ public:
             check(backgroundDelivered&&!appModal_&&!appModalWindow_&&IsWindowEnabled(settingsWindow_),"About closes and keeps background event processing active");
             check(settings_.drafts==drafts&&settings_.selected==selected&&manager_->runtime("a")->executionHost==execution&&manager_->runtime("a")->state==ConnectionState::connected,"About preserves drafts and existing connection");
         }
+        openURL_=std::move(originalOpenURL);
         check(shown==3,"About duplicate invocation creates no extra dialogs");
         showStatus();showAbout();check(shown==3&&status_&&!IsWindowEnabled(settingsWindow_),"About does not nest over connection-status modal");closeStatus();
         showRule(true);showAbout();check(shown==3&&ruleWindow_,"About does not nest over rule modal");closeRule(false);

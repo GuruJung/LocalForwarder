@@ -111,7 +111,7 @@
 
 ## About
 
-- `종료` 바로 위의 `About...`은 앱 아이콘·LocalForwarder·제품 버전·개발자 GuruJung·`https://github.com/GuruJung/LocalForwarder`를 표시하는 네이티브 모달을 연다. 링크를 클릭할 때만 기본 브라우저를 열며 모달 표시만으로 네트워크 요청을 하지 않는다.
+- `종료` 바로 위의 `About...`은 앱 아이콘·LocalForwarder·제품 버전·`MIT License`·`https://github.com/GuruJung/LocalForwarder`를 순서대로 표시하는 네이티브 모달을 연다. 개발자 행은 표시하지 않으며 버전 바로 아래의 `MIT License` 링크는 `https://github.com/GuruJung/LocalForwarder/blob/main/LICENSE`를 연다. 두 링크는 클릭할 때만 기본 브라우저를 열고 About을 유지하며 모달 표시만으로 네트워크 요청을 하지 않는다. [About 라이선스 명세](specs/20261118-about-license/spec.md)를 따른다.
 - 닫기 버튼·Escape·창 닫기로 모달만 닫으며 중복 요청은 기존 모달을 앞으로 가져온다. 앱의 다른 사용자 조작을 차단하되 SSH 연결·상태 갱신을 유지하고 설정 초안·연결 의도·파일을 변경하지 않는다. 기존 모달 및 후속 실행 요청과 충돌하지 않게 처리한다.
 
 ## 검증 범위
