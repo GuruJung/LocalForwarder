@@ -13,33 +13,33 @@ final class SingleInstance {
     var onOpenSettings: (() -> Void)?
 
     func acquire() throws -> Bool {
-        if mkdir(directory, 0o700) != 0 && errno != EEXIST { throw failure("단일 실행 디렉터리를 만들 수 없습니다.") }
+        if mkdir(directory, 0o700) != 0 && errno != EEXIST { throw failure(L10n.text("mac.could.not.create.the.single.instance.directory")) }
         var metadata = stat()
         guard lstat(directory, &metadata) == 0, metadata.st_uid == getuid(),
               metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR), metadata.st_mode & 0o077 == 0 else {
-            throw AppError("단일 실행 디렉터리의 소유자 또는 권한을 확인하세요: \(directory)")
+            throw AppError(.key("mac.check.the.owner.and.permissions.of.the.single.instance", ["directory": String(describing: directory)]))
         }
         lockFD = Darwin.open(directory + "/gui.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard lockFD >= 0 else { throw failure("단일 실행 잠금을 열 수 없습니다.") }
+        guard lockFD >= 0 else { throw failure(L10n.text("mac.could.not.open.the.single.instance.lock")) }
         guard fstat(lockFD, &metadata) == 0, metadata.st_uid == getuid(), metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
-            throw AppError("단일 실행 잠금 파일이 올바르지 않습니다.")
+            throw AppError(.key("mac.the.single.instance.lock.file.is.invalid"))
         }
         if flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK else { throw failure("단일 실행 잠금을 얻을 수 없습니다.") }
+            guard errno == EWOULDBLOCK else { throw failure(L10n.text("mac.could.not.acquire.the.single.instance.lock")) }
             close(lockFD); lockFD = -1
             for _ in 0..<60 {
                 if requestSettings() { return false }
                 Thread.sleep(forTimeInterval: 0.05)
             }
-            throw AppError("실행 중인 LocalForwarder가 설정 열기 요청에 응답하지 않습니다.")
+            throw AppError(.key("mac.the.running.localforwarder.did.not.respond.to.the.request"))
         }
         unlink(socketPath)
         listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard listener >= 0 else { throw failure("설정 요청 소켓을 만들 수 없습니다.") }
+        guard listener >= 0 else { throw failure(L10n.text("mac.could.not.create.the.settings.request.socket")) }
         _ = fcntl(listener, F_SETFD, FD_CLOEXEC)
         let bound = withAddress { Darwin.bind(listener, $0, $1) }
         guard bound == 0, chmod(socketPath, 0o600) == 0, listen(listener, 8) == 0 else {
-            throw failure("설정 요청 소켓을 열 수 없습니다.")
+            throw failure(L10n.text("mac.could.not.open.the.settings.request.socket"))
         }
         _ = fcntl(listener, F_SETFL, O_NONBLOCK)
         let descriptor = listener

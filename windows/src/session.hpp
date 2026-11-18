@@ -27,7 +27,7 @@ class SSHSession final : public SSHSessionProtocol, public std::enable_shared_fr
     void finishOperation(const std::shared_ptr<Operation>& operation);
     void launch();
     void consume(const std::string& bytes,bool target,uint64_t generation,bool flush=false);
-    void fail(const std::string& error,bool allowRetry);
+    void fail(const Message& error,bool allowRetry);
 public:
     SSHSession(Post post,Schedule schedule,std::string sshConfiguration={});
     ~SSHSession() override;

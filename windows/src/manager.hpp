@@ -11,7 +11,8 @@ enum class ForwardState { preparing, ready, failed, disconnected, unknown };
 const char* stateName(ConnectionState state);
 const char* forwardStateName(ForwardState state);
 struct ForwardRuntime {
-    std::string id, description, source, detail;
+    std::string id, description;
+    Message source, detail;
     ForwardState state = ForwardState::preparing;
     bool operator==(const ForwardRuntime&) const = default;
 };
@@ -25,7 +26,7 @@ struct HostRuntime {
     bool desiredConnected = false, temporary = false;
     std::vector<ForwardRuntime> forwards;
     std::vector<DestinationError> recentErrors;
-    std::string lastError;
+    Message lastError;
     std::string summary() const;
 };
 class ForwardTracker {

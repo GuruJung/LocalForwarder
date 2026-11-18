@@ -40,9 +40,9 @@ void menuChecks() {
     for(int state=0;state<3;++state) {
         fake->registered=state==1;fake->fail=state==2;
         auto menu=CreatePopupMenu();check(menu!=nullptr,"create native test menu");
-        AppendMenuW(menu,MF_STRING,1,L"설정");
+        AppendMenuW(menu,MF_STRING,1,tw("win.settings"));
         appendLoginStartupMenu(menu,4,controller);
-        AppendMenuW(menu,MF_STRING,2,L"전체 재연결");
+        AppendMenuW(menu,MF_STRING,2,tw("win.reconnect_all"));
         auto flags=GetMenuState(menu,4,MF_BYCOMMAND);
         bool order=GetMenuItemID(menu,0)==1&&GetMenuItemID(menu,1)==4&&GetMenuItemID(menu,2)==2;
         wchar_t label[100]{};GetMenuStringW(menu,4,label,100,MF_BYCOMMAND);
@@ -51,13 +51,21 @@ void menuChecks() {
         check(order,"startup item between settings and reconnect");
         check(checked==(state==1),"native menu checkmark follows OS state");
         check(disabled==(state==2),"query failure disables native menu");
-        check(state!=2||std::wstring(label).find(L"상태 확인 실패")!=std::wstring::npos,"explicit unknown state label");
+        check(state!=2||std::wstring(label).find(tw("win.launch_at_login_status_unavailable"))!=std::wstring::npos,"explicit unknown state label");
     }
     check(fake->reads==3&&fake->writes==0,"each native menu opening rereads without writes");
 }
 int main(){try{
     menuChecks();
     Fixture fixture;
+    check(readLanguagePreference(fixture.subkey)=="auto","missing language preference defaults to auto");
+    writeLanguagePreference(fixture.subkey,"ko");check(readLanguagePreference(fixture.subkey)=="ko","native language preference round trip");
+    selectLanguage(readLanguagePreference(fixture.subkey),{"en"});check(currentLanguage()=="ko","native preference restored");
+    fixture.deny(KEY_SET_VALUE);bool saveFailed=false;
+    try{selectLanguage("de",{},[&](const auto& value){writeLanguagePreference(fixture.subkey,value);});}catch(...){saveFailed=true;}
+    check(saveFailed&&currentLanguage()=="ko"&&readLanguagePreference(fixture.subkey)=="ko","failed native save preserves preference and current locale");fixture.deny(0);
+    fixture.put(L"future-language",REG_SZ,L"DisplayLanguage");selectLanguage(readLanguagePreference(fixture.subkey),{"ja-JP"});check(languageSelection()=="auto"&&currentLanguage()=="ja","unknown native preference uses system language");
+    selectLanguage("en",{});
     RegistryLoginStartup adapter(L"C:\\한글 경로\\LocalForwarder.exe",HKEY_CURRENT_USER,fixture.subkey);
     check(!adapter.enabled(),"missing registration defaults unchecked");
     adapter.setEnabled(false);check(!adapter.enabled(),"unregister absent is idempotent");

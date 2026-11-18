@@ -24,14 +24,14 @@ inline std::vector<MenuForwardRow> menuForwards(const Host& saved,const HostRunt
     for(const auto& rule:host.forwards){
         auto icon=rule.enabled?MenuIcon::disconnected:MenuIcon::disabled;
         if(rule.enabled&&runtime&&runtime->executionHost){
-            auto found=std::find_if(runtime->forwards.begin(),runtime->forwards.end(),[&](const auto& f){return f.id==rule.id&&f.source=="앱 설정";});
+            auto found=std::find_if(runtime->forwards.begin(),runtime->forwards.end(),[&](const auto& f){return f.id==rule.id&&f.source==tr("win.app_settings");});
             if(found!=runtime->forwards.end())icon=forwardMenuIcon(found->state);
             else if(runtime->state==ConnectionState::connecting)icon=MenuIcon::preparing;
             else if(runtime->state==ConnectionState::connected)icon=MenuIcon::unknown;
         }
-        rows.push_back({"app:"+rule.id,"앱 설정 · "+forwarding(rule),icon});
+        rows.push_back({"app:"+rule.id,tr("win.app_settings_221")+forwarding(rule),icon});
     }
-    if(runtime&&runtime->executionHost)for(const auto& rule:runtime->forwards)if(rule.source!="앱 설정")
+    if(runtime&&runtime->executionHost)for(const auto& rule:runtime->forwards)if(rule.source!=tr("win.app_settings"))
         rows.push_back({"inherited:"+rule.id,rule.source+" · "+rule.description,forwardMenuIcon(rule.state)});
     return rows;
 }

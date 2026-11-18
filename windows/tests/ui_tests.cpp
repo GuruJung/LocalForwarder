@@ -53,7 +53,7 @@ int main(){try{
     auto savedSnapshot=a;savedSnapshot.forwards.push_back({"disabled",false,12001,"db",5432});
     auto rows=menuForwards(savedSnapshot,nullptr);check(rows.size()==2&&rows[0].icon==MenuIcon::disconnected&&rows[1].icon==MenuIcon::disabled,"preconnection menu includes inactive rules");
     HostRuntime runtime;runtime.state=ConnectionState::connected;runtime.executionHost=savedSnapshot;
-    runtime.forwards={{"f","live-forward","앱 설정","",ForwardState::ready},{"ssh-config-0","localforward 13000 localhost:80","SSH 설정","",ForwardState::failed}};
+    runtime.forwards={{"f","live-forward",tr("win.app_settings"),"",ForwardState::ready},{"ssh-config-0","localforward 13000 localhost:80",tr("win.ssh_settings"),"",ForwardState::failed}};
     auto changed=savedSnapshot;changed.forwards.clear();rows=menuForwards(changed,&runtime);
     check(rows.size()==3&&rows[0].icon==MenuIcon::ready&&rows[1].icon==MenuIcon::disabled&&rows[2].icon==MenuIcon::failed,"execution snapshot plus inherited rules, not newly savedSnapshot config");
     check(hostMenuIcon(changed,&runtime)==MenuIcon::ready,"partial forwarding failure keeps SSH-connected host icon");

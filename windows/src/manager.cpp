@@ -5,7 +5,7 @@
 namespace lf {
 ConnectionManager::ConnectionManager(StoreAccess store,std::function<std::shared_ptr<SSHSessionProtocol>()> factory,Schedule schedule)
     :store_(std::move(store)),factory_(std::move(factory)),schedule_(std::move(schedule)) {
-    if(!store_.load || !store_.host || !store_.remove || !factory_ || !schedule_) throw std::invalid_argument("연결 관리자 의존성이 없습니다.");
+    if(!store_.load || !store_.host || !store_.remove || !factory_ || !schedule_) throw std::invalid_argument(tr("win.missing_connection_manager_dependencies"));
 }
 ConnectionManager::~ConnectionManager() {
     lifetime_.reset();
@@ -28,7 +28,7 @@ const HostRuntime* ConnectionManager::runtime(const std::string& id) const {
 std::shared_ptr<ConnectionManager::Entry> ConnectionManager::entry(const Host& host) {
     if(auto it=entries_.find(host.id);it!=entries_.end()) return it->second;
     auto value=std::make_shared<Entry>(); value->host=host; value->session=factory_();
-    if(!value->session) throw std::runtime_error("SSH 세션을 만들 수 없습니다.");
+    if(!value->session) throw LocalizedError(tr("win.could_not_create_an_ssh_session"));
     entries_[host.id]=value; order_.push_back(host.id);
     std::weak_ptr<Entry> weak=value; std::weak_ptr<int> alive=lifetime_;
     value->session->onChange=[this,weak,alive,id=host.id] {
@@ -208,7 +208,7 @@ void ConnectionManager::scheduleRecovery() {
                 if(!host && saved!=savedHosts_.end()) host=*saved;
                 if(host) connect(*host,value->overrideHost.has_value());
             } catch(const std::exception& e) {
-                value->runtime.lastError=e.what(); if(onError) onError(id,e.what());
+                value->runtime.lastError=messageFrom(e); if(onError) onError(id,e.what());
             }
         }
         changed();

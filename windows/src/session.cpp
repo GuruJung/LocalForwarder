@@ -97,11 +97,11 @@ void SSHSession::stop(std::function<void()> completion) {
         completion();
     });
 }
-void SSHSession::fail(const std::string& error,bool allowRetry) {
+void SSHSession::fail(const Message& error,bool allowRetry) {
     bool retry=allowRetry && runtime_.state==ConnectionState::connecting && !readiness_.authenticated() &&
-        attempt_==0 && host_.retryOnConnectionRefused && isConnectionRefusal(targetDiagnostic_.empty()?error:targetDiagnostic_,diagnostic_);
+        attempt_==0 && host_.retryOnConnectionRefused && isConnectionRefusal(targetDiagnostic_.empty()?error.render():targetDiagnostic_,diagnostic_);
     cancelTimer(); ++generation_; auto token=generation_;
-    runtime_.lastError=describeFailure(diagnosticUTF8(error));
+    runtime_.lastError=error;
     if(tracker_) tracker_->disconnected();
     cancelOperations();
     runtime_.state=retry?ConnectionState::connecting:ConnectionState::disconnected;
@@ -151,12 +151,12 @@ void SSHSession::launch() {
     auto self=shared_from_this();
     timer_=schedule_(20,[weak=std::weak_ptr<SSHSession>(self),token] {
         if(auto value=weak.lock(); value && token==value->generation_ && value->runtime_.state==ConnectionState::connecting)
-            value->fail("SSH 연결 준비 시간이 20초를 초과했습니다.\n"+value->diagnostic_,false);
+            value->fail(tr("win.ssh_connection_preparation_exceeded_20_seconds_n")+value->diagnostic_,false);
     });
     auto operation=std::make_shared<Operation>(); operations_.push_back(operation);
     auto host=host_; auto configuration=configuration_; auto post=post_;
     std::thread([self,operation,token,host=std::move(host),configuration=std::move(configuration),post=std::move(post)]() mutable {
-        DWORD code=1; std::string error;
+        DWORD code=1; Message error;
         try {
             if(!host.identityFile.empty()) host.identityFile=utf8(expandHome(host.identityFile).wstring());
             auto ssh=systemSSH(); std::string effective,version;
@@ -167,7 +167,7 @@ void SSHSession::launch() {
                 operation->attach(child); code=child->wait(10000); operation->release();
             }
             if(!operation->cancelled) {
-                if(code!=0 || !supportedOpenSSHVersion(version)) throw std::runtime_error(sshUpdateGuidance);
+                if(code!=0 || !supportedOpenSSHVersion(version)) throw LocalizedError(sshUpdateGuidance);
                 auto child=std::make_shared<Child>(ssh,sshArguments(host,configuration,true),[&](bool ended,const std::string& text,DWORD) {
                     if(!ended && effective.size()<262144) effective.append(text,0,262144-effective.size());
                 });
@@ -208,15 +208,15 @@ void SSHSession::launch() {
                         });
                     operation->attach(child); code=child->wait(INFINITE); operation->release();
                 }
-            } else if(!operation->cancelled) error=effective;
-        } catch(const std::exception& exception) { error=exception.what(); }
+            } else if(!operation->cancelled) error=diagnosticUTF8(effective);
+        } catch(const std::exception& exception) { error=messageFrom(exception); }
         operation->release();
         post([self,operation,token,code,error=std::move(error)] {
             // Every stream has posted its final bytes before this completion is queued.
             if(token==self->generation_) {
                 self->consume({},true,token,true); self->consume({},false,token,true);
-                auto message=error.empty()?self->diagnostic_:error;
-                if(message.empty()) message="SSH가 종료되었습니다 ("+std::to_string(code)+").";
+                Message message=error.empty()?describeFailure(self->diagnostic_):error;
+                if(message.empty()) message=tr("win.ssh_exit",{{"code",std::to_string(code)}});
                 self->fail(message,true);
             }
             self->finishOperation(operation);

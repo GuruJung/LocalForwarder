@@ -9,6 +9,7 @@ import Glibc
 public protocol SSHSessionProtocol: AnyObject {
     var state: ConnectionState { get }
     var lastError: String { get }
+    var lastErrorMessage: LocalizedMessage { get }
     var forwards: [ForwardRuntime] { get }
     var recentErrors: [DestinationError] { get }
     var onChange: (() -> Void)? { get set }
@@ -16,12 +17,16 @@ public protocol SSHSessionProtocol: AnyObject {
     func start(_ host: Host)
     func stop(completion: @escaping () -> Void)
 }
-public extension SSHSessionProtocol { var recentErrors: [DestinationError] { [] } }
+public extension SSHSessionProtocol {
+    var recentErrors: [DestinationError] { [] }
+    var lastErrorMessage: LocalizedMessage { .raw(lastError) }
+}
 
 /// Owns exactly one host snapshot. Saving or editing a profile cannot mutate a running attempt.
 public final class SSHSession: SSHSessionProtocol {
     public private(set) var machine = ConnectionMachine()
-    public private(set) var lastError = ""
+    public private(set) var lastErrorMessage: LocalizedMessage = .raw("")
+    public var lastError: String { lastErrorMessage.rendered }
     public var onChange: (() -> Void)?
     public var onError: ((String) -> Void)?
     public let sshConfiguration: String?
@@ -58,7 +63,7 @@ public final class SSHSession: SSHSessionProtocol {
         guard state == .disconnected else {
             stop { [weak self] in self?.start(host) }; return
         }
-        self.host = host; lastError = ""; tracker = ForwardTracker(host: host)
+        self.host = host; lastErrorMessage = .raw(""); tracker = ForwardTracker(host: host)
         apply(machine.begin(now: ContinuousTime.now()))
     }
     public func stop(completion: @escaping () -> Void) {
@@ -73,7 +78,7 @@ public final class SSHSession: SSHSessionProtocol {
     }
     private func advanceTimer() {
         if machine.deadline.map({ $0.kind == .attempt && ContinuousTime.now() >= $0.time }) == true {
-            report("SSH 연결 준비 시간이 20초를 초과했습니다.\n" + diagnostic)
+            report(.key("mac.ssh.connection.preparation.timed.out.after.20.seconds") + .raw(diagnostic))
         }
         apply(machine.tick(now: ContinuousTime.now()))
     }
@@ -99,17 +104,19 @@ public final class SSHSession: SSHSessionProtocol {
         ProcessTools.requestStop(old)
         worker.async { ProcessTools.stopAndWait(old) }
     }
-    private func report(_ text: String) { lastError = SSHCommand.userMessage(text); onError?(lastError) }
-    private func fail(_ text: String) {
+    private func report(_ message: LocalizedMessage) { lastErrorMessage = SSHCommand.userMessageValue(message); onError?(lastError) }
+    private func fail(_ text: String) { fail(.raw(text)) }
+    private func fail(_ message: LocalizedMessage) {
+        let text = message.rendered
         // Successful jump authentication must not hide a target's pre-authentication refusal.
         // Conversely, an explicit proxy authentication/configuration error must not be
         // mistaken for a retryable target close merely because its transport disappears.
         let retryable = host?.retryOnConnectionRefused == true && !readiness.authenticated && SSHCommand.isConnectionRefusal(targetDiagnostic.isEmpty ? text : targetDiagnostic, auxiliaryDiagnostic: text)
-        report(text); apply(machine.failed(now: ContinuousTime.now(), retryable: retryable))
+        report(message); apply(machine.failed(now: ContinuousTime.now(), retryable: retryable))
     }
     private func launch() {
         let token = generation
-        guard let host else { fail("접속 호스트가 선택되지 않았습니다."); return }
+        guard let host else { fail(.key("mac.no.connection.host.is.selected")); return }
         diagnostic = ""; targetDiagnostic = ""; readiness = Readiness(requireForwards: false)
         tracker = ForwardTracker(host: host)
         let cancellation = ProcessCancellation(); inspection = cancellation
@@ -117,7 +124,7 @@ public final class SSHSession: SSHSessionProtocol {
             guard let self else { return }
             do {
                 try host.validate()
-                guard FileManager.default.isExecutableFile(atPath: SSHCommand.executable) else { throw AppError("시스템 OpenSSH를 찾지 못했습니다.") }
+                guard FileManager.default.isExecutableFile(atPath: SSHCommand.executable) else { throw AppError(.key("mac.system.openssh.was.not.found")) }
                 let result = try ProcessTools.capture(SSHCommand.executable, SSHCommand.inspect(host, configuration: self.sshConfiguration), cancellation: cancellation)
                 guard result.status == 0 else { throw AppError(result.output) }
                 let inherited = SSHCommand.inheritedForwards(result.output)
@@ -134,7 +141,7 @@ public final class SSHSession: SSHSessionProtocol {
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, token == self.generation else { return }
-                    self.inspection = nil; self.fail(error.localizedDescription)
+                    self.inspection = nil; self.fail(.error(error))
                 }
             }
         }
@@ -167,13 +174,13 @@ public final class SSHSession: SSHSessionProtocol {
                     stream.source.cancel()
                 }
                 self.streams = []
-                self.fail(self.diagnostic.isEmpty ? "SSH가 종료되었습니다 (\(child.terminationStatus))." : self.diagnostic)
+                self.fail(self.diagnostic.isEmpty ? .key("mac.ssh.exited.terminationstatus", ["terminationStatus": String(child.terminationStatus)]) : .raw(self.diagnostic))
             }
         }
         do { process = child; try child.run(); _ = setpgid(child.processIdentifier, child.processIdentifier) }
         catch {
             for stream in readers { stream.source.cancel() }; streams = []
-            process = nil; fail(error.localizedDescription)
+            process = nil; fail(.error(error))
         }
     }
     private func drain(_ stream: DiagnosticStream, token: Int) {
@@ -198,11 +205,11 @@ public final class SSHSession: SSHSessionProtocol {
             readiness.consume(line)
             if readiness.authenticated { tracker?.consume(line) }
             if readiness.ready && state == .connecting {
-                lastError = ""; machine.ready(); tracker?.sessionReady(); apply([])
+                lastErrorMessage = .raw(""); machine.ready(); tracker?.sessionReady(); apply([])
             } else { onChange?() }
             if let recent = tracker?.recentErrors.last, recent.message == line {
                 let formatter = ISO8601DateFormatter()
-                lastError = "\(formatter.string(from: recent.time)) · \(recent.message)"; onChange?()
+                lastErrorMessage = .raw("\(formatter.string(from: recent.time)) · \(recent.message)"); onChange?()
             }
         }
         if stream.bytes.count > 65_536 { stream.bytes = Data(stream.bytes.suffix(32_768)) }

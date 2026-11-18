@@ -1,4 +1,5 @@
 #pragma once
+#include "localization.hpp"
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -44,7 +45,7 @@ public:
             mutationError+=queryError_;
         }
         if(mutationError.empty() && enabled_ && *enabled_!=requested)
-            mutationError="로그인 자동 시작 설정 변경을 확인할 수 없습니다.";
+            mutationError=tr("win.could_not_confirm_the_launch_at_login_setting_change");
         return mutationError;
     }
 };

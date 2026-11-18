@@ -92,13 +92,13 @@ public enum ProcessTools {
         DispatchQueue.global().async { stopAndWait(process) }
     }
     public static func capture(_ executable: String, _ arguments: [String], timeout: Double = 12, cancellation: ProcessCancellation? = nil) throws -> CommandResult {
-        if cancellation?.isCancelled == true { throw AppError("연결 작업이 취소되었습니다.") }
+        if cancellation?.isCancelled == true { throw AppError(.key("mac.the.connection.operation.was.cancelled")) }
         let process = Process(); configure(process, executable: executable, arguments: arguments)
         process.environment = environment(); process.standardInput = FileHandle.nullDevice
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
         let cleanup = CaptureCleanup(process)
         capturesLock.lock()
-        guard !shuttingDown else { capturesLock.unlock(); throw AppError("앱을 종료하고 있습니다.") }
+        guard !shuttingDown else { capturesLock.unlock(); throw AppError(.key("mac.the.application.is.shutting.down")) }
         do { try process.run() } catch { capturesLock.unlock(); throw error }
         captures[ObjectIdentifier(process)] = cleanup
         capturesLock.unlock()
@@ -120,7 +120,7 @@ public enum ProcessTools {
             else { exceeded = true; cleanup.finish() }
         }
         process.waitUntilExit(); limit.cancel()
-        if exceeded { throw AppError("SSH 진단 출력이 허용 크기를 초과했습니다.") }
+        if exceeded { throw AppError(.key("mac.ssh.diagnostic.output.exceeded.the.size.limit")) }
         return CommandResult(status: process.terminationStatus, output: String(decoding: bytes, as: UTF8.self))
     }
     /// Foundation may launch a new process group. Give interactive tools the terminal and restore it afterwards.

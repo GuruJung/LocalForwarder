@@ -4,11 +4,16 @@ public enum ForwardState: String { case preparing, ready, failed, disconnected, 
 public struct ForwardRuntime: Equatable {
     public var id: String
     public var description: String
-    public var source: String
-    public var detail: String
+    public var sourceMessage: LocalizedMessage
+    public var detailMessage: LocalizedMessage
+    public var source: String { get { sourceMessage.rendered } set { sourceMessage = .raw(newValue) } }
+    public var detail: String { get { detailMessage.rendered } set { detailMessage = .raw(newValue) } }
     public var state: ForwardState
     public init(id: String, description: String, source: String, detail: String = "", state: ForwardState = .preparing) {
-        self.id = id; self.description = description; self.source = source; self.detail = detail; self.state = state
+        self.id = id; self.description = description; self.sourceMessage = .raw(source); self.detailMessage = .raw(detail); self.state = state
+    }
+    public init(id: String, description: String, sourceMessage: LocalizedMessage, detailMessage: LocalizedMessage = .raw(""), state: ForwardState = .preparing) {
+        self.id = id; self.description = description; self.sourceMessage = sourceMessage; self.detailMessage = detailMessage; self.state = state
     }
 }
 public struct DestinationError: Equatable {
@@ -26,7 +31,7 @@ public struct ForwardTracker {
     private var establishedAddresses: [Int: Set<String>] = [:]
     public init(host: Host, inherited: [String] = []) {
         for rule in host.forwards where rule.enabled {
-            forwards.append(ForwardRuntime(id: rule.id, description: SSHCommand.forwarding(rule), source: "앱 설정"))
+            forwards.append(ForwardRuntime(id: rule.id, description: SSHCommand.forwarding(rule), sourceMessage: .key("mac.app.configuration")))
             bindings.append(Binding(remote: false, port: rule.localPort, address: "127.0.0.1"))
         }
         for (index, line) in inherited.enumerated() {
@@ -34,7 +39,7 @@ public struct ForwardTracker {
             let endpoint = fields.count > 1 ? fields[1] : ""
             let port = Int(endpoint.split(separator: ":").last.map(String.init) ?? endpoint)
             let address = endpoint.contains(":") ? String(endpoint.prefix(upTo: endpoint.lastIndex(of: ":")!)).replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "") : nil
-            forwards.append(ForwardRuntime(id: "ssh-config-\(index)", description: line, source: "SSH 설정", detail: port == nil ? "이 규칙의 개설 결과를 SSH 진단에서 식별할 수 없습니다." : ""))
+            forwards.append(ForwardRuntime(id: "ssh-config-\(index)", description: line, sourceMessage: .key("mac.ssh.configuration"), detailMessage: port == nil ? .key("mac.this.rule.s.forwarding.result.cannot.be.identified.from") : .raw("")))
             bindings.append(Binding(remote: line.hasPrefix("remoteforward "), port: port, address: address))
         }
     }
@@ -50,7 +55,7 @@ public struct ForwardTracker {
         }
         guard candidates.count == 1, let index = candidates.first else {
             for index in candidates where forwards[index].state == .preparing {
-                forwards[index].detail = "같은 리스너를 사용하는 규칙들의 개별 결과를 식별할 수 없습니다."
+                forwards[index].detailMessage = .key("mac.individual.results.cannot.be.identified.for.rules.sharing.the")
             }
             return
         }
@@ -63,11 +68,11 @@ public struct ForwardTracker {
             // A wildcard/localhost rule may have distinct IPv4 and IPv6 bind outcomes.
             if !(establishedAddresses[index] ?? []).isEmpty {
                 forwards[index].state = .ready
-                forwards[index].detail = state == .failed ? "일부 주소의 개설 실패: " + line : "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음"
+                forwards[index].detailMessage = state == .failed ? .key("mac.forwarding.failed.on.some.addresses") + .raw(line) : .key("mac.forwarding.opened.destination.service.not.checked")
                 return
             }
         }
-        forwards[index].state = state; forwards[index].detail = state == .ready ? "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음" : line
+        forwards[index].state = state; forwards[index].detailMessage = state == .ready ? .key("mac.forwarding.opened.destination.service.not.checked") : .raw(line)
     }
     public mutating func consume(_ line: String, now: Date = Date()) {
         if let match = captures("Local forwarding listening on (.+) port ([0-9]+)\\.", line) {
@@ -98,7 +103,7 @@ public struct ForwardTracker {
         pendingListener = nil
         for index in forwards.indices where forwards[index].state == .preparing {
             forwards[index].state = .unknown
-            if forwards[index].detail.isEmpty { forwards[index].detail = "SSH 연결은 성립했지만 이 규칙의 개설 결과는 아직 확인되지 않았습니다." }
+            if forwards[index].detail.isEmpty { forwards[index].detailMessage = .key("mac.ssh.is.connected.but.this.rule.s.forwarding.status") }
         }
     }
     public mutating func disconnected() {

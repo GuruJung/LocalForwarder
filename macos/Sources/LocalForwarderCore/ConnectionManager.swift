@@ -11,15 +11,16 @@ public struct HostRuntime {
     public var desiredConnected = false
     public var temporary = false
     public var forwards: [ForwardRuntime] = []
-    public var lastError = ""
+    public var lastErrorMessage: LocalizedMessage = .raw("")
+    public var lastError: String { get { lastErrorMessage.rendered } set { lastErrorMessage = .raw(newValue) } }
     public var recentErrors: [DestinationError] = []
     public var summary: String {
         let title: String
-        switch state { case .connected: title = "SSH 연결됨"; case .connecting: title = "연결 중"; case .stopping: title = "정리 중"; case .disconnected: title = "연결 끊김" }
+        switch state { case .connected: title = L10n.text("mac.ssh.connected"); case .connecting: title = L10n.text("mac.connecting.2"); case .stopping: title = L10n.text("mac.stopping"); case .disconnected: title = L10n.text("mac.disconnected") }
         let ready = forwards.filter { $0.state == .ready }.count
         let failed = forwards.filter { $0.state == .failed }.count
         let unknown = forwards.filter { $0.state == .unknown }.count
-        return "\(title) · 포워딩 준비 \(ready) / 실패 \(failed)" + (unknown > 0 ? " / 확인 불가 \(unknown)" : "") + (temporary ? " · 임시 실행 설정" : "")
+        return L10n.text("mac.title.forwarding.ready.ready.failed.failed", ["title": String(describing: title), "ready": String(describing: ready), "failed": String(describing: failed)]) + (unknown > 0 ? L10n.text("mac.unknown.unknown", ["unknown": String(describing: unknown)]) : "") + (temporary ? L10n.text("mac.temporary.settings") : "")
     }
 }
 /// All API calls and callbacks execute on the main queue. Each entry has its own operation generation.
@@ -82,13 +83,13 @@ public final class ConnectionManager {
             guard let self, let value, self.entries[host.id] === value else { return }
             value.runtime.state = value.session.state
             value.runtime.forwards = value.session.forwards
-            value.runtime.lastError = value.session.lastError
+            value.runtime.lastErrorMessage = value.session.lastErrorMessage
             value.runtime.recentErrors = value.session.recentErrors
             self.onChange?()
         }
         value.session.onError = { [weak self, weak value] message in
             guard let self, let value, self.entries[host.id] === value else { return }
-            value.runtime.lastError = message; self.onError?(host.id, message)
+            value.runtime.lastErrorMessage = value.session.lastErrorMessage; self.onError?(host.id, message)
         }
         return value
     }
@@ -227,7 +228,7 @@ public final class ConnectionManager {
                     guard let host = value.override ?? self.savedHosts.first(where: { $0.id == id }) else { continue }
                     try self.connect(host, temporary: value.override != nil)
                 }
-                catch { value.runtime.lastError = error.localizedDescription; self.onError?(id, error.localizedDescription) }
+                catch { value.runtime.lastErrorMessage = .error(error); self.onError?(id, error.localizedDescription) }
             }
             self.onChange?()
         }

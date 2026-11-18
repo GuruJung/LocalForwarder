@@ -66,6 +66,10 @@ enum NativeLayoutChecks {
                         label + " horizontal clipping \(rect) in \(container.bounds)")
             try require(rect.minY >= -1 && rect.maxY <= container.bounds.height + 1,
                         label + " vertical clipping \(rect) in \(container.bounds)")
+            if let field = view as? NSTextField, !field.isEditable, field.cell?.wraps == false,
+               field.intrinsicContentSize.width > 0 {
+                try require(frame.width + 1 >= field.intrinsicContentSize.width, label + " truncated label")
+            }
             if let button = view as? NSButton {
                 try require(frame.width + 1 >= button.intrinsicContentSize.width, label + " truncated button")
             }
@@ -113,7 +117,11 @@ enum NativeLayoutChecks {
         let manager = ConnectionManager(store: store, sessionFactory: { Session() })
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory); application.finishLaunching()
-        try SettingsController.checkNativeLayout(store: store, manager: manager)
-        try MainActor.assumeIsolated { try AppDelegate.checkAppDialogs(store: store) }
+        for language in L10n.languages {
+            L10n.configure(selection: language)
+            writeLine("LF_UI_LANGUAGE " + language)
+            try SettingsController.checkNativeLayout(store: store, manager: manager)
+            try MainActor.assumeIsolated { try AppDelegate.checkAppDialogs(store: store) }
+        }
     }
 }

@@ -15,8 +15,10 @@ public protocol LoginItemService {
 }
 
 public struct LoginItemError: LocalizedError {
-    public let message: String
-    public init(_ message: String) { self.message = message }
+    public let localizedMessage: LocalizedMessage
+    public var message: String { localizedMessage.rendered }
+    public init(_ message: String) { self.localizedMessage = .raw(message) }
+    public init(_ message: LocalizedMessage) { self.localizedMessage = message }
     public var errorDescription: String? { message }
 }
 
@@ -25,15 +27,16 @@ public final class LoginItemController {
     private let service: LoginItemService
     public private(set) var status: LoginItemStatus?
     public private(set) var isBusy = false
-    public private(set) var errorMessage: String?
+    private var errorMessageValue: LocalizedMessage?
+    public var errorMessage: String? { errorMessageValue?.rendered }
 
     public init(service: LoginItemService) { self.service = service }
 
     public var menuTitle: String {
-        if isBusy { return "로그인 자동 시작 (변경 중…)" }
-        guard let status else { return "로그인 자동 시작 (상태 확인 실패)" }
-        if status == .notPresent { return "로그인 자동 시작 (등록 필요)" }
-        return status == .requiresApproval ? "로그인 자동 시작 (승인 필요)" : "로그인 자동 시작"
+        if isBusy { return L10n.text("mac.launch.at.login.updating") }
+        guard let status else { return L10n.text("mac.launch.at.login.status.unavailable") }
+        if status == .notPresent { return L10n.text("mac.launch.at.login.registration.needed") }
+        return status == .requiresApproval ? L10n.text("mac.launch.at.login.approval.needed") : L10n.text("mac.launch.at.login")
     }
     public var isChecked: Bool { status?.isRegistered == true }
     public var canToggle: Bool { status != nil && !isBusy }
@@ -63,13 +66,13 @@ public final class LoginItemController {
         do { try readStatus() }
         catch {
             if let mutationError {
-                throw LoginItemError(mutationError.localizedDescription + "\n상태 재확인 실패: " + error.localizedDescription)
+                throw LoginItemError(.error(mutationError) + .key("mac.could.not.recheck.status") + .error(error))
             }
             throw error
         }
         if let mutationError { throw mutationError }
         guard status?.isRegistered == enable else {
-            throw LoginItemError("macOS가 요청한 로그인 자동 시작 설정을 반영하지 않았습니다. 실제 상태를 다시 확인했습니다.")
+            throw LoginItemError(.key("mac.macos.did.not.apply.the.requested.login.setting.the"))
         }
         return true
     }
@@ -77,10 +80,10 @@ public final class LoginItemController {
     private func readStatus() throws {
         do {
             status = try service.status()
-            errorMessage = nil
+            errorMessageValue = nil
         } catch {
             status = nil
-            errorMessage = error.localizedDescription
+            errorMessageValue = .error(error)
             throw error
         }
     }

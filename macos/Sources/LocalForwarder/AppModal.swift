@@ -22,19 +22,19 @@ final class AppModal: NSObject, NSWindowDelegate {
 
     init(_ kind: Kind, openURL: @escaping (URL) -> Void = { _ = NSWorkspace.shared.open($0) }) {
         self.openURL = openURL
-        let panel = AppModalWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: kind == .about ? 300 : 200),
+        let panel = AppModalWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: kind == .about ? 300 : 240),
                                    styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window = panel
-        cancelButton = NSButton(title: kind == .about ? "닫기" : "취소", target: nil, action: nil)
-        confirmButton = kind == .disconnectAll ? NSButton(title: "연결 끊기", target: nil, action: nil) : nil
+        cancelButton = NSButton(title: kind == .about ? L10n.text("mac.close") : L10n.text("mac.cancel"), target: nil, action: nil)
+        confirmButton = kind == .disconnectAll ? NSButton(title: L10n.text("mac.disconnect.2"), target: nil, action: nil) : nil
         linkButton = kind == .about ? NSButton(title: Self.repositoryURL.absoluteString, target: nil, action: nil) : nil
         licenseButton = kind == .about ? NSButton(title: "MIT License", target: nil, action: nil) : nil
-        labels = (kind == .about ? ["LocalForwarder", "버전 " + ProductVersion.current] :
-            ["모든 호스트의 연결을 끊으시겠습니까?", "연결 중 작업과 재시도·자동 복구 대기도 취소됩니다.\n저장된 자동 연결 옵션은 유지됩니다."])
+        labels = (kind == .about ? ["LocalForwarder", L10n.text("mac.version") + ProductVersion.current] :
+            [L10n.text("mac.disconnect.all.hosts"), L10n.text("mac.pending.connections.retries.and.automatic.recovery.will.also.be")])
             .map { NSTextField(wrappingLabelWithString: $0) }
         super.init()
         panel.onCancel = { [weak self] in self?.cancel() }
-        panel.title = kind == .about ? "About LocalForwarder" : "전체 연결 끊기"
+        panel.title = kind == .about ? L10n.text("mac.about.localforwarder") : L10n.text("mac.disconnect.all")
         panel.isReleasedWhenClosed = false; panel.delegate = self
         labels[0].font = .boldSystemFont(ofSize: 17)
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .centerX; body.spacing = 10
@@ -45,7 +45,7 @@ final class AppModal: NSObject, NSWindowDelegate {
             icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
             body.addArrangedSubview(icon)
         }
-        for label in labels { label.alignment = .center; body.addArrangedSubview(label) }
+        for label in labels { label.alignment = .center; body.addArrangedSubview(label); label.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
         licenseButton?.action = #selector(openLicense)
         linkButton?.action = #selector(openRepository)
         for button in [licenseButton, linkButton].compactMap({ $0 }) {

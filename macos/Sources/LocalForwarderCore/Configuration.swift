@@ -51,7 +51,7 @@ public struct Host: Codable, Equatable {
     public var autoConnect: Bool
     public var exitOnForwardFailure: Bool
     public var retryOnConnectionRefused: Bool
-    public init(id: String = UUID().uuidString, name: String = "새 호스트", target: String = "",
+    public init(id: String = UUID().uuidString, name: String = L10n.text("mac.new.host"), target: String = "",
                 user: String? = nil, port: Int? = nil, identityFile: String? = nil,
                 forwards: [Forward] = [], autoConnect: Bool = true,
                 exitOnForwardFailure: Bool = true, retryOnConnectionRefused: Bool = true,
@@ -104,27 +104,27 @@ public struct Host: Codable, Equatable {
     }
     public func validate() throws {
         guard !description.unicodeScalars.contains(where: { [0, 10, 13, 0x85, 0x2028, 0x2029].contains($0.value) }) else {
-            throw AppError("설명은 개행과 NUL이 없는 한 줄로 입력하세요.")
+            throw AppError(.key("mac.enter.a.description.on.one.line.without.newline.or"))
         }
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AppError("호스트 이름을 입력하세요.") }
-        guard Self.validID(id) else { throw AppError("호스트 ID가 올바르지 않습니다.") }
-        guard Self.validToken(target) else { throw AppError("SSH 별칭 또는 호스트 주소를 올바르게 입력하세요.") }
-        if let user, !Self.validToken(user) { throw AppError("SSH 사용자명이 올바르지 않습니다.") }
-        if let port, !(1...65535).contains(port) { throw AppError("SSH 포트는 1–65535여야 합니다.") }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AppError(.key("mac.enter.a.host.name")) }
+        guard Self.validID(id) else { throw AppError(.key("mac.the.host.id.is.invalid")) }
+        guard Self.validToken(target) else { throw AppError(.key("mac.enter.a.valid.ssh.alias.or.host.address")) }
+        if let user, !Self.validToken(user) { throw AppError(.key("mac.the.ssh.username.is.invalid")) }
+        if let port, !(1...65535).contains(port) { throw AppError(.key("mac.the.ssh.port.must.be.between.1.and.65535")) }
         if let key = identityFile, key.isEmpty || key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
-            throw AppError("개인키 경로가 올바르지 않습니다.")
+            throw AppError(.key("mac.the.private.key.path.is.invalid"))
         }
         var ports = Set<Int>()
         var ids = Set<String>()
         for forward in forwards {
             guard !forward.description.unicodeScalars.contains(where: { [0, 10, 13, 0x85, 0x2028, 0x2029].contains($0.value) }) else {
-                throw AppError("규칙 설명은 개행과 NUL이 없는 한 줄로 입력하세요.")
+                throw AppError(.key("mac.enter.a.rule.description.on.one.line.without.newline"))
             }
-            guard Self.validID(forward.id), ids.insert(forward.id).inserted else { throw AppError("규칙 ID가 중복되거나 잘못되었습니다.") }
+            guard Self.validID(forward.id), ids.insert(forward.id).inserted else { throw AppError(.key("mac.a.rule.id.is.duplicated.or.invalid")) }
             guard (1...65535).contains(forward.localPort), (1...65535).contains(forward.remotePort), Self.validToken(forward.remoteHost) else {
-                throw AppError("규칙의 포트(1–65535)와 목적지 호스트를 확인하세요.")
+                throw AppError(.key("mac.check.the.rule.s.ports.1.65535.and.destination"))
             }
-            if forward.enabled && !ports.insert(forward.localPort).inserted { throw AppError("활성 규칙에 중복된 로컬 포트가 있습니다.") }
+            if forward.enabled && !ports.insert(forward.localPort).inserted { throw AppError(.key("mac.enabled.rules.contain.duplicate.local.ports")) }
         }
     }
     public static func validToken(_ value: String) -> Bool {
@@ -140,8 +140,10 @@ public struct Configuration: Codable, Equatable {
     public init(hosts: [Host] = []) { self.hosts = hosts }
 }
 public struct AppError: LocalizedError {
-    public let message: String
-    public init(_ message: String) { self.message = message }
+    public let localizedMessage: LocalizedMessage
+    public var message: String { localizedMessage.rendered }
+    public init(_ message: String) { self.localizedMessage = .raw(message) }
+    public init(_ message: LocalizedMessage) { self.localizedMessage = message }
     public var errorDescription: String? { message }
 }
 public final class ConfigurationStore {
@@ -155,17 +157,17 @@ public final class ConfigurationStore {
         let data = try Data(contentsOf: file)
         struct Header: Decodable { let version: Int }
         let version = try JSONDecoder().decode(Header.self, from: data).version
-        guard version == 2 else { throw AppError("지원하지 않는 설정 버전입니다. 기존 파일은 변경하지 않았습니다.") }
+        guard version == 2 else { throw AppError(.key("mac.unsupported.configuration.version.the.existing.file.was.not.changed")) }
         let result = try JSONDecoder().decode(Configuration.self, from: data)
         var ids = Set<String>()
         for host in result.hosts {
             try host.validate()
-            guard Host.validID(host.id), ids.insert(host.id).inserted else { throw AppError("설정 파일의 호스트 ID가 잘못되었거나 중복되었습니다.") }
+            guard Host.validID(host.id), ids.insert(host.id).inserted else { throw AppError(.key("mac.the.configuration.contains.an.invalid.or.duplicate.host.id")) }
         }
         return result
     }
     public func host(_ id: String) throws -> Host {
-        guard let host = try load().hosts.first(where: { $0.id == id }) else { throw AppError("호스트가 삭제되었거나 설정에서 찾을 수 없습니다.") }
+        guard let host = try load().hosts.first(where: { $0.id == id }) else { throw AppError(.key("mac.the.host.was.deleted.or.was.not.found.in")) }
         return host
     }
     public func save(_ host: Host) throws {
@@ -181,7 +183,7 @@ public final class ConfigurationStore {
     public func setIdentity(_ path: String, for id: String) throws {
         try mutate { configuration in
             guard let index = configuration.hosts.firstIndex(where: { $0.id == id }) else {
-                throw AppError("호스트가 삭제되었거나 설정에서 찾을 수 없습니다.")
+                throw AppError(.key("mac.the.host.was.deleted.or.was.not.found.in"))
             }
             configuration.hosts[index].identityFile = path
             try configuration.hosts[index].validate()
@@ -192,14 +194,14 @@ public final class ConfigurationStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lockPath = directory.appendingPathComponent("config.lock").path
         let descriptor = open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
-        guard descriptor >= 0 else { throw fileError("설정 잠금 파일을 열 수 없습니다") }
+        guard descriptor >= 0 else { throw fileError(.key("mac.could.not.open.the.configuration.lock.file")) }
         defer { _ = close(descriptor) }
         var info = stat()
         guard fstat(descriptor, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), info.st_uid == getuid() else {
-            throw AppError("설정 잠금 파일이 현재 사용자의 일반 파일이 아닙니다.")
+            throw AppError(.key("mac.the.configuration.lock.is.not.a.regular.file.owned"))
         }
         while flock(descriptor, LOCK_EX) != 0 {
-            if errno != EINTR { throw fileError("설정을 잠글 수 없습니다") }
+            if errno != EINTR { throw fileError(.key("mac.could.not.lock.the.configuration")) }
         }
         defer { _ = flock(descriptor, LOCK_UN) }
         var configuration = try load()
@@ -210,11 +212,11 @@ public final class ConfigurationStore {
         let temporary = directory.appendingPathComponent(".config-\(UUID().uuidString).tmp")
         try writeExclusive(data, to: temporary)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        guard rename(temporary.path, file.path) == 0 else { throw fileError("설정 파일을 교체할 수 없습니다") }
+        guard rename(temporary.path, file.path) == 0 else { throw fileError(.key("mac.could.not.replace.the.configuration.file")) }
     }
     private func writeExclusive(_ data: Data, to destination: URL) throws {
         let descriptor = open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
-        guard descriptor >= 0 else { throw fileError("설정 파일을 만들 수 없습니다") }
+        guard descriptor >= 0 else { throw fileError(.key("mac.could.not.create.the.configuration.file")) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
             try handle.write(contentsOf: data)
@@ -226,7 +228,7 @@ public final class ConfigurationStore {
             throw error
         }
     }
-    private func fileError(_ message: String) -> AppError {
-        AppError("\(message): \(String(cString: strerror(errno)))")
+    private func fileError(_ message: LocalizedMessage) -> AppError {
+        AppError(message + .raw(": " + String(cString: strerror(errno))))
     }
 }

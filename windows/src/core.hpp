@@ -1,4 +1,5 @@
 #pragma once
+#include "localization.hpp"
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -44,7 +45,7 @@ std::wstring quotePowerShell(const std::wstring& value);
 std::string registrationCommand(const std::string& publicKey);
 bool authenticationFailure(const std::string& text);
 bool isConnectionRefusal(const std::string& targetDiagnostic, const std::string& auxiliaryDiagnostic = {});
-std::string describeFailure(const std::string& text);
+Message describeFailure(const std::string& text);
 // Only standard OpenSSH version banners at or above the supported baseline.
 bool supportedOpenSSHVersion(const std::string& output);
 // Accept anchored OpenSSH LogVerbose envelopes from the actual child PID.

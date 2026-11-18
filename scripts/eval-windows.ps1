@@ -6,6 +6,10 @@ Set-Location $root
 if ($LASTEXITCODE -ne 0) { throw 'Product version check failed.' }
 & python -m unittest discover -s tests -p 'test_release*.py'
 if ($LASTEXITCODE -ne 0) { throw 'Release tests failed.' }
+& python scripts/localization.py --check
+if ($LASTEXITCODE -ne 0) { throw 'Localization catalog check failed.' }
+& python -m unittest discover -s tests -p 'test_localization*.py'
+if ($LASTEXITCODE -ne 0) { throw 'Localization tests failed.' }
 $productVersion = & python scripts/version.py --print
 if ($LASTEXITCODE -ne 0) { throw 'Invalid product version.' }
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'

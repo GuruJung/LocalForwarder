@@ -14,9 +14,9 @@
 namespace lf {
 namespace fs = std::filesystem;
 using Post = std::function<void(std::function<void()>)>;
-inline constexpr const char* sshUpdateGuidance =
-    "Windows OpenSSH 9.5 이상이 필요합니다. Windows Update 또는 Microsoft의 OpenSSH 배포판으로 직접 업데이트한 뒤 다시 연결하세요. "
-    "앱이 사용하는 Windows\\System32\\OpenSSH\\ssh.exe의 버전은 해당 경로에서 ssh -V로 확인할 수 있습니다.";
+inline const Message sshUpdateGuidance =
+    tr("win.windows_openssh_9_5_or_newer_is_required_update_it_through_window") +
+    tr("win.check_the_version_of_windows_system32_openssh_ssh_exe_used_by_the");
 std::wstring wide(const std::string& text);
 std::string utf8(const std::wstring& text);
 std::string winError(DWORD error = GetLastError());

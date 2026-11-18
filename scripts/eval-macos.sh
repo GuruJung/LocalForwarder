@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test "$(uname -s)" = Darwin
 python3 scripts/version.py --check
+python3 scripts/localization.py --check
+python3 -m unittest discover -s tests -p 'test_localization*.py'
 python3 -m unittest discover -s tests -p 'test_release*.py'
 version=$(python3 scripts/version.py --print)
 # Probe registration early, but still collect independent build/test evidence if it fails.

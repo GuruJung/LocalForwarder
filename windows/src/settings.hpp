@@ -16,9 +16,9 @@ struct HostDraft {
     }
     static int parsePort(const std::string& text) {
         if (text.empty() || text.size()>5 || !std::all_of(text.begin(),text.end(),[](char c){return c>='0'&&c<='9';}))
-            throw std::runtime_error("포트를 1–65535 사이의 숫자로 입력하세요.");
+            throw LocalizedError(tr("win.enter_a_port_number_from_1_to_65535"));
         int result=std::stoi(text);
-        if(result<1 || result>65535) throw std::runtime_error("포트를 1–65535 사이의 숫자로 입력하세요.");
+        if(result<1 || result>65535) throw LocalizedError(tr("win.enter_a_port_number_from_1_to_65535"));
         return result;
     }
     Host validated() const {
@@ -41,7 +41,7 @@ struct RuleDraft {
         auto result=rule;result.localPort=HostDraft::parsePort(localPort);result.remotePort=HostDraft::parsePort(remotePort);
         validateForward(result);
         for(const auto& other:host.forwards) if(other.id!=result.id&&other.enabled&&result.enabled&&other.localPort==result.localPort)
-            throw std::runtime_error("활성 규칙의 로컬 포트가 중복됩니다.");
+            throw LocalizedError(tr("win.active_rules_have_duplicate_local_ports"));
         return result;
     }
 };
@@ -75,8 +75,8 @@ public:
     void applyRule(const std::string& hostID,const RuleDraft& draft,bool creating) {
         auto& hostDraft=drafts.at(hostID);auto rule=draft.validated(hostDraft.host);
         auto it=std::find_if(hostDraft.host.forwards.begin(),hostDraft.host.forwards.end(),[&](const auto& f){return f.id==rule.id;});
-        if(creating) {if(it!=hostDraft.host.forwards.end())throw std::runtime_error("규칙 ID가 중복됩니다.");hostDraft.host.forwards.push_back(rule);}
-        else {if(it==hostDraft.host.forwards.end())throw std::runtime_error("편집할 규칙이 없습니다.");*it=rule;}
+        if(creating) {if(it!=hostDraft.host.forwards.end())throw LocalizedError(tr("win.duplicate_rule_id"));hostDraft.host.forwards.push_back(rule);}
+        else {if(it==hostDraft.host.forwards.end())throw LocalizedError(tr("win.there_is_no_rule_to_edit"));*it=rule;}
         hostDraft.rulePorts[rule.id]={std::to_string(rule.localPort),std::to_string(rule.remotePort)};
     }
     bool close(bool accepted){bool connect=accepted&&startup;open=false;startup=false;drafts.clear();baseline.clear();order.clear();selected.clear();modalHost.clear();return connect;}

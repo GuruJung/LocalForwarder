@@ -23,6 +23,8 @@ jobs:
       - name: Validate version and release behavior
         run: |
           python3 scripts/version.py --check
+          python3 scripts/localization.py --check
+          python3 -m unittest discover -s tests -p 'test_localization*.py'
           python3 -m unittest discover -s tests -p 'test_release*.py'
       - name: Read product version
         id: version

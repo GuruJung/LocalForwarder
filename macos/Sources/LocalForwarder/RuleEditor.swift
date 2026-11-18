@@ -8,7 +8,7 @@ final class RuleEditor: NSObject, NSWindowDelegate {
     private let rules: [Forward]
     private let replacing: String?
     private let completion: ([Forward]?) -> Void
-    private let enabled = NSButton(checkboxWithTitle: "이 규칙 사용", target: nil, action: nil)
+    private let enabled = NSButton(checkboxWithTitle: L10n.text("mac.enable.this.rule"), target: nil, action: nil)
     private let descriptionField = NSTextField()
     private let localPort = NSTextField()
     private let remoteHost = NSTextField()
@@ -22,7 +22,7 @@ final class RuleEditor: NSObject, NSWindowDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: min(470, available.width - 40, parent.frame.width - 32), height: 252),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
-        window.title = rule == nil ? "새 규칙" : "규칙 편집"
+        window.title = rule == nil ? L10n.text("mac.new.rule") : L10n.text("mac.edit.rule")
         window.isReleasedWhenClosed = false; window.delegate = self
         enabled.state = draft.rule.enabled ? .on : .off
         descriptionField.stringValue = draft.rule.description
@@ -32,19 +32,19 @@ final class RuleEditor: NSObject, NSWindowDelegate {
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
         body.detachesHiddenViews = false
         func row(_ title: String, _ field: NSTextField) -> NSStackView {
-            let label = NSTextField(labelWithString: title); label.widthAnchor.constraint(equalToConstant: 100).isActive = true
+            let label = NSTextField(labelWithString: title); label.widthAnchor.constraint(equalToConstant: max(100, label.intrinsicContentSize.width)).isActive = true
             let row = NSStackView(views: [label, field]); row.spacing = 10
             row.detachesHiddenViews = false
             for view in row.arrangedSubviews { row.setVisibilityPriority(.mustHold, for: view) }
             field.setContentHuggingPriority(.defaultLow, for: .horizontal)
             return row
         }
-        for view in [enabled, row("설명 (선택)", descriptionField), row("로컬 포트", localPort), row("목적지 호스트", remoteHost), row("목적지 포트", remotePort)] as [NSView] {
+        for view in [enabled, row(L10n.text("mac.description.optional"), descriptionField), row(L10n.text("mac.local.port"), localPort), row(L10n.text("mac.destination.host"), remoteHost), row(L10n.text("mac.destination.port"), remotePort)] as [NSView] {
             body.addArrangedSubview(view); body.setVisibilityPriority(.mustHold, for: view)
             view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
-        let cancel = NSButton(title: "취소", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
-        let okay = NSButton(title: "확인", target: self, action: #selector(confirm)); okay.keyEquivalent = "\r"
+        let cancel = NSButton(title: L10n.text("mac.cancel"), target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
+        let okay = NSButton(title: L10n.text("mac.ok"), target: self, action: #selector(confirm)); okay.keyEquivalent = "\r"
         let footer = NSStackView(views: [cancel, okay]); footer.spacing = 8
         footer.detachesHiddenViews = false
         for view in footer.arrangedSubviews { footer.setVisibilityPriority(.mustHold, for: view) }
@@ -66,7 +66,7 @@ final class RuleEditor: NSObject, NSWindowDelegate {
         draft.localPort = localPort.stringValue; draft.remotePort = remotePort.stringValue
         do { finish(try draft.applying(to: rules, replacing: replacing)) }
         catch {
-            let alert = NSAlert(); alert.messageText = "입력을 확인하세요."
+            let alert = NSAlert(); alert.messageText = L10n.text("mac.check.your.input")
             alert.informativeText = error.localizedDescription; alert.alertStyle = .warning
             alert.beginSheetModal(for: window, completionHandler: nil)
         }
