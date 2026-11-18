@@ -18,7 +18,7 @@ private struct HostDraft: Equatable {
         let text = portText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { result.port = nil }
         else if let value = Int(text) { result.port = value }
-        else { throw AppError("SSH 포트는 숫자여야 합니다.") }
+        else { throw AppError(.key("mac.the.ssh.port.must.be.a.number")) }
         try result.validate()
         return result
     }
@@ -45,9 +45,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private let userField = NSTextField()
     private let portField = NSTextField()
     private let keyField = NSTextField()
-    private let autoConnect = NSButton(checkboxWithTitle: "자동 연결", target: nil, action: nil)
+    private let autoConnect = NSButton(checkboxWithTitle: L10n.text("mac.auto.connect"), target: nil, action: nil)
     private let exitOnFailure = NSButton(checkboxWithTitle: "ExitOnForwardFailure", target: nil, action: nil)
-    private let retryRefused = NSButton(checkboxWithTitle: "연결 거부 시 한 번 재시도", target: nil, action: nil)
+    private let retryRefused = NSButton(checkboxWithTitle: L10n.text("mac.retry.once.if.refused"), target: nil, action: nil)
     private let command = NSTextView()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let statusHeading = NSTextField(wrappingLabelWithString: "")
@@ -71,6 +71,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private var narrowPaneConstraints: [NSLayoutConstraint] = []
     private var adaptiveRows: [AdaptiveStack] = []
     private var narrowPanes = false
+    private var languageBindings: [() -> Void] = []
+    private var hostActions: NSStackView!
 
     init(store: ConfigurationStore, manager: ConnectionManager, availableFrame: NSRect? = nil) {
         self.store = store; self.manager = manager
@@ -104,7 +106,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         hostsTable.reloadData()
         select(id.flatMap { drafts[$0] == nil ? nil : $0 } ?? order[0])
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        if let loadError { showError(loadError + "\n원본 파일은 보존되며 이 파일로 자동 연결하지 않습니다.") }
+        if let loadError { showError(loadError + L10n.text("mac.the.original.file.is.preserved.and.will.not.be")) }
     }
     var activeSheet: NSWindow? {
         var sheet = window.attachedSheet
@@ -153,7 +155,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         do {
             let host = try draft.validated()
             command.string = ([SSHCommand.executable] + SSHCommand.connect(host)).map(SSHCommand.shellQuote).joined(separator: " ")
-        } catch { command.string = "입력을 확인하세요: " + error.localizedDescription }
+        } catch { command.string = L10n.text("mac.check.your.input.2") + error.localizedDescription }
     }
     private func updateStatus() {
         guard let id = selectedID else { return }
@@ -166,21 +168,21 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     private func updateConnectionStatus() {
         guard let id = statusHostID else { return }
         if let host = manager.runtime(id)?.executionHost ?? drafts[id]?.host {
-            statusHeading.stringValue = "현재 연결 상태 — " + host.name + "\nSSH 대상: " + host.target
+            statusHeading.stringValue = L10n.text("mac.current.connection.status") + host.name + L10n.text("mac.ssh.target") + host.target
         }
         status.stringValue = connectionSummary(manager.runtime(id))
         if let runtime = manager.runtime(id) {
             if runtime.temporary {
-                status.stringValue += "\n임시 실행 설정 사용 중 — 다음 수동 연결과 자동 복구에도 적용됩니다."
+                status.stringValue += L10n.text("mac.using.temporary.settings.these.also.apply.to.the.next")
                 if let execution = runtime.executionHost, let draft = drafts[id], !execution.hasSameExecutionSettings(as: draft.host) {
-                    status.stringValue += "\n편집값과 임시 실행 설정이 다릅니다. 변경 없이 재연결하면 임시 실행 설정을 재사용합니다. 편집값을 적용하려면 저장하세요."
+                    status.stringValue += L10n.text("mac.your.edits.differ.from.the.temporary.settings.reconnecting.without")
                 }
             }
             else if let execution = runtime.executionHost, let saved = manager.hosts.first(where: { $0.id == id }), !execution.hasSameExecutionSettings(as: saved),
                     runtime.state == .connected || runtime.state == .connecting {
-                status.stringValue += "\n현재 실행 설정과 저장된 설정이 다릅니다. 저장한 값은 다음 연결부터 적용됩니다."
+                status.stringValue += L10n.text("mac.the.active.settings.differ.from.the.saved.settings.saved")
             }
-            if !runtime.lastError.isEmpty { status.stringValue += "\n최근 오류: " + runtime.lastError }
+            if !runtime.lastError.isEmpty { status.stringValue += L10n.text("mac.latest.error") + runtime.lastError }
             for error in runtime.recentErrors.suffix(5) {
                 status.stringValue += "\n" + DateFormatter.localizedString(from: error.time, dateStyle: .short, timeStyle: .medium) + " · " + error.message
             }
@@ -195,7 +197,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
         let size = NSSize(width: min(760, visible.width - 40), height: min(480, visible.height - 70))
         let sheet = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        sheet.title = "현재 연결 상태"; sheet.isReleasedWhenClosed = false
+        sheet.title = L10n.text("mac.current.connection.status.2"); sheet.isReleasedWhenClosed = false
         sheet.contentMinSize = NSSize(width: min(600, size.width), height: min(320, size.height))
         let content = sheet.contentView!
         let bodyScroll = NSScrollView(); bodyScroll.hasVerticalScroller = true; bodyScroll.autohidesScrollers = true
@@ -203,12 +205,12 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
         body.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(body)
         statusHeading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-        let explanation = NSTextField(wrappingLabelWithString: "‘준비됨’은 포워딩 개설 성공을 뜻합니다. 목적지 서비스의 정상 동작을 보장하지 않습니다.")
+        let explanation = localizedLabel("mac.ready.means.forwarding.was.opened.successfully.it.does.not", wrapping: true)
         for view in [statusHeading, status, scroll(runtimeTable, height: 160), explanation] as [NSView] {
             body.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
-        let close = button("닫기", #selector(closeConnectionStatus)); close.keyEquivalent = "\u{1b}"
+        let close = button("mac.close", #selector(closeConnectionStatus)); close.keyEquivalent = "\u{1b}"
         bodyScroll.translatesAutoresizingMaskIntoConstraints = false; close.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(bodyScroll); content.addSubview(close)
         NSLayoutConstraint.activate([
@@ -244,9 +246,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     @objc private func deleteHost() {
         finishEditing()
         guard let id = selectedID, let draft = drafts[id] else { return }
-        let alert = NSAlert(); alert.messageText = "\(draft.host.name)을 삭제할까요?"
-        alert.informativeText = "이 호스트의 연결과 예약을 취소하고 저장한 설정도 삭제합니다."
-        alert.addButton(withTitle: "삭제"); alert.addButton(withTitle: "취소")
+        let alert = NSAlert(); alert.messageText = L10n.text("mac.delete.name", ["name": String(describing: draft.host.name)])
+        alert.informativeText = L10n.text("mac.this.cancels.the.host.s.connection.and.pending.operations")
+        alert.addButton(withTitle: L10n.text("mac.delete")); alert.addButton(withTitle: L10n.text("mac.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             if manager.hosts.contains(where: { $0.id == id }) || baseline[id] != nil { try manager.delete(id) }
@@ -257,7 +259,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     }
     private func saveSelected() throws -> Host {
         finishEditing()
-        guard let id = selectedID, let draft = drafts[id] else { throw AppError("호스트를 선택하세요.") }
+        guard let id = selectedID, let draft = drafts[id] else { throw AppError(.key("mac.select.a.host")) }
         let host = try draft.validated()
         try store.save(host)
         manager.saved(host)
@@ -274,9 +276,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             var host = try draft.validated()
             var temporary = false
             if dirty(id) {
-                let alert = NSAlert(); alert.messageText = "편집한 설정으로 연결·재연결합니다."
-                alert.informativeText = "저장 없이 연결한 값은 이번 앱 실행 동안 유지됩니다."
-                alert.addButton(withTitle: "저장 후 재연결"); alert.addButton(withTitle: "저장 없이 재연결"); alert.addButton(withTitle: "취소")
+                let alert = NSAlert(); alert.messageText = L10n.text("mac.connect.or.reconnect.using.your.edited.settings")
+                alert.informativeText = L10n.text("mac.settings.used.without.saving.remain.available.for.this.app")
+                alert.addButton(withTitle: L10n.text("mac.save.and.reconnect")); alert.addButton(withTitle: L10n.text("mac.reconnect.without.saving")); alert.addButton(withTitle: L10n.text("mac.cancel"))
                 switch alert.runModal() {
                 case .alertFirstButtonReturn: host = try saveSelected()
                 case .alertSecondButtonReturn: temporary = true
@@ -336,9 +338,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     @objc private func okay() {
         finishEditing()
         if order.contains(where: dirty) {
-            let alert = NSAlert(); alert.messageText = "저장하지 않은 편집 내용이 있습니다."
-            alert.informativeText = "OK는 자동 저장하지 않습니다. 이미 저장하거나 연결에 적용한 결과는 유지됩니다."
-            alert.addButton(withTitle: "계속 편집"); alert.addButton(withTitle: "저장하지 않고 닫기")
+            let alert = NSAlert(); alert.messageText = L10n.text("mac.you.have.unsaved.changes")
+            alert.informativeText = L10n.text("mac.ok.does.not.save.automatically.previously.saved.settings.and")
+            alert.addButton(withTitle: L10n.text("mac.continue.editing")); alert.addButton(withTitle: L10n.text("mac.close.without.saving"))
             guard alert.runModal() == .alertSecondButtonReturn else { return }
         }
         finish(accepted: true)
@@ -375,7 +377,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         if tableView === hostsTable {
             guard order.indices.contains(row), let draft = drafts[order[row]] else { return nil }
             let id = order[row]
-            let temporary = baseline[id] == nil && manager.runtime(id) != nil ? " · 임시" : ""
+            let temporary = baseline[id] == nil && manager.runtime(id) != nil ? L10n.text("mac.temporary") : ""
             return (dirty(id) ? "● " : "") + draft.host.name + temporary
         }
         if tableView === runtimeTable {
@@ -411,9 +413,9 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
     @objc private func setupAuthentication() {
         finishEditing()
         guard let id = selectedID, authTimers[id] == nil else { return }
-        let alert = NSAlert(); alert.messageText = "선택한 호스트의 인증을 설정합니다."
-        alert.informativeText = "선택한 호스트를 저장하고 외부 터미널에서 서버 지문과 비밀번호를 확인합니다. 앱과 다른 호스트의 연결은 계속 유지됩니다. 완료 후 연결은 직접 요청하세요."
-        alert.addButton(withTitle: "저장 후 터미널 열기"); alert.addButton(withTitle: "취소")
+        let alert = NSAlert(); alert.messageText = L10n.text("mac.set.up.authentication.for.the.selected.host")
+        alert.informativeText = L10n.text("mac.save.the.selected.host.and.verify.the.server.fingerprint")
+        alert.addButton(withTitle: L10n.text("mac.save.and.open.terminal")); alert.addButton(withTitle: L10n.text("mac.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             let host = try saveSelected()
@@ -421,12 +423,12 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         } catch { showError(error.localizedDescription) }
     }
     private func launchAuthentication(_ host: Host) throws {
-        guard let executable = Bundle.main.executableURL else { throw AppError("앱 실행 파일을 찾을 수 없습니다.") }
+        guard let executable = Bundle.main.executableURL else { throw AppError(.key("mac.the.application.executable.was.not.found")) }
         let token = UUID().uuidString
         let script = store.directory.appendingPathComponent("authentication-\(token).command")
         let marker = store.directory.appendingPathComponent("authentication-\(token).result")
         let quote = SSHCommand.shellQuote
-        let body = "#!/bin/sh\numask 077\nrm -f -- \"$0\"\nresult_file=" + quote(marker.path) + "\ntrap 'exit 130' HUP INT TERM\ntrap 'result=$?; printf \"%s\\n\" \"$result\" > \"$result_file\"' EXIT\n" + quote(executable.path) + " --setup-auth " + quote(host.id) + "\nexit $?\n"
+        let body = "#!/bin/sh\numask 077\nrm -f -- \"$0\"\nresult_file=" + quote(marker.path) + "\ntrap 'exit 130' HUP INT TERM\ntrap 'result=$?; printf \"%s\\n\" \"$result\" > \"$result_file\"' EXIT\n" + quote(executable.path) + " --setup-auth " + quote(host.id) + " --ui-language " + quote(L10n.language) + "\nexit $?\n"
         try Data(body.utf8).write(to: script, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
@@ -457,7 +459,7 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
                 if selectedID == original.id { select(original.id) }
                 hostsTable.reloadData()
             }
-            if status != "0" { showError("인증 설정을 완료하지 못했습니다. 터미널에서 결과를 확인하세요.") }
+            if status != "0" { showError(L10n.text("mac.authentication.setup.did.not.complete.check.the.terminal.for")) }
         } catch { showError(error.localizedDescription) }
     }
     private func showError(_ message: String) {
@@ -466,7 +468,31 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         else { alert.runModal() }
     }
 
-    private func button(_ title: String, _ action: Selector) -> NSButton { NSButton(title: title, target: self, action: action) }
+    private func button(_ key: String, _ action: Selector) -> NSButton {
+        let button = NSButton(title: L10n.text(key), target: self, action: action)
+        languageBindings.append { [weak button] in button?.title = L10n.text(key) }
+        return button
+    }
+    private func localizedLabel(_ key: String, wrapping: Bool = false) -> NSTextField {
+        let label = wrapping ? NSTextField(wrappingLabelWithString: L10n.text(key)) : NSTextField(labelWithString: L10n.text(key))
+        languageBindings.append { [weak label] in label?.stringValue = L10n.text(key) }
+        return label
+    }
+    /// Update static labels in place: editable text, field editor, undo state and model are untouched.
+    func languageChanged() {
+        let origin = formScrollView.contentView.bounds.origin
+        for update in languageBindings { update() }
+        window.title = L10n.text("mac.localforwarder.settings")
+        autoConnect.title = L10n.text("mac.auto.connect")
+        retryRefused.title = L10n.text("mac.retry.once.if.refused")
+        targetField.placeholderString = L10n.text("mac.e.g.my.server.or.server.example.com")
+        keyField.placeholderString = L10n.text("mac.leave.blank.to.use.ssh.configuration")
+        updateResponsiveLayout()
+        window.contentView?.layoutSubtreeIfNeeded()
+        formScrollView.contentView.scroll(to: origin)
+        formScrollView.reflectScrolledClipView(formScrollView.contentView)
+        if isOpen { updateCommand(); updateStatus(); hostsTable.reloadData() }
+    }
     private func scroll(_ view: NSView, height: CGFloat) -> NSScrollView {
         let result = NSScrollView(); result.hasVerticalScroller = true; result.hasHorizontalScroller = view is NSTableView
         result.borderType = .bezelBorder; result.documentView = view
@@ -482,17 +508,19 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         let visible = availableFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
         let size = NSSize(width: min(900, visible.width - 40), height: min(650, visible.height - 70))
         window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "LocalForwarder 설정"; window.delegate = self; window.isReleasedWhenClosed = false
+        window.title = L10n.text("mac.localforwarder.settings"); window.delegate = self; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: min(800, size.width), height: min(430, size.height)); window.center()
         let content = window.contentView!
         let sidebar = NSStackView(); sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         sidebar.detachesHiddenViews = false; sidebarStack = sidebar
-        let hostActions = NSStackView(views: [button("새로 만들기", #selector(addHost)), button("호스트 삭제…", #selector(deleteHost))])
+        let hostActions = NSStackView(views: [button("mac.new.host.2", #selector(addHost)), button("mac.delete.host", #selector(deleteHost))])
+        self.hostActions = hostActions
         hostActions.spacing = 8
         hostActions.detachesHiddenViews = false
         for view in hostActions.arrangedSubviews { hostActions.setVisibilityPriority(.mustHold, for: view) }
         sidebar.addArrangedSubview(hostActions)
-        let hostColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("host")); hostColumn.title = "호스트 · ● 미저장"; hostColumn.width = 185
+        let hostColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("host")); hostColumn.title = L10n.text("mac.hosts.unsaved"); hostColumn.width = 185
+        languageBindings.append { [weak hostColumn] in hostColumn?.title = L10n.text("mac.hosts.unsaved") }
         hostsTable.addTableColumn(hostColumn); hostsTable.dataSource = self; hostsTable.delegate = self; hostsTable.rowHeight = 28
         hostsTable.allowsEmptySelection = false
         let hostScroll = NSScrollView(); hostScroll.documentView = hostsTable; hostScroll.hasVerticalScroller = true; hostScroll.borderType = .bezelBorder
@@ -515,8 +543,8 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         root.detachesHiddenViews = false; rootStack = root
         root.setVisibilityPriority(.mustHold, for: sidebar); root.setVisibilityPriority(.mustHold, for: formScroll)
         root.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(root)
-        let okay = button("OK", #selector(okay)); okay.keyEquivalent = "\r"
-        let cancel = button("Cancel", #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
+        let okay = button("mac.ok.2", #selector(okay)); okay.keyEquivalent = "\r"
+        let cancel = button("mac.cancel.2", #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         let footer = NSStackView(views: [cancel, okay]); footer.spacing = 8
         footer.detachesHiddenViews = false; footerStack = footer
         footer.setVisibilityPriority(.mustHold, for: cancel); footer.setVisibilityPriority(.mustHold, for: okay)
@@ -552,40 +580,44 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             adaptiveRows.append(row); return row
         }
         func fieldRow(_ label: String, _ field: NSTextField, trailing: NSView? = nil) -> AdaptiveStack {
-            let title = NSTextField(labelWithString: label)
+            let title = localizedLabel(label)
+            let labelWidth = title.widthAnchor.constraint(equalToConstant: max(112, title.intrinsicContentSize.width))
+            languageBindings.append { [weak title] in if let title { labelWidth.constant = max(112, title.intrinsicContentSize.width) } }
             field.delegate = self; field.setContentHuggingPriority(.defaultLow, for: .horizontal)
             field.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
             return adaptive([title, field] + (trailing.map { [$0] } ?? []),
-                            constraints: [title.widthAnchor.constraint(equalToConstant: 112)])
+                            constraints: [labelWidth])
         }
-        add(fieldRow("이름", nameField))
-        add(fieldRow("설명 (선택)", descriptionField))
-        add(fieldRow("SSH 별칭 / 주소", targetField))
-        let credentials = adaptive([fieldRow("사용자명 (선택)", userField), fieldRow("SSH 포트 (선택)", portField)], spacing: 12)
+        add(fieldRow("mac.name", nameField))
+        add(fieldRow("mac.description.optional", descriptionField))
+        add(fieldRow("mac.ssh.alias.address", targetField))
+        let credentials = adaptive([fieldRow("mac.username.optional", userField), fieldRow("mac.ssh.port.optional", portField)], spacing: 12)
         add(credentials)
-        let keyRow = fieldRow("개인키 (선택)", keyField, trailing: button("개인키 파일 선택…", #selector(chooseKey)))
+        let keyRow = fieldRow("mac.private.key.optional", keyField, trailing: button("mac.choose.key.file", #selector(chooseKey)))
         add(keyRow)
-        targetField.placeholderString = "예: my-server 또는 server.example.com"; keyField.placeholderString = "비워두면 기존 SSH 설정 사용"
+        targetField.placeholderString = L10n.text("mac.e.g.my.server.or.server.example.com"); keyField.placeholderString = L10n.text("mac.leave.blank.to.use.ssh.configuration")
         for control in [autoConnect, exitOnFailure, retryRefused] { control.target = self; control.action = #selector(changed) }
         add(adaptive([autoConnect, exitOnFailure, retryRefused], spacing: 12))
-        add(NSTextField(wrappingLabelWithString: "포워딩 편집 — 내 컴퓨터(127.0.0.1)에서만 접속"))
-        for (id, title, width) in [("enabled", "사용", 48.0), ("localPort", "로컬 포트", 90.0), ("remoteHost", "목적지 호스트", 270.0), ("remotePort", "목적지 포트", 100.0), ("description", "설명", 220.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = id == "enabled"
+        add(localizedLabel("mac.edit.forwarding.local.access.only.127.0.0.1", wrapping: true))
+        for (id, title, width) in [("enabled", "mac.enabled", 48.0), ("localPort", "mac.local.port", 90.0), ("remoteHost", "mac.destination.host", 270.0), ("remotePort", "mac.destination.port", 100.0), ("description", "mac.description", 220.0)] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(CGFloat(width), column.headerCell.cellSize.width + 16);
+            languageBindings.append { [weak column] in if let column { column.title = L10n.text(title); column.width = max(column.width, column.headerCell.cellSize.width + 16) } }; column.isEditable = id == "enabled"
             if id == "enabled" { let cell = NSButtonCell(); cell.setButtonType(.switch); cell.title = ""; column.dataCell = cell }
             rulesTable.addTableColumn(column)
         }
         rulesTable.dataSource = self; rulesTable.delegate = self; rulesTable.rowHeight = 24
         rulesTable.target = self; rulesTable.doubleAction = #selector(editRule)
         add(scroll(rulesTable, height: 120))
-        editRuleButton = button("규칙 편집…", #selector(editRule)); deleteRuleButton = button("규칙 삭제", #selector(deleteRule))
-        add(adaptive([button("새 규칙…", #selector(addRule)), editRuleButton, deleteRuleButton]))
-        add(NSTextField(wrappingLabelWithString: "편집한 값의 SSH 명령 (읽기 전용)")); add(scroll(command, height: 64))
-        for (id, title, width) in [("description", "포워딩", 260.0), ("source", "출처", 90.0), ("state", "상태", 90.0), ("detail", "상세", 280.0)] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = title; column.width = width; column.isEditable = false; runtimeTable.addTableColumn(column)
+        editRuleButton = button("mac.edit.rule.2", #selector(editRule)); deleteRuleButton = button("mac.delete.rule", #selector(deleteRule))
+        add(adaptive([button("mac.new.rule.2", #selector(addRule)), editRuleButton, deleteRuleButton]))
+        add(localizedLabel("mac.ssh.command.for.your.edits.read.only", wrapping: true)); add(scroll(command, height: 64))
+        for (id, title, width) in [("description", "mac.forwarding", 260.0), ("source", "mac.source", 90.0), ("state", "mac.status", 90.0), ("detail", "mac.details", 280.0)] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id)); column.title = L10n.text(title); column.width = max(CGFloat(width), column.headerCell.cellSize.width + 16);
+            languageBindings.append { [weak column] in if let column { column.title = L10n.text(title); column.width = max(column.width, column.headerCell.cellSize.width + 16) } }; column.isEditable = false; runtimeTable.addTableColumn(column)
         }
         runtimeTable.dataSource = self; runtimeTable.delegate = self; runtimeTable.rowHeight = 24
-        connectButton = button("연결·재연결", #selector(connectSelected)); authButton = button("인증 설정…", #selector(setupAuthentication))
-        add(adaptive([button("선택 호스트 저장", #selector(saveClicked)), connectButton, authButton, button("연결 상태…", #selector(showConnectionStatus))]))
+        connectButton = button("mac.connect.reconnect", #selector(connectSelected)); authButton = button("mac.authentication", #selector(setupAuthentication))
+        add(adaptive([button("mac.save.selected.host", #selector(saveClicked)), connectButton, authButton, button("mac.connection.status", #selector(showConnectionStatus))]))
         updateResponsiveLayout()
     }
     func windowDidResize(_ notification: Notification) { updateResponsiveLayout() }
@@ -598,8 +630,11 @@ final class SettingsController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             NSLayoutConstraint.activate(narrow ? narrowPaneConstraints : widePaneConstraints)
             narrowPanes = narrow
         }
-        let formWidth = content.bounds.width - 32 - (narrow ? 0 : 221) - 24
-        for row in adaptiveRows { row.reflow(compact: formWidth < 560) }
+        let sidebarWidth = max(205, hostActions.arrangedSubviews.reduce(CGFloat(8)) { $0 + $1.intrinsicContentSize.width })
+        widePaneConstraints[0].constant = sidebarWidth
+        widePaneConstraints[3].constant = -(sidebarWidth + 16)
+        let formWidth = content.bounds.width - 32 - (narrow ? 0 : sidebarWidth + 16) - 24
+        for row in adaptiveRows { row.reflow(compact: formWidth < max(560, row.minimumHorizontalWidth)) }
     }
 }
 
@@ -616,6 +651,19 @@ extension SettingsController {
         capture()
         try NativeLayoutChecks.require(isOpen && drafts == before && selectedID == selected,
                                        "application modal preserves unsaved settings draft and selection")
+    }
+    func checkLanguagePreservation(during action: () throws -> Void) throws {
+        try checkDraftPreserved {
+            window.makeFirstResponder(nameField)
+            let responder = window.firstResponder
+            let text = nameField.stringValue
+            let origin = formScrollView.contentView.bounds.origin
+            try action()
+            try NativeLayoutChecks.require(window.firstResponder === responder && nameField.stringValue == text,
+                                           "language switch preserves field editor and unsaved text")
+            try NativeLayoutChecks.require(formScrollView.contentView.bounds.origin == origin,
+                                           "language switch preserves scroll position")
+        }
     }
     static func checkNativeLayout(store: ConfigurationStore, manager: ConnectionManager) throws {
         for (area, sizes) in [
@@ -654,7 +702,7 @@ extension SettingsController {
                                                ["enabled", "localPort", "remoteHost", "remotePort", "description"],
                                                context + " missing or reordered rule columns")
                 let descriptionColumn = columns.last!
-                try NativeLayoutChecks.require(descriptionColumn.title == "설명" && !descriptionColumn.isEditable,
+                try NativeLayoutChecks.require(descriptionColumn.title == L10n.text("mac.description") && !descriptionColumn.isEditable,
                                                context + " description column must use the rule editor")
                 try NativeLayoutChecks.require(controller.rulesTable.enclosingScrollView?.hasHorizontalScroller == true,
                                                context + " rule columns cannot scroll horizontally")
@@ -676,7 +724,7 @@ extension SettingsController {
                     try NativeLayoutChecks.check(controls, in: modalContent, context: context + " rule sheet")
                     let fields = controls.compactMap { $0 as? NSTextField }.filter { $0.isEditable }
                     let labels = controls.compactMap { $0 as? NSTextField }.filter { !$0.isEditable }.map(\.stringValue)
-                    try NativeLayoutChecks.require(fields.count == 4 && labels == ["설명 (선택)", "로컬 포트", "목적지 호스트", "목적지 포트"],
+                    try NativeLayoutChecks.require(fields.count == 4 && labels == [L10n.text("mac.description.optional"), L10n.text("mac.local.port"), L10n.text("mac.destination.host"), L10n.text("mac.destination.port")],
                                                    context + " wrong rule field order")
                     try NativeLayoutChecks.require(fields[0].stringValue == (editing?.description ?? "") &&
                                                    fields[0].cell?.usesSingleLineMode == true,
@@ -688,7 +736,7 @@ extension SettingsController {
                     guard let button = buttons.first(where: { $0.title == title }) else { throw AppError(context + " missing " + title) }
                     // Escape is a cancellation requirement. Confirmation is checked through
                     // its actual button action and resulting draft, not a framework key string.
-                    if title == "취소" {
+                    if title == L10n.text("mac.cancel") {
                         try NativeLayoutChecks.require(button.keyEquivalent == "\u{1b}",
                                                        context + " missing rule Escape equivalent")
                     }
@@ -705,11 +753,11 @@ extension SettingsController {
                     try NativeLayoutChecks.require(try Data(contentsOf: store.file) == originalFile,
                                                    context + " rule modal wrote the configuration file")
                 }
-                let cancellations: [(String, Forward?)] = [("취소", nil), ("Escape", originalRules.first), ("닫기", originalRules.first)]
+                let cancellations: [(String, Forward?)] = [(L10n.text("mac.cancel"), nil), ("Escape", originalRules.first), (L10n.text("mac.close"), originalRules.first)]
                 for (action, editing) in cancellations {
                     let (editor, fields) = try openRule(editing)
                     fields[0].stringValue = "취소할 설명 변경"
-                    if action != "닫기" { try click("취소", editor: editor, usingEscape: action == "Escape") }
+                    if action != L10n.text("mac.close") { try click(L10n.text("mac.cancel"), editor: editor, usingEscape: action == "Escape") }
                     else {
                         let closeButton = editor.window.standardWindowButton(.closeButton)
                         if let closeButton, closeButton.isEnabled && !closeButton.isHiddenOrHasHiddenAncestor {
@@ -739,7 +787,7 @@ extension SettingsController {
                 for description in ["수정한 한글 웹 설명", ""] {
                     let (editor, fields) = try openRule(controller.drafts[selectedID]!.host.forwards[0])
                     fields[0].stringValue = description
-                    try click("확인", editor: editor)
+                    try click(L10n.text("mac.ok"), editor: editor)
                     var expected = before
                     expected[selectedID]!.host.forwards[0].description = description
                     try NativeLayoutChecks.require(controller.drafts == expected,
@@ -749,7 +797,7 @@ extension SettingsController {
                 let beforeAddition = controller.drafts[selectedID]!.host.forwards
                 let (editor, fields) = try openRule(nil)
                 fields[0].stringValue = "새 규칙 설명"; fields[1].stringValue = "18081"
-                try click("확인", editor: editor)
+                try click(L10n.text("mac.ok"), editor: editor)
                 let added = controller.drafts[selectedID]!.host.forwards
                 try NativeLayoutChecks.require(added.count == beforeAddition.count + 1 && Array(added.dropLast()) == beforeAddition &&
                                                added.last?.description == "새 규칙 설명" && added.last?.localPort == 18081 &&
@@ -767,21 +815,21 @@ extension SettingsController {
 
 func forwardStateTitle(_ state: ForwardState) -> String {
     switch state {
-    case .preparing: return "준비 중"
-    case .ready: return "준비됨"
-    case .failed: return "개설 실패"
-    case .disconnected: return "연결 끊김"
-    case .unknown: return "확인 불가"
+    case .preparing: return L10n.text("mac.preparing")
+    case .ready: return L10n.text("mac.ready")
+    case .failed: return L10n.text("mac.failed.to.open")
+    case .disconnected: return L10n.text("mac.disconnected")
+    case .unknown: return L10n.text("mac.unknown")
     }
 }
 func connectionSummary(_ runtime: HostRuntime?) -> String {
-    guard let runtime else { return "SSH 연결 안 됨" }
+    guard let runtime else { return L10n.text("mac.ssh.disconnected") }
     let label: String
     switch runtime.state {
-    case .connected: label = "SSH 연결됨"
-    case .connecting: label = "SSH 연결 중…"
-    case .stopping: label = "SSH 정리 중…"
-    case .disconnected: label = "SSH 연결 안 됨"
+    case .connected: label = L10n.text("mac.ssh.connected")
+    case .connecting: label = L10n.text("mac.ssh.connecting")
+    case .stopping: label = L10n.text("mac.ssh.stopping")
+    case .disconnected: label = L10n.text("mac.ssh.disconnected")
     }
     let forwards = runtime.forwards
     let ready = forwards.filter { $0.state == .ready }.count
@@ -789,9 +837,9 @@ func connectionSummary(_ runtime: HostRuntime?) -> String {
     let unknown = forwards.filter { $0.state == .unknown }.count
     let preparing = forwards.filter { $0.state == .preparing }.count
     let disconnected = forwards.filter { $0.state == .disconnected }.count
-    var text = "\(label) · 포워딩 준비 \(ready) / 실패 \(failed)"
-    if unknown > 0 { text += " / 확인 불가 \(unknown)" }
-    if preparing > 0 { text += " / 준비 중 \(preparing)" }
-    if disconnected > 0 { text += " / 연결 끊김 \(disconnected)" }
+    var text = L10n.text("mac.label.forwarding.ready.ready.failed.failed", ["label": String(describing: label), "ready": String(describing: ready), "failed": String(describing: failed)])
+    if unknown > 0 { text += L10n.text("mac.unknown.unknown", ["unknown": String(describing: unknown)]) }
+    if preparing > 0 { text += L10n.text("mac.preparing.preparing", ["preparing": String(describing: preparing)]) }
+    if disconnected > 0 { text += L10n.text("mac.disconnected.disconnected", ["disconnected": String(describing: disconnected)]) }
     return text
 }

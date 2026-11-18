@@ -20,7 +20,7 @@ int verify(const fs::path& ssh,const Host& host,const std::string& configuration
         if(result.code==0) return 0;
         std::cout<<result.text<<std::flush;
         if(attempt || !host.retryOnConnectionRefused || !isConnectionRefusal(result.text)) break;
-        std::cout<<"연결이 거부되어 1초 뒤 한 번 더 검증합니다.\n"<<std::flush; Sleep(1000);
+        std::cout<<tr("win.connection_refused_retrying_verification_once_in_1_second_n")<<std::flush; Sleep(1000);
     }
     return 1;
 }
@@ -29,7 +29,7 @@ std::string checkedPublicKey(const std::string& value) {
     stream>>type>>blob;
     if(!(type.rfind("ssh-",0)==0 || type.rfind("ecdsa-",0)==0) || blob.empty() ||
        blob.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")!=std::string::npos)
-        throw std::runtime_error("개인키에서 유효한 공개키를 읽지 못했습니다.");
+        throw LocalizedError(tr("win.could_not_read_a_valid_public_key_from_the_private_key"));
     auto result=value;
     while(!result.empty() && (result.back()=='\r' || result.back()=='\n')) result.pop_back();
     if(result.find_first_of("\r\n")!=std::string::npos) result=type+" "+blob;
@@ -39,7 +39,7 @@ std::string checkedPublicKey(const std::string& value) {
 const std::string installCommand=R"LF(sh -c 'set -eu; umask 077; mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; key=$(cat); blob=$(printf "%s\n" "$key" | awk "{print \$2}"); test -n "$blob"; touch "$HOME/.ssh/authorized_keys"; if ! awk -v wanted="$blob" "{for(i=1;i<=NF;i++) if (\$i == wanted) found=1} END {exit !found}" "$HOME/.ssh/authorized_keys"; then printf "\n%s\n" "$key" >> "$HOME/.ssh/authorized_keys"; fi; chmod 600 "$HOME/.ssh/authorized_keys"')LF";
 }
 std::string derivePublicKey(const fs::path& key) {
-    std::cout << "공개키를 추출합니다. 기존 키에 암호가 있으면 입력하세요.\n" << std::flush;
+    std::cout << tr("win.extracting_the_public_key_enter_the_existing_key_passphrase_if_re") << std::flush;
     auto exe=systemSSH().parent_path()/L"ssh-keygen.exe";
     struct TemporaryDirectory {
         fs::path path;
@@ -49,22 +49,22 @@ std::string derivePublicKey(const fs::path& key) {
     auto output=temp.path/L"public-key";
     SECURITY_ATTRIBUTES sa{sizeof(sa),nullptr,TRUE};
     Handle file(CreateFileW(output.c_str(),GENERIC_WRITE,0,&sa,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(!file) throw std::runtime_error(winError());
+    if(!file) throw LocalizedError(winError());
     STARTUPINFOW si{}; si.cb=sizeof(si); si.dwFlags=STARTF_USESTDHANDLES;
     si.hStdInput=GetStdHandle(STD_INPUT_HANDLE); si.hStdError=GetStdHandle(STD_ERROR_HANDLE); si.hStdOutput=file.value;
     auto cmd=quoteWindowsArgument(exe.wstring())+L" -y -f "+quoteWindowsArgument(key.wstring());
     PROCESS_INFORMATION pi{};
-    if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,TRUE,0,nullptr,nullptr,&si,&pi)) throw std::runtime_error(winError());
+    if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,TRUE,0,nullptr,nullptr,&si,&pi)) throw LocalizedError(winError());
     Handle process(pi.hProcess),thread(pi.hThread); WaitForSingleObject(process.value,INFINITE);
     DWORD code=1; GetExitCodeProcess(process.value,&code); file.reset();
-    if(code) throw std::runtime_error("공개키 추출에 실패했습니다.");
+    if(code) throw LocalizedError(tr("win.public_key_extraction_failed"));
     auto readLine=[](const fs::path& path) {
         std::ifstream stream(path,std::ios::binary); std::string line; std::getline(stream,line);
         if(!line.empty() && line.back()=='\r') line.pop_back();
         return line;
     };
     auto derived=readLine(output);
-    if(derived.empty()) throw std::runtime_error("추출한 공개키가 비어 있습니다.");
+    if(derived.empty()) throw LocalizedError(tr("win.the_extracted_public_key_is_empty"));
     // Only the selected private key determines which public key is authorized.
     // An existing companion file may supply a comment, never a different key.
     auto fields=[](const std::string& line) {
@@ -85,60 +85,60 @@ int setupAuthentication(const fs::path& directory,const std::string& profileId,c
     try {
         auto host=loadHost(directory,profileId); auto ssh=systemSSH();
         auto version=capture(ssh,{"-V"},10000);
-        if(version.code!=0 || !supportedOpenSSHVersion(version.text)) throw std::runtime_error(sshUpdateGuidance);
-        std::cout<<"LocalForwarder 인증 설정 — "<<host.name<<"\n"
-                 <<"서버 비밀번호와 기존 키 암호는 이 터미널에서만 입력합니다.\n"
-                 <<"서버의 호스트 키 검증과 인증 정책은 변경하지 않습니다.\n"<<std::flush;
+        if(version.code!=0 || !supportedOpenSSHVersion(version.text)) throw LocalizedError(sshUpdateGuidance);
+        std::cout<<tr("win.authentication_heading",{{"host",host.name}})<<"\n"
+                 <<tr("win.enter_server_passwords_and_existing_key_passphrases_only_in_this_")
+                 <<tr("win.server_host_key_verification_and_authentication_policies_remain_u")<<std::flush;
         auto effective=capture(ssh,sshArguments(host,configuration,true));
-        if(effective.code) throw std::runtime_error(effective.text);
+        if(effective.code) throw LocalizedError(effective.text);
         std::vector<fs::path> keys;
         auto add=[&](const fs::path& path) {
             if(fs::is_regular_file(path) && std::find(keys.begin(),keys.end(),path)==keys.end()) keys.push_back(path);
         };
         if(!host.identityFile.empty()) {
             auto path=expandHome(host.identityFile);
-            if(!fs::is_regular_file(path)) throw std::runtime_error("지정한 개인키 파일이 없습니다.");
+            if(!fs::is_regular_file(path)) throw LocalizedError(tr("win.the_specified_private_key_file_does_not_exist"));
             add(path);
         } else for(const auto& path:identityFiles(effective.text)) add(expandHome(path));
         auto appKey=directory/L"keys"/wide(profileId);
         if(keys.empty()) add(appKey);
         fs::path key;
         if(keys.size()>1) {
-            std::cout<<"사용할 기존 키 번호를 선택하세요.\n";
+            std::cout<<tr("win.choose_the_number_of_the_existing_key_to_use_n");
             for(size_t index=0;index<keys.size();++index) std::cout<<index+1<<") "<<utf8(keys[index].wstring())<<"\n";
             std::cout<<"> "<<std::flush; std::string input; std::getline(std::cin,input);
             size_t consumed=0; auto index=std::stoul(input,&consumed);
-            if(consumed!=input.size() || index<1 || index>keys.size()) throw std::runtime_error("키 선택을 취소했습니다.");
+            if(consumed!=input.size() || index<1 || index>keys.size()) throw LocalizedError(tr("win.key_selection_was_cancelled"));
             key=keys[index-1];
         } else if(!keys.empty()) key=keys.front();
         else {
             key=appKey;
             createPrivateDirectory(key.parent_path());
-            if(fs::exists(key) || fs::exists(fs::path(key.wstring()+L".pub"))) throw std::runtime_error("키 파일이 이미 있어 덮어쓰지 않습니다.");
-            std::cout<<"암호 없는 새 Ed25519 키를 생성합니다: "<<utf8(key.wstring())<<"\n"<<std::flush;
-            if(interactive(ssh.parent_path()/L"ssh-keygen.exe",{"-t","ed25519","-N","","-C","LocalForwarder/"+profileId,"-f",utf8(key.wstring())})) throw std::runtime_error("키 생성 실패");
+            if(fs::exists(key) || fs::exists(fs::path(key.wstring()+L".pub"))) throw LocalizedError(tr("win.a_key_file_already_exists_and_will_not_be_overwritten"));
+            std::cout<<tr("win.creating_a_new_ed25519_key_without_a_passphrase")<<utf8(key.wstring())<<"\n"<<std::flush;
+            if(interactive(ssh.parent_path()/L"ssh-keygen.exe",{"-t","ed25519","-N","","-C","LocalForwarder/"+profileId,"-f",utf8(key.wstring())})) throw LocalizedError(tr("win.key_generation_failed"));
             protectPath(key);
         }
         auto derived=capture(ssh.parent_path()/L"ssh-keygen.exe",{"-y","-P","","-f",utf8(key.wstring())});
         if(derived.code) {
-            std::cout<<"기존 키가 암호화되어 있거나 잠겨 있습니다. 키 암호를 입력하여 SSH 에이전트에 등록합니다.\n"<<std::flush;
+            std::cout<<tr("win.the_existing_key_is_encrypted_or_locked_enter_its_passphrase_to_r")<<std::flush;
             if(interactive(ssh.parent_path()/L"ssh-add.exe",{utf8(key.wstring())})) {
-                throw std::runtime_error("SSH 에이전트에 키를 등록하지 못했습니다. 기존 키는 보존했습니다.\n"
-                    "ssh-agent 서비스가 꺼져 있다면 관리자 PowerShell에서 다음 명령을 직접 실행한 뒤 인증 설정을 다시 실행하세요:\n"
-                    "Set-Service ssh-agent -StartupType Automatic\nStart-Service ssh-agent\n"
-                    "앱은 관리자 권한을 요청하거나 서비스 설정을 변경하지 않습니다.");
+                throw LocalizedError(tr("win.could_not_register_the_key_with_the_ssh_agent_the_existing_key_wa") +
+                    tr("win.if_ssh_agent_is_stopped_run_the_following_commands_in_administrat") +
+                    "Set-Service ssh-agent -StartupType Automatic\nStart-Service ssh-agent\n" +
+                    tr("win.the_app_does_not_request_administrator_privileges_or_change_servi"));
             }
         }
         // Always derive from the selected private key; preserve a matching companion's comment only.
         auto publicKey=checkedPublicKey(derivePublicKey(key));
         host.identityFile=utf8(key.wstring());
-        std::cout<<"원격 계정의 ~/.ssh/authorized_keys에 공개키를 추가합니다. 기존 키와 제한 옵션은 유지합니다.\n"<<std::flush;
+        std::cout<<tr("win.adding_the_public_key_to_ssh_authorized_keys_on_the_remote_accoun")<<std::flush;
         auto registration=authenticationArgs(host,false,configuration); registration.push_back(installCommand);
-        if(interactive(ssh,registration,publicKey)) throw std::runtime_error("공개키 등록 실패. 터미널 오류와 원격 계정의 POSIX 셸·인증 정책을 확인하세요.");
-        if(verify(ssh,host,configuration)) throw std::runtime_error("공개키는 등록했지만 입력 없는 접속을 검증하지 못했습니다. 서버 인증 정책과 SSH 에이전트 상태를 확인하세요.");
+        if(interactive(ssh,registration,publicKey)) throw LocalizedError(tr("win.public_key_registration_failed_check_the_terminal_error_and_the_r"));
+        if(verify(ssh,host,configuration)) throw LocalizedError(tr("win.the_public_key_was_registered_but_unattended_access_could_not_be_"));
         setIdentity(directory,profileId,host.identityFile);
-        std::cout<<"인증 설정이 완료되었습니다. LocalForwarder에서 이 호스트의 연결을 선택하세요.\n"<<std::flush;
+        std::cout<<tr("win.authentication_setup_is_complete_select_connect_for_this_host_in_")<<std::flush;
         return 0;
-    } catch(const std::exception& error) { std::cerr<<"인증 설정 실패: "<<error.what()<<"\n"<<std::flush; return 1; }
+    } catch(const std::exception& error) { std::cerr<<tr("win.authentication_setup_failed")<<error.what()<<"\n"<<std::flush; return 1; }
 }
 }

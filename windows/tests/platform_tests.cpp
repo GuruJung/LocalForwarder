@@ -167,7 +167,7 @@ int main(int argc,char** argv) {
      auto rejectsUnsupported=[&](auto operation) {
        std::string failure;
        try{operation();}catch(const std::exception& error){failure=error.what();}
-       check(failure.find("지원하지 않는 설정 버전")!=std::string::npos,"unsupported version rejected");
+       check(failure.find(tr("win.unsupported_configuration_version").render())!=std::string::npos,"unsupported version rejected");
        check(readBytes(directory/L"config.json")==original,"unsupported original bytes preserved");
        check(readBytes(directory/L"config-v1-existing.json")==backup,"existing backup bytes preserved");
      };
@@ -208,7 +208,7 @@ int main(int argc,char** argv) {
        permissions.setCreationDenied(true);
        held.release();
        auto code=saving.wait(10000);
-       if(code!=1 || failure.find("설정 파일 생성 실패:")==std::string::npos ||
+       if(code!=1 || failure.find(tr("win.could_not_create_the_configuration_file").render())==std::string::npos ||
            failure.find("Windows error "+std::to_string(ERROR_ACCESS_DENIED))==std::string::npos)
          throw std::runtime_error("expected temporary CreateFile access denial, exit="+std::to_string(code)+": "+failure);
        check(readBytes(directory/L"config.json")==original,"temporary creation failure preserves exact original v2 bytes");
@@ -232,7 +232,7 @@ int main(int argc,char** argv) {
      auto path=directory/L"config.json";auto before=readBytes(path);RestoredAttributes attributes(path);attributes.readOnly();
      auto edited=a;edited.name="Must not replace original";std::string failure;
      try{saveHost(directory,edited);}catch(const std::exception& error){failure=error.what();}
-     if(failure.find("설정 파일 교체 실패:")==std::string::npos)
+     if(failure.find(tr("win.could_not_replace_the_configuration_file").render())==std::string::npos)
        throw std::runtime_error("expected readonly destination atomic replacement failure: "+failure);
      check(readBytes(path)==before,"replacement failure preserves exact original config bytes");
      check(loadConfig(directory).version==2 && loadHost(directory,a.id).name==a.name,"replacement failure leaves original parseable");

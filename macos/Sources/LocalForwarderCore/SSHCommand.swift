@@ -55,11 +55,13 @@ public enum SSHCommand {
         let conflictingFailure = needsAuthenticationHelp(auxiliaryDiagnostic) || ["could not resolve hostname", "name or service not known", "network is unreachable", "no route to host", "timed out", "bad configuration", "address already in use", "remote port forwarding failed", "could not request local forwarding"].contains { auxiliary.contains($0) }
         return !conflictingFailure && isConnectionRefusal(targetDiagnostic)
     }
-    public static func userMessage(_ log: String) -> String {
+    public static func userMessage(_ log: String) -> String { userMessageValue(.raw(log)).rendered }
+    public static func userMessageValue(_ message: LocalizedMessage) -> LocalizedMessage {
+        guard case .raw(let log) = message else { return message }
         if log.contains("Address already in use") || log.contains("cannot listen to port") {
-            return "누군가 해당 로컬 포트를 사용하고 있습니다.\n\n" + log
+            return .key("mac.the.local.port.is.already.in.use") + .raw(log)
         }
-        return log.isEmpty ? "SSH 연결을 완료하지 못했습니다." : log
+        return log.isEmpty ? .key("mac.could.not.establish.the.ssh.connection") : message
     }
 }
 

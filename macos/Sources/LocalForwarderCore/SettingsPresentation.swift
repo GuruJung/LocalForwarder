@@ -13,7 +13,7 @@ public struct RuleDraft {
         func port(_ text: String) throws -> Int {
             guard !text.isEmpty, text.utf8.allSatisfy({ (48...57).contains($0) }),
                   let number = Int(text), (1...65535).contains(number) else {
-                throw AppError("포트를 1–65535 사이의 숫자로 입력하세요.")
+                throw AppError(.key("mac.enter.a.port.number.between.1.and.65535"))
             }
             return number
         }
@@ -21,7 +21,7 @@ public struct RuleDraft {
         value.localPort = try port(localPort); value.remotePort = try port(remotePort)
         var result = rules
         if let id {
-            guard let index = result.firstIndex(where: { $0.id == id }) else { throw AppError("편집할 규칙을 찾을 수 없습니다.") }
+            guard let index = result.firstIndex(where: { $0.id == id }) else { throw AppError(.key("mac.the.rule.to.edit.was.not.found")) }
             value.id = id; result[index] = value
         } else { result.append(value) }
         // Validate rules independently of unfinished host identity fields.
@@ -34,12 +34,12 @@ public enum ForwardMenuState: String, CaseIterable {
     case preparing, ready, failed, disconnected, unknown, disabled
     public var title: String {
         switch self {
-        case .preparing: return "준비 중"
-        case .ready: return "준비됨"
-        case .failed: return "개설 실패"
-        case .disconnected: return "연결 끊김"
-        case .unknown: return "확인 불가"
-        case .disabled: return "비활성"
+        case .preparing: return L10n.text("mac.preparing")
+        case .ready: return L10n.text("mac.ready")
+        case .failed: return L10n.text("mac.failed.to.open")
+        case .disconnected: return L10n.text("mac.disconnected")
+        case .unknown: return L10n.text("mac.unknown")
+        case .disabled: return L10n.text("mac.disabled")
         }
     }
     public var symbol: String {
@@ -72,9 +72,9 @@ public enum HostMenuState: Equatable {
     }
     public var title: String {
         switch self {
-        case .connected: return "연결됨"
-        case .disconnected: return "연결 안 됨"
-        case .disabled: return "자동 연결 꺼짐, 연결 안 됨"
+        case .connected: return L10n.text("mac.connected")
+        case .disconnected: return L10n.text("mac.disconnected.2")
+        case .disabled: return L10n.text("mac.auto.connect.off.disconnected")
         }
     }
 }
@@ -89,7 +89,7 @@ public enum TrayPresentation {
     public static func host(_ host: Host, runtime: HostRuntime?) -> HostMenuRow {
         let state: HostMenuState = runtime?.state == .connected ? .connected : (host.autoConnect ? .disconnected : .disabled)
         let busy = runtime?.state == .connecting || runtime?.state == .stopping
-        return HostMenuRow(title: host.name + (runtime?.temporary == true ? " · 임시" : "") + (busy ? " · 작업 중…" : ""), state: state)
+        return HostMenuRow(title: host.name + (runtime?.temporary == true ? L10n.text("mac.temporary") : "") + (busy ? L10n.text("mac.working") : ""), state: state)
     }
     /// Use one execution snapshot, never a mixture of saved and currently executing rules.
     public static func forwards(host: Host, runtime: HostRuntime?) -> [ForwardMenuRow] {
@@ -97,7 +97,7 @@ public enum TrayPresentation {
         let rules = (execution ?? host).forwards
         let observed = execution == nil ? [] : (runtime?.forwards ?? [])
         var rows = rules.map { rule -> ForwardMenuRow in
-            let observation = observed.first { $0.id == rule.id && $0.source == "앱 설정" }
+            let observation = observed.first { $0.id == rule.id && $0.sourceMessage == .key("mac.app.configuration") }
             let state: ForwardMenuState
             if !rule.enabled { state = .disabled }
             else if let observation { state = ForwardMenuState(rawValue: observation.state.rawValue) ?? .unknown }
@@ -105,10 +105,10 @@ public enum TrayPresentation {
             else if runtime?.state == .connected, execution != nil { state = .unknown }
             else { state = .disconnected }
             return ForwardMenuRow(id: "app:" + rule.id,
-                                  text: "\(rule.localPort) → \(rule.remoteHost):\(rule.remotePort) · 앱 설정",
+                                  text: L10n.text("mac.localport.remotehost.remoteport.app.configuration", ["localPort": String(describing: rule.localPort), "remoteHost": String(describing: rule.remoteHost), "remotePort": String(describing: rule.remotePort)]),
                                   state: state, detail: observation?.detail ?? "")
         }
-        rows += observed.filter { $0.source != "앱 설정" }.map {
+        rows += observed.filter { $0.sourceMessage != .key("mac.app.configuration") }.map {
             ForwardMenuRow(id: "inherited:" + $0.id, text: $0.description + " · " + $0.source,
                            state: ForwardMenuState(rawValue: $0.state.rawValue) ?? .unknown, detail: $0.detail)
         }

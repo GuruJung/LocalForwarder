@@ -9,7 +9,7 @@ struct RegistryKey {
     ~RegistryKey(){if(value)RegCloseKey(value);}
 };
 void registryError(LSTATUS result) {
-    if(result!=ERROR_SUCCESS) throw std::runtime_error("로그인 자동 시작 설정: "+winError(result));
+    if(result!=ERROR_SUCCESS) throw LocalizedError(tr("win.launch_at_login_setting")+winError(result));
 }
 bool validCommand(const std::wstring& command) {
     if(command.size()<3 || command.size()>260 || command.front()!=L'"' || command.back()!=L'"')return false;
@@ -30,13 +30,13 @@ bool RegistryLoginStartup::enabled() {
     registryError(result);
     // A conflicting value is unknown, not unchecked: do not silently overwrite it.
     if(type!=REG_SZ || size<sizeof(wchar_t)*4 || size>sizeof(wchar_t)*261 || size%sizeof(wchar_t))
-        throw std::runtime_error("로그인 자동 시작 등록 값의 형식이 올바르지 않습니다.");
+        throw LocalizedError(tr("win.the_launch_at_login_registration_value_has_an_invalid_format"));
     std::vector<wchar_t> value(size/sizeof(wchar_t));
     auto expectedSize=size;
     registryError(RegQueryValueExW(key.value,ValueName,nullptr,&type,reinterpret_cast<BYTE*>(value.data()),&size));
     if(type!=REG_SZ || size!=expectedSize || value.back()!=L'\0' ||
         !validCommand(std::wstring(value.data(),value.size()-1)))
-        throw std::runtime_error("로그인 자동 시작 등록 값의 형식이 올바르지 않습니다.");
+        throw LocalizedError(tr("win.the_launch_at_login_registration_value_has_an_invalid_format"));
     return true;
 }
 void RegistryLoginStartup::setEnabled(bool enable) {
@@ -54,7 +54,7 @@ void RegistryLoginStartup::setEnabled(bool enable) {
     }
     auto command=L"\""+executable_.wstring()+L"\"";
     if(!validCommand(command))
-        throw std::runtime_error("자동 시작 실행 경로는 절대 경로여야 하며 따옴표를 포함하여 260자 이하여야 합니다.");
+        throw LocalizedError(tr("win.the_startup_executable_path_must_be_absolute_and_at_most_260_char"));
     RegistryKey key;
     registryError(RegCreateKeyExW(root_,subkey_.c_str(),0,nullptr,0,KEY_SET_VALUE,nullptr,&key.value,nullptr));
     registryError(RegSetValueExW(key.value,ValueName,0,REG_SZ,
@@ -66,7 +66,7 @@ void appendLoginStartupMenu(HMENU menu,UINT command,LoginStartupController& cont
     UINT flags=MF_STRING;
     if(!state || controller.busy()) flags|=MF_GRAYED;
     if(state && *state) flags|=MF_CHECKED;
-    auto label=state?L"로그인 자동 시작":L"로그인 자동 시작 (상태 확인 실패)";
-    if(!AppendMenuW(menu,flags,command,label))throw std::runtime_error(winError());
+    auto label=state?tw("win.launch_at_login"):tw("win.launch_at_login_status_unavailable");
+    if(!AppendMenuW(menu,flags,command,label))throw LocalizedError(winError());
 }
 }

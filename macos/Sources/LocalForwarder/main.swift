@@ -42,9 +42,9 @@ func runTestManager(directory: String, configuration: String, start: Bool) {
                 do {
                     guard let data = line.data(using: .utf8),
                           let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let command = value["command"] as? String else { throw AppError("명령 JSON이 올바르지 않습니다.") }
+                          let command = value["command"] as? String else { throw AppError(.key("mac.invalid.command.json")) }
                     func id() throws -> String {
-                        guard let id = value["id"] as? String else { throw AppError("호스트 ID가 필요합니다.") }; return id
+                        guard let id = value["id"] as? String else { throw AppError(.key("mac.a.host.id.is.required")) }; return id
                     }
                     switch command {
                     case "connect": try manager.connect(id())
@@ -52,7 +52,7 @@ func runTestManager(directory: String, configuration: String, start: Bool) {
                     case "disconnect-all": manager.disconnectAll()
                     case "delete": try manager.delete(id())
                     case "temporary":
-                        guard let object = value["host"] else { throw AppError("호스트 설정이 필요합니다.") }
+                        guard let object = value["host"] else { throw AppError(.key("mac.host.settings.are.required")) }
                         let encoded = try JSONSerialization.data(withJSONObject: object)
                         try manager.connect(JSONDecoder().decode(Host.self, from: encoded), temporary: true)
                     case "saved": manager.saved(try store.host(id()))
@@ -62,7 +62,7 @@ func runTestManager(directory: String, configuration: String, start: Bool) {
                     case "network": manager.networkChanged(available: value["available"] as? Bool ?? false)
                     case "snapshot": snapshot(requestID: value["requestID"] as? String)
                     case "quit": manager.quit()
-                    default: throw AppError("알 수 없는 명령: " + command)
+                    default: throw AppError(L10n.text("mac.unknown.command") + command)
                     }
                 } catch { writeLine("LF_ERROR " + error.localizedDescription.replacingOccurrences(of: "\n", with: " | ")) }
             }
@@ -72,7 +72,16 @@ func runTestManager(directory: String, configuration: String, start: Bool) {
     withExtendedLifetime((manager, terminate, interrupt)) { dispatchMain() }
 }
 
-let arguments = CommandLine.arguments
+var arguments = CommandLine.arguments
+if arguments.dropFirst().first == "--setup-auth", let index = arguments.firstIndex(of: "--ui-language") {
+    guard index + 1 < arguments.count, L10n.languages.contains(arguments[index + 1]) else {
+        fputs("Invalid UI language.\n", stderr); exit(2)
+    }
+    L10n.configure(selection: arguments[index + 1])
+    arguments.removeSubrange(index...index + 1)
+} else if !arguments.dropFirst().contains(where: { $0.hasPrefix("--test-") || $0 == "--run-ssh" }) {
+    LanguagePreferences.system.start()
+}
 ProcessTools.sshLauncher = Bundle.main.executableURL?.path
 if arguments.count == 2 && arguments[1] == "--test-ui" {
     do { try NativeLayoutChecks.run(); writeLine("Native AppKit layout checks passed (900x650, 800x430, 520x360 work area + rule sheets)"); exit(0) }

@@ -19,11 +19,11 @@ std::string stringValue(yyjson_val* obj, const char* key, bool required = true) 
     auto* value = yyjson_obj_get(obj, key);
     if (!value || yyjson_is_null(value)) {
         if (!required) return {};
-        throw std::runtime_error(std::string("설정 필드가 없습니다: ") + key);
+        throw LocalizedError(tr("win.missing_configuration_field") + key);
     }
-    if (!yyjson_is_str(value)) throw std::runtime_error(std::string("문자열 필드가 아닙니다: ") + key);
+    if (!yyjson_is_str(value)) throw LocalizedError(tr("win.expected_a_string_field") + key);
     std::string result(yyjson_get_str(value), yyjson_get_len(value));
-    if (result.find('\0') != std::string::npos) throw std::runtime_error("문자열에 NUL 문자를 사용할 수 없습니다.");
+    if (result.find('\0') != std::string::npos) throw LocalizedError(tr("win.strings_cannot_contain_nul_characters"));
     return result;
 }
 // Keep JSON numbers as source tokens so 22.000000000000000001 cannot round to
@@ -58,7 +58,7 @@ std::optional<int> exactInteger(yyjson_val* value, int minimum, int maximum) {
 }
 int numberValue(yyjson_val* obj, const char* key) {
     auto number=exactInteger(yyjson_obj_get(obj,key),1,65535);
-    if (!number) throw std::runtime_error(std::string("포트는 1~65535 사이의 정수여야 합니다: ")+key);
+    if (!number) throw LocalizedError(tr("win.ports_must_be_integers_from_1_to_65535")+key);
     return *number;
 }
 void field(yyjson_mut_doc* d, yyjson_mut_val* obj, const char* name, const std::string& value) {
@@ -72,17 +72,17 @@ std::vector<uint32_t> scalars(const std::string& value) {
         if (first>=0xc2 && first<=0xdf) { code=first&31; count=1; }
         else if (first>=0xe0 && first<=0xef) { code=first&15; count=2; }
         else if (first>=0xf0 && first<=0xf4) { code=first&7; count=3; }
-        else if (first>=0x80) throw std::runtime_error("UTF-8 문자열이 올바르지 않습니다.");
+        else if (first>=0x80) throw LocalizedError(tr("win.invalid_utf_8_string"));
         const auto continuationCount=count;
-        if (i+count>value.size()) throw std::runtime_error("UTF-8 문자열이 올바르지 않습니다.");
+        if (i+count>value.size()) throw LocalizedError(tr("win.invalid_utf_8_string"));
         while (count--) {
             auto byte=static_cast<unsigned char>(value[i++]);
-            if ((byte&0xc0)!=0x80) throw std::runtime_error("UTF-8 문자열이 올바르지 않습니다.");
+            if ((byte&0xc0)!=0x80) throw LocalizedError(tr("win.invalid_utf_8_string"));
             code=(code<<6)|(byte&63);
         }
         if ((continuationCount==1 && code<0x80) || (continuationCount==2 && code<0x800) ||
             (continuationCount==3 && code<0x10000) || code>0x10ffff || (code>=0xd800 && code<=0xdfff))
-            throw std::runtime_error("UTF-8 문자열이 올바르지 않습니다.");
+            throw LocalizedError(tr("win.invalid_utf_8_string"));
         result.push_back(code);
     }
     return result;
@@ -113,7 +113,7 @@ bool validToken(const std::string& value) {
 bool boolValue(yyjson_val* object,const char* key) {
     auto* value=yyjson_obj_get(object,key);
     if (!value || yyjson_is_null(value)) return true;
-    if (!yyjson_is_bool(value)) throw std::runtime_error(std::string("boolean 필드가 아닙니다: ")+key);
+    if (!yyjson_is_bool(value)) throw LocalizedError(tr("win.expected_a_boolean_field")+key);
     return yyjson_get_bool(value);
 }
 std::vector<std::string> transport(const Host& host) {
@@ -146,13 +146,13 @@ bool safeId(const std::string& value) {
 static void validateDescription(const std::string& description) {
     auto values=scalars(description);
     if (std::any_of(values.begin(),values.end(),[](auto c){return c==0 || c=='\r' || c=='\n' || c==0x85 || c==0x2028 || c==0x2029;}))
-        throw std::runtime_error("설명은 개행과 NUL이 없는 한 줄이어야 합니다.");
+        throw LocalizedError(tr("win.descriptions_must_be_a_single_line_without_line_breaks_or_nul_cha"));
 }
 void validateForward(const Forward& f) {
     validateDescription(f.description);
-    if (!safeId(f.id)) throw std::runtime_error("규칙 ID가 올바르지 않습니다.");
-    if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw std::runtime_error("포트는 1~65535 사이여야 합니다.");
-    if (!validToken(f.remoteHost)) throw std::runtime_error("목적지 호스트가 올바르지 않습니다.");
+    if (!safeId(f.id)) throw LocalizedError(tr("win.invalid_rule_id"));
+    if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw LocalizedError(tr("win.ports_must_be_between_1_and_65535"));
+    if (!validToken(f.remoteHost)) throw LocalizedError(tr("win.invalid_destination_host"));
 }
 bool sameExecutionSettings(const Host& left, const Host& right) {
     auto a=left,b=right;a.description.clear();b.description.clear();
@@ -161,39 +161,39 @@ bool sameExecutionSettings(const Host& left, const Host& right) {
     return a==b;
 }
 void validate(const Host& h) {
-    if (!safeId(h.id)) throw std::runtime_error("호스트 ID가 올바르지 않습니다.");
+    if (!safeId(h.id)) throw LocalizedError(tr("win.invalid_host_id"));
     validateDescription(h.description);
     auto nameScalars=scalars(h.name);
-    if (std::all_of(nameScalars.begin(),nameScalars.end(),whitespace)) throw std::runtime_error("이름을 입력하세요.");
-    if (h.name.find('\0')!=std::string::npos) throw std::runtime_error("이름에 NUL 문자를 사용할 수 없습니다.");
-    if (!validToken(h.target)) throw std::runtime_error("SSH 별칭 또는 호스트 주소를 입력하세요. 공백과 셸 제어문자는 허용하지 않습니다.");
-    if (!h.user.empty() && !validToken(h.user)) throw std::runtime_error("사용자명이 올바르지 않습니다.");
-    if (h.port && (*h.port < 1 || *h.port > 65535)) throw std::runtime_error("SSH 포트는 1~65535 사이여야 합니다.");
+    if (std::all_of(nameScalars.begin(),nameScalars.end(),whitespace)) throw LocalizedError(tr("win.enter_a_name"));
+    if (h.name.find('\0')!=std::string::npos) throw LocalizedError(tr("win.names_cannot_contain_nul_characters"));
+    if (!validToken(h.target)) throw LocalizedError(tr("win.enter_an_ssh_alias_or_host_address_spaces_and_shell_control_chara"));
+    if (!h.user.empty() && !validToken(h.user)) throw LocalizedError(tr("win.invalid_username"));
+    if (h.port && (*h.port < 1 || *h.port > 65535)) throw LocalizedError(tr("win.the_ssh_port_must_be_between_1_and_65535"));
     auto keyScalars=scalars(h.identityFile);
-    if (std::any_of(keyScalars.begin(),keyScalars.end(),control)) throw std::runtime_error("개인키 경로에 제어문자를 사용할 수 없습니다.");
+    if (std::any_of(keyScalars.begin(),keyScalars.end(),control)) throw LocalizedError(tr("win.private_key_paths_cannot_contain_control_characters"));
     std::set<int> ports; std::set<std::string> ids;
     for (auto& f : h.forwards) {
         validateForward(f);
-        if (!safeId(f.id) || !ids.insert(f.id).second) throw std::runtime_error("규칙 ID가 올바르지 않거나 중복됩니다.");
-        if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw std::runtime_error("포트는 1~65535 사이여야 합니다.");
-        if (!validToken(f.remoteHost)) throw std::runtime_error("목적지 호스트가 올바르지 않습니다.");
-        if (f.enabled && !ports.insert(f.localPort).second) throw std::runtime_error("활성 규칙의 로컬 포트가 중복됩니다.");
+        if (!safeId(f.id) || !ids.insert(f.id).second) throw LocalizedError(tr("win.rule_ids_are_invalid_or_duplicated"));
+        if (f.localPort < 1 || f.localPort > 65535 || f.remotePort < 1 || f.remotePort > 65535) throw LocalizedError(tr("win.ports_must_be_between_1_and_65535"));
+        if (!validToken(f.remoteHost)) throw LocalizedError(tr("win.invalid_destination_host"));
+        if (f.enabled && !ports.insert(f.localPort).second) throw LocalizedError(tr("win.active_rules_have_duplicate_local_ports"));
     }
 }
 Config parseConfig(const std::string& text) {
     yyjson_read_err error{};
     std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)> doc(yyjson_read_opts(const_cast<char*>(text.data()), text.size(), YYJSON_READ_NUMBER_AS_RAW, nullptr, &error), yyjson_doc_free);
-    if (!doc) throw std::runtime_error("설정 JSON을 읽을 수 없습니다: " + std::string(error.msg ? error.msg : "invalid JSON"));
+    if (!doc) throw LocalizedError(tr("win.could_not_read_configuration_json") + std::string(error.msg ? error.msg : "invalid JSON"));
     auto* root = yyjson_doc_get_root(doc.get());
-    if (!yyjson_is_obj(root)) throw std::runtime_error("설정은 JSON 객체여야 합니다.");
+    if (!yyjson_is_obj(root)) throw LocalizedError(tr("win.configuration_must_be_a_json_object"));
     auto version = exactInteger(yyjson_obj_get(root, "version"),2,2);
-    if (!version) throw std::runtime_error("지원하지 않는 설정 버전입니다.");
+    if (!version) throw LocalizedError(tr("win.unsupported_configuration_version"));
     auto* hosts = yyjson_obj_get(root, "hosts");
-    if (!yyjson_is_arr(hosts)) throw std::runtime_error("hosts 배열이 없습니다.");
+    if (!yyjson_is_arr(hosts)) throw LocalizedError(tr("win.missing_hosts_array"));
     Config config; config.version=*version; std::set<std::string> ids;
     size_t i, max; yyjson_val* value;
     yyjson_arr_foreach(hosts, i, max, value) {
-        if (!yyjson_is_obj(value)) throw std::runtime_error("호스트 설정은 객체여야 합니다.");
+        if (!yyjson_is_obj(value)) throw LocalizedError(tr("win.host_configuration_must_be_an_object"));
         Host h;
         h.id = stringValue(value, "id"); h.name = stringValue(value, "name"); h.target = stringValue(value, "target");
         h.description = stringValue(value, "description", false);
@@ -201,27 +201,27 @@ Config parseConfig(const std::string& text) {
         for (auto key : {"user", "identityFile"}) {
             auto* optional=yyjson_obj_get(value,key);
             if (optional && yyjson_is_str(optional) && yyjson_get_len(optional)==0)
-                throw std::runtime_error(std::string("빈 선택 필드를 생략하거나 null로 지정하세요: ")+key);
+                throw LocalizedError(tr("win.omit_empty_optional_fields_or_set_them_to_null")+key);
         }
         h.autoConnect=boolValue(value,"autoConnect");
         h.exitOnForwardFailure=boolValue(value,"exitOnForwardFailure");
         h.retryOnConnectionRefused=boolValue(value,"retryOnConnectionRefused");
         if (auto* p = yyjson_obj_get(value, "port"); p && !yyjson_is_null(p)) h.port = numberValue(value, "port");
         auto* forwards = yyjson_obj_get(value, "forwards");
-        if (!yyjson_is_arr(forwards)) throw std::runtime_error("forwards 배열이 없습니다.");
+        if (!yyjson_is_arr(forwards)) throw LocalizedError(tr("win.missing_forwards_array"));
         size_t j, count; yyjson_val* entry;
         yyjson_arr_foreach(forwards, j, count, entry) {
-            if (!yyjson_is_obj(entry)) throw std::runtime_error("포워딩 규칙은 객체여야 합니다.");
+            if (!yyjson_is_obj(entry)) throw LocalizedError(tr("win.forwarding_rules_must_be_objects"));
             Forward f;
             f.id = stringValue(entry, "id"); f.remoteHost = stringValue(entry, "remoteHost");
             f.description = stringValue(entry, "description", false);
             f.localPort = numberValue(entry, "localPort"); f.remotePort = numberValue(entry, "remotePort");
             auto* enabled = yyjson_obj_get(entry, "enabled");
-            if (!yyjson_is_bool(enabled)) throw std::runtime_error("enabled 필드는 boolean이어야 합니다.");
+            if (!yyjson_is_bool(enabled)) throw LocalizedError(tr("win.the_enabled_field_must_be_a_boolean"));
             f.enabled = yyjson_get_bool(enabled); h.forwards.push_back(f);
         }
         validate(h);
-        if (!ids.insert(h.id).second) throw std::runtime_error("호스트 ID가 중복됩니다.");
+        if (!ids.insert(h.id).second) throw LocalizedError(tr("win.duplicate_host_ids"));
         config.hosts.push_back(h);
     }
     return config;
@@ -235,7 +235,7 @@ std::string writeConfig(const Config& config) {
     std::set<std::string> ids;
     for (auto& h : config.hosts) {
         validate(h);
-        if (!ids.insert(h.id).second) throw std::runtime_error("호스트 ID가 중복됩니다.");
+        if (!ids.insert(h.id).second) throw LocalizedError(tr("win.duplicate_host_ids"));
         auto* obj = yyjson_mut_obj(doc.get()); yyjson_mut_arr_add_val(hosts, obj);
         field(doc.get(), obj, "id", h.id); field(doc.get(), obj, "name", h.name); field(doc.get(), obj, "target", h.target);
         yyjson_mut_obj_add_bool(doc.get(),obj,"autoConnect",h.autoConnect);
@@ -256,7 +256,7 @@ std::string writeConfig(const Config& config) {
         }
     }
     size_t size = 0; char* bytes = yyjson_mut_write(doc.get(), YYJSON_WRITE_PRETTY, &size);
-    if (!bytes) throw std::runtime_error("설정을 직렬화할 수 없습니다.");
+    if (!bytes) throw LocalizedError(tr("win.could_not_serialize_configuration"));
     std::string result(bytes, size); free(bytes); return result + "\n";
 }
 std::vector<std::string> sshArguments(const Host& h, const std::string& configFile, bool query) {
@@ -310,7 +310,7 @@ std::wstring quotePowerShell(const std::wstring& value) {
     return out + L"'";
 }
 std::string registrationCommand(const std::string& publicKey) {
-    if (publicKey.find_first_of("\r\n") != std::string::npos || (publicKey.rfind("ssh-",0) != 0 && publicKey.rfind("ecdsa-sha2-",0) != 0)) throw std::runtime_error("공개키 형식이 올바르지 않습니다.");
+    if (publicKey.find_first_of("\r\n") != std::string::npos || (publicKey.rfind("ssh-",0) != 0 && publicKey.rfind("ecdsa-sha2-",0) != 0)) throw LocalizedError(tr("win.invalid_public_key"));
     return "sh -c " + quotePosix("set -eu; umask 077; mkdir -p \"$HOME/.ssh\"; chmod 700 \"$HOME/.ssh\"; touch \"$HOME/.ssh/authorized_keys\"; chmod 600 \"$HOME/.ssh/authorized_keys\"; key=" + quotePosix(publicKey) + "; keytype=$(printf '%s\\n' \"$key\" | cut -d ' ' -f1); keydata=$(printf '%s\\n' \"$key\" | cut -d ' ' -f2); if ! awk -v k=\"$keydata\" '{for(i=1;i<=NF;i++) if($i==k) found=1} END{exit !found}' \"$HOME/.ssh/authorized_keys\"; then printf '\\n%s\\n' \"$key\" >> \"$HOME/.ssh/authorized_keys\"; fi");
 }
 namespace {
@@ -363,10 +363,10 @@ bool isConnectionRefusal(const std::string& targetDiagnostic,const std::string& 
     }
     return false;
 }
-std::string describeFailure(const std::string& text) {
+Message describeFailure(const std::string& text) {
     if(containsAny(lower(text),{"address already in use","cannot listen to port","only one usage of each socket address"}))
-        return "다른 프로그램이 해당 로컬 포트를 사용 중이거나 포트를 열 수 없습니다.\n"+text;
-    return text.empty() ? "SSH 연결을 완료하지 못했습니다." : text;
+        return tr("win.another_program_is_using_the_local_port_or_the_port_could_not_be_")+text;
+    return text.empty() ? tr("win.could_not_establish_the_ssh_connection") : Message(text);
 }
 namespace {
 bool asciiDigit(char c) { return c>='0' && c<='9'; }
@@ -520,17 +520,19 @@ const char* forwardStateName(ForwardState state) {
 std::string HostRuntime::summary() const {
     std::string title;
     switch(state) {
-        case ConnectionState::disconnected:title="연결 끊김";break;case ConnectionState::connecting:title="연결 중";break;
-        case ConnectionState::connected:title="SSH 연결됨";break;case ConnectionState::stopping:title="정리 중";break;
+        case ConnectionState::disconnected:title=tr("win.disconnected");break;case ConnectionState::connecting:title=tr("win.connecting");break;
+        case ConnectionState::connected:title=tr("win.ssh_connected");break;case ConnectionState::stopping:title=tr("win.stopping");break;
     }
     auto count=[&](ForwardState s){return std::count_if(forwards.begin(),forwards.end(),[s](auto& f){return f.state==s;});};
     auto unknown=count(ForwardState::unknown);
-    return title+" · 포워딩 준비 "+std::to_string(count(ForwardState::ready))+" / 실패 "+std::to_string(count(ForwardState::failed))+
-        (unknown ? " / 확인 불가 "+std::to_string(unknown) : "")+(temporary ? " · 임시 실행 설정" : "");
+    std::string result=tr("win.summary",{{"state",title},{"ready",std::to_string(count(ForwardState::ready))},{"failed",std::to_string(count(ForwardState::failed))}});
+    if(unknown)result=tr("win.summary_unknown",{{"summary",result},{"unknown",std::to_string(unknown)}});
+    if(temporary)result+=tr("win.temporary_settings");
+    return result;
 }
 ForwardTracker::ForwardTracker(const Host& host,const std::vector<std::string>& inherited) {
     for(const auto& rule:host.forwards) if(rule.enabled) {
-        forwards.push_back({rule.id,forwarding(rule),"앱 설정",{},ForwardState::preparing});
+        forwards.push_back({rule.id,forwarding(rule),tr("win.app_settings"),{},ForwardState::preparing});
         bindings_.push_back({false,rule.localPort,"127.0.0.1"});
     }
     for(size_t i=0;i<inherited.size();++i) {
@@ -538,7 +540,7 @@ ForwardTracker::ForwardTracker(const Host& host,const std::vector<std::string>& 
         auto colon=endpoint.rfind(':'); auto port=portNumber(colon==std::string::npos ? endpoint : endpoint.substr(colon+1));
         std::optional<std::string> address;
         if(colon!=std::string::npos) { address=endpoint.substr(0,colon); std::erase(*address,'['); std::erase(*address,']'); }
-        forwards.push_back({"ssh-config-"+std::to_string(i),inherited[i],"SSH 설정",port ? "" : "이 규칙의 개설 결과를 SSH 진단에서 식별할 수 없습니다.",ForwardState::preparing});
+        forwards.push_back({"ssh-config-"+std::to_string(i),inherited[i],tr("win.ssh_settings"),port ? "" : tr("win.this_rule_s_opening_result_could_not_be_identified_in_ssh_diagnos"),ForwardState::preparing});
         bindings_.push_back({kind=="remoteforward",port,address});
     }
 }
@@ -550,7 +552,7 @@ void ForwardTracker::mark(bool remote,int port,std::optional<std::string> addres
             (*b.address=="localhost" && (*address=="127.0.0.1" || *address=="::1")))) candidates.push_back(i);
     }
     if(candidates.size()!=1) {
-        for(auto i:candidates) if(forwards[i].state==ForwardState::preparing) forwards[i].detail="같은 리스너를 사용하는 규칙들의 개별 결과를 식별할 수 없습니다.";
+        for(auto i:candidates) if(forwards[i].state==ForwardState::preparing) forwards[i].detail=tr("win.individual_results_could_not_be_identified_for_rules_sharing_the_");
         return;
     }
     auto index=candidates[0]; auto& f=forwards[index];
@@ -560,11 +562,11 @@ void ForwardTracker::mark(bool remote,int port,std::optional<std::string> addres
         else if(state==ForwardState::failed) { if(address) established.erase(*address); else established.clear(); }
         if(!established.empty()) {
             f.state=ForwardState::ready;
-            f.detail=state==ForwardState::failed ? "일부 주소의 개설 실패: "+line : "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음";
+            f.detail=state==ForwardState::failed ? tr("win.failed_to_open_some_addresses")+line : tr("win.forwarding_opened_destination_service_health_not_checked");
             return;
         }
     }
-    f.state=state; f.detail=state==ForwardState::ready ? "포워딩 개설 성공 · 목적지 서비스 상태는 검사하지 않음" : line;
+    f.state=state; f.detail=state==ForwardState::ready ? tr("win.forwarding_opened_destination_service_health_not_checked") : Message(line);
 }
 void ForwardTracker::consume(const std::string& input,const std::string& timestamp) {
     const auto line=withoutSeverity(input);
@@ -604,7 +606,7 @@ void ForwardTracker::sessionReady() {
     pendingListener_.reset();
     for(auto& f:forwards) if(f.state==ForwardState::preparing) {
         f.state=ForwardState::unknown;
-        if(f.detail.empty()) f.detail="SSH 연결은 성립했지만 이 규칙의 개설 결과는 아직 확인되지 않았습니다.";
+        if(f.detail.empty()) f.detail=tr("win.ssh_is_connected_but_this_rule_s_opening_result_has_not_been_conf");
     }
 }
 void ForwardTracker::disconnected() {

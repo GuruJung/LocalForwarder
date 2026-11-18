@@ -40,9 +40,17 @@ For example, `15432 → 127.0.0.1:5432` makes `127.0.0.1:15432` on your computer
 
 When starting through Settings, **OK** connects saved hosts with auto-connect enabled; **Cancel** enters tray mode without connecting. Normal startup with an existing valid configuration connects auto-connect hosts. Closing Settings or a connection failure does not exit the app. Use **Quit** in the tray menu to stop all connections and exit.
 
+## Display language
+
+Choose **Language** directly below **Settings** in the tray menu. LocalForwarder includes English, Korean, Simplified Chinese, Traditional Chinese, Japanese, Spanish, and German. The first launch uses **Automatic (System Language)**: the first supported language in your OS preferred UI languages, or English when none match. Chinese translations use mainland terminology for Simplified and Taiwan terminology for Traditional.
+
+The submenu shows Automatic, a separator, then languages alphabetically by English name with native names alongside. Only the selected option is checked; Automatic also shows the resolved language. The choice is saved for your OS user independently of host configuration.
+
+Changes apply immediately without reconnecting SSH or losing unsaved edits. Close any open modal before changing the language. Authentication terminals retain the language selected when they started. User-entered names and descriptions, SSH output, and OS-provided dialogs keep their original language. Automatic is evaluated at startup and when selected; restart or select Automatic again after changing OS language preferences. External language files are not loaded.
+
 ## Connections and the tray
 
-The tray menu provides Settings, Launch at Login, Reconnect All, Disconnect All, host menus, About..., and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
+The tray menu provides Settings, Language, Launch at Login, Reconnect All, Disconnect All, host menus, About..., and Quit. Each host menu shows its SSH summary, forwarding rules and status icons, and connection actions. Disabled rules remain visible. Use **Connection Status (`연결 상태…`)** in Settings for detailed errors and differences between saved settings and the running connection.
 
 Saving changes only the selected host and leaves active connections and other unsaved drafts intact. Changes take effect on the next connection. A connection made without saving keeps its temporary settings for manual reconnects and automatic recovery; cancelling later edits does not undo the running settings. Explicitly saving that host clears the temporary override for its next connection. A new host connected without saving exists only until the app exits.
 
@@ -152,3 +160,7 @@ python3 -m unittest discover -s tests -p 'test_release*.py'
 Commit both `VERSION` and the generated Swift file. CMake reads `VERSION` for Windows. The native evaluation scripts verify the version and package metadata. About, OS version information, and ZIP filenames use this same version.
 
 After reviewing and committing a release, deliberately create and push its matching tag (for example `v0.1.0`). The tag must exactly match `v` plus `VERSION`. Tag CI publishes a GitHub Release with generated notes only after macOS arm64 and Windows x64/arm64 checks and packaging all pass. Branch and pull-request CI produces artifacts without publishing. A failed upload leaves a draft for retry; an existing published release is never overwritten. No version or tag is created automatically, and the app does not auto-update.
+
+## Editing translations
+
+The seven UTF-8 catalogs in `localization/` are shared by both native apps. Keep all message keys and named placeholders consistent across languages. After editing a catalog, run `python3 scripts/localization.py` and commit both the catalog and generated native tables. Run `python3 scripts/localization.py --check` and `python3 -m unittest discover -s tests -p 'test_localization*.py'` before submitting changes. No runtime translation files are needed in the release ZIPs.

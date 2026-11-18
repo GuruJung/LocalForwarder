@@ -17,7 +17,7 @@ public final class MacLoginItemService: LoginItemService {
             // Never treat absence as enabled or create a record merely by reading the status.
             return .notPresent
         @unknown default:
-            throw LoginItemError("macOS가 알 수 없는 로그인 항목 상태를 반환했습니다.")
+            throw LoginItemError(.key("mac.macos.returned.an.unknown.login.item.status"))
         }
     }
 

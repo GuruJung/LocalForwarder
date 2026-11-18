@@ -10,7 +10,7 @@ final class SettingsPresentationTests: XCTestCase {
     func testHostConnectivityPresentationKeepsForwardFailuresInChildRows() {
         var host = host(); host.autoConnect = false
         var runtime = HostRuntime(); runtime.executionHost = host; runtime.state = .connected
-        runtime.forwards = [ForwardRuntime(id: "one", description: "failed forward", source: "앱 설정", state: .failed)]
+        runtime.forwards = [ForwardRuntime(id: "one", description: "failed forward", sourceMessage: .key("mac.app.configuration"), state: .failed)]
         XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .connected)
         XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).title, host.name)
         XCTAssertEqual(TrayPresentation.forwards(host: host, runtime: runtime)[0].state, .failed)
@@ -22,7 +22,7 @@ final class SettingsPresentationTests: XCTestCase {
         for state in [ConnectionState.connecting, .stopping] {
             runtime.state = state
             XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disconnected)
-            XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).title, host.name + " · 임시 · 작업 중…")
+            XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).title, host.name + L10n.text("mac.temporary") + L10n.text("mac.working"))
             host.autoConnect = false
             XCTAssertEqual(TrayPresentation.host(host, runtime: runtime).state, .disabled)
             host.autoConnect = true
@@ -89,8 +89,8 @@ final class SettingsPresentationTests: XCTestCase {
         let original = host()
         XCTAssertEqual(TrayPresentation.forwards(host: original, runtime: nil).map(\.state), [.disconnected, .disabled])
         var runtime = HostRuntime(); runtime.executionHost = original; runtime.state = .connected
-        runtime.forwards = [ForwardRuntime(id: "one", description: "execution", source: "앱 설정", state: .ready),
-                            ForwardRuntime(id: "ssh-config-0", description: "dynamicforward 1080", source: "SSH 설정", state: .unknown)]
+        runtime.forwards = [ForwardRuntime(id: "one", description: "execution", sourceMessage: .key("mac.app.configuration"), state: .ready),
+                            ForwardRuntime(id: "ssh-config-0", description: "dynamicforward 1080", sourceMessage: .key("mac.ssh.configuration"), state: .unknown)]
         var saved = original; saved.forwards[0].remoteHost = "new-destination"; saved.forwards.removeLast()
         let rows = TrayPresentation.forwards(host: saved, runtime: runtime)
         XCTAssertEqual(rows.map(\.id), ["app:one", "app:off", "inherited:ssh-config-0"])
@@ -101,12 +101,33 @@ final class SettingsPresentationTests: XCTestCase {
         var empty = original; empty.forwards = []
         XCTAssertTrue(TrayPresentation.forwards(host: empty, runtime: nil).isEmpty)
     }
+    func testForwardOriginIdentitySurvivesEveryLanguageSwitch() {
+        let previous = L10n.selection
+        defer { L10n.configure(selection: previous) }
+        var original = host(); original.forwards = [original.forwards[0]]
+        var runtime = HostRuntime(); runtime.executionHost = original; runtime.state = .connected
+        runtime.forwards = [
+            ForwardRuntime(id: "one", description: "app", sourceMessage: .key("mac.app.configuration"), state: .ready),
+            ForwardRuntime(id: "one", description: "inherited", sourceMessage: .key("mac.ssh.configuration"), state: .failed)]
+        for language in L10n.languages {
+            L10n.configure(selection: language)
+            let rows = TrayPresentation.forwards(host: original, runtime: runtime)
+            XCTAssertEqual(rows.map(\.id), ["app:one", "inherited:one"], language)
+            XCTAssertEqual(rows.map(\.state), [.ready, .failed], language)
+            // Display text equal to an app label must never identify an app-owned rule.
+            let raw = ForwardRuntime(id: "one", description: "raw", source: L10n.text("mac.app.configuration"), state: .failed)
+            var rawRuntime = runtime; rawRuntime.forwards = [raw]
+            let rawRows = TrayPresentation.forwards(host: original, runtime: rawRuntime)
+            XCTAssertEqual(rawRows.map(\.id), ["app:one", "inherited:one"], language)
+            XCTAssertEqual(rawRows.map(\.state), [.unknown, .failed], language)
+        }
+    }
     func testMenuSeparatesCollidingAppAndInheritedIDsAndAllStates() {
         var original = host(); original.forwards[0].id = "ssh-config-0"
         var runtime = HostRuntime(); runtime.executionHost = original; runtime.state = .connected
         for state in [ForwardState.preparing, .ready, .failed, .disconnected, .unknown] {
-            runtime.forwards = [ForwardRuntime(id: "ssh-config-0", description: "app", source: "앱 설정", state: state),
-                                ForwardRuntime(id: "ssh-config-0", description: "remote", source: "SSH 설정", state: .unknown)]
+            runtime.forwards = [ForwardRuntime(id: "ssh-config-0", description: "app", sourceMessage: .key("mac.app.configuration"), state: state),
+                                ForwardRuntime(id: "ssh-config-0", description: "remote", sourceMessage: .key("mac.ssh.configuration"), state: .unknown)]
             let rows = TrayPresentation.forwards(host: original, runtime: runtime)
             XCTAssertEqual(rows.count, 3)
             XCTAssertEqual(rows[0].state.rawValue, state.rawValue)

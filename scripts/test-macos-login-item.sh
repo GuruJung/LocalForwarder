@@ -56,7 +56,12 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$bundle/Contents/MacOS"
+# Compile the production message catalog and AppError definition used by the controller.
+# These declarations do not load user preferences or host configuration in the fixture.
 xcrun swiftc -parse-as-library -target arm64-apple-macosx15.0 \
+    macos/Sources/LocalForwarderCore/GeneratedTranslations.swift \
+    macos/Sources/LocalForwarderCore/Localization.swift \
+    macos/Sources/LocalForwarderCore/Configuration.swift \
     macos/Sources/LocalForwarderCore/LoginItemController.swift \
     macos/Sources/LocalForwarderCore/MacLoginItemService.swift \
     scripts/login-item-fixture.swift -o "$executable"

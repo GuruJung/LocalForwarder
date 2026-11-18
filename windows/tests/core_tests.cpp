@@ -159,7 +159,7 @@ int main() {
     ForwardTracker dual(noRules,{"localforward 15432 localhost:80"});
     dual.consume("Local forwarding listening on ::1 port 15432.");dual.consume("channel 0: new port-listener [port listener]");
     dual.consume("Local forwarding listening on 127.0.0.1 port 15432.");dual.consume("bind [127.0.0.1]:15432: Address already in use");
-    check(dual.forwards[0].state==ForwardState::ready && dual.forwards[0].detail.find("일부 주소")!=std::string::npos,"one address success retained");
+    check(dual.forwards[0].state==ForwardState::ready && dual.forwards[0].detail.find(tr("win.failed_to_open_some_addresses"))!=std::string::npos,"one address success retained");
     ForwardTracker ambiguous(h,{"localforward 127.0.0.1:15432 localhost:80"});
     ambiguous.consume("Local forwarding listening on 127.0.0.1 port 15432.");ambiguous.consume("channel 0: new port-listener [port listener]");ambiguous.sessionReady();
     check(ambiguous.forwards[0].state==ForwardState::unknown && ambiguous.forwards[1].state==ForwardState::unknown,"shared listener not guessed");

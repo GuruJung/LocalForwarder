@@ -17,6 +17,13 @@ final class AdaptiveStack: NSStackView {
         NSLayoutConstraint.activate(horizontalConstraints)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    var minimumHorizontalWidth: CGFloat {
+        arrangedSubviews.reduce(spacing * CGFloat(max(0, arrangedSubviews.count - 1))) { width, view in
+            if let row = view as? AdaptiveStack { return width + row.minimumHorizontalWidth }
+            if let field = view as? NSTextField, field.isEditable { return width + 80 }
+            return width + max(0, view.intrinsicContentSize.width)
+        }
+    }
     func reflow(compact: Bool) {
         guard self.compact != compact else { return }
         self.compact = compact
