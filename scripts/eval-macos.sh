@@ -44,6 +44,20 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+# This app handles translations in code. Advertise them to Foundation/AppKit,
+# and let system frameworks use their own OS-preferred localized resources.
+python3 - "$bundle/Contents/Info.plist" <<'PYLOCALIZATIONS'
+import plistlib
+import sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from localization import LANGUAGES
+path = Path(sys.argv[1])
+info = plistlib.loads(path.read_bytes())
+info.update(CFBundleDevelopmentRegion='en', CFBundleLocalizations=list(LANGUAGES),
+            CFBundleAllowMixedLocalizations=True)
+path.write_bytes(plistlib.dumps(info, sort_keys=False))
+PYLOCALIZATIONS
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$bundle/Contents/Info.plist")" = "$version"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist")" = "$version"
 python3 scripts/package-info.py --platform macos --arch arm64 --executable "$bundle/Contents/MacOS/LocalForwarder" --output "$bundle/Contents/Resources/build-info.json"
