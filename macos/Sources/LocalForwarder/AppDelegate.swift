@@ -323,17 +323,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             RunLoop.main.add(timer, forMode: .modalPanel)
         }
-        var openedURL: URL?
-        let about = AppModal(.about, openURL: { openedURL = $0 })
+        var openedURLs: [URL] = []
+        let about = AppModal(.about, openURL: { openedURLs.append($0) })
         duringModal {
             try NativeLayoutChecks.require(NSApp.modalWindow === about.window, "About is application modal")
             try NativeLayoutChecks.settle(about.window)
             let content = about.window.contentView!
             try NativeLayoutChecks.check(content.subviews.flatMap { NativeLayoutChecks.leaves($0) }, in: content, context: "About")
-            try NativeLayoutChecks.require(about.labels.map(\.stringValue) == ["LocalForwarder", "버전 " + ProductVersion.current, "개발자 GuruJung"], "About product information")
-            try NativeLayoutChecks.require(openedURL == nil, "About opening must not open browser")
-            about.linkButton?.performClick(nil)
-            try NativeLayoutChecks.require(openedURL == AppModal.repositoryURL, "About repository link")
+            try NativeLayoutChecks.require(about.labels.map(\.stringValue) == ["LocalForwarder", "버전 " + ProductVersion.current], "About product information without developer row")
+            guard let license = about.licenseButton, let repository = about.linkButton else { throw AppError("About links missing") }
+            try NativeLayoutChecks.require(license.title == "MIT License" && repository.title == AppModal.repositoryURL.absoluteString, "About link labels")
+            let versionFrame = about.labels[1].convert(about.labels[1].bounds, to: content)
+            let licenseFrame = license.convert(license.bounds, to: content)
+            let repositoryFrame = repository.convert(repository.bounds, to: content)
+            try NativeLayoutChecks.require(versionFrame.minY >= licenseFrame.maxY && licenseFrame.minY >= repositoryFrame.maxY, "About license follows version and precedes repository")
+            try NativeLayoutChecks.require(openedURLs.isEmpty, "About opening must not open browser")
+            license.performClick(nil)
+            repository.performClick(nil)
+            try NativeLayoutChecks.require(openedURLs == [AppModal.licenseURL, AppModal.repositoryURL], "About links open their respective URLs once")
+            try NativeLayoutChecks.require(NSApp.modalWindow === about.window && about.window.isVisible, "About remains open after link clicks")
             try NativeLayoutChecks.require(manager.runtime(id)?.state == .connected, "About preserves connection")
             controller.showAbout()
             try NativeLayoutChecks.require(controller.appModal === about, "duplicate About reuses existing modal")

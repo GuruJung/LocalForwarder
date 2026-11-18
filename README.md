@@ -50,7 +50,7 @@ Saving changes only the selected host and leaves active connections and other un
 
 **Disconnect All (`전체 연결 끊기`)** asks for confirmation, then stops every managed host, including manual connections and unsaved temporary hosts, and cancels pending connection attempts, retries, and recovery. Cancel is the default. The app stays in the tray; saved auto-connect options, unsaved edits, and temporary execution settings are preserved. Connections remain off until you connect again or restart the app under its normal startup policy. The menu is disabled when there is nothing to stop.
 
-**About...** opens a modal with the app icon, name, product version, developer GuruJung, and a GitHub link. Opening it leaves connections running; the link opens your default browser only when clicked. Close it with the close button or Escape.
+**About...** opens a modal with the app icon, name, product version, an MIT License link below the version, and a GitHub link. The license link opens the repository’s LICENSE text. Opening About leaves connections running; either link opens your default browser only when clicked. Close it with the close button or Escape.
 
 After waking from sleep or a network transition from unavailable to available, recovery runs **5 seconds after the last event**. Only disconnected hosts that should still be connected are retried. Healthy, connecting, and manually disconnected hosts are left alone. Going offline again cancels pending recovery. Opening Settings or focusing the app does not trigger recovery. A disconnection detected after that recovery waits for another event or a manual connection.
 

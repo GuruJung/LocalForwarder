@@ -10,10 +10,12 @@ private final class AppModalWindow: NSWindow {
 final class AppModal: NSObject, NSWindowDelegate {
     enum Kind { case about, disconnectAll }
     static let repositoryURL = URL(string: "https://github.com/GuruJung/LocalForwarder")!
+    static let licenseURL = URL(string: "https://github.com/GuruJung/LocalForwarder/blob/main/LICENSE")!
     let window: NSWindow
     let cancelButton: NSButton
     let confirmButton: NSButton?
     let linkButton: NSButton?
+    let licenseButton: NSButton?
     let labels: [NSTextField]
     private let openURL: (URL) -> Void
     private var running = false
@@ -26,7 +28,8 @@ final class AppModal: NSObject, NSWindowDelegate {
         cancelButton = NSButton(title: kind == .about ? "닫기" : "취소", target: nil, action: nil)
         confirmButton = kind == .disconnectAll ? NSButton(title: "연결 끊기", target: nil, action: nil) : nil
         linkButton = kind == .about ? NSButton(title: Self.repositoryURL.absoluteString, target: nil, action: nil) : nil
-        labels = (kind == .about ? ["LocalForwarder", "버전 " + ProductVersion.current, "개발자 GuruJung"] :
+        licenseButton = kind == .about ? NSButton(title: "MIT License", target: nil, action: nil) : nil
+        labels = (kind == .about ? ["LocalForwarder", "버전 " + ProductVersion.current] :
             ["모든 호스트의 연결을 끊으시겠습니까?", "연결 중 작업과 재시도·자동 복구 대기도 취소됩니다.\n저장된 자동 연결 옵션은 유지됩니다."])
             .map { NSTextField(wrappingLabelWithString: $0) }
         super.init()
@@ -43,11 +46,12 @@ final class AppModal: NSObject, NSWindowDelegate {
             body.addArrangedSubview(icon)
         }
         for label in labels { label.alignment = .center; body.addArrangedSubview(label) }
-        if let linkButton {
-            linkButton.bezelStyle = .inline; linkButton.isBordered = false
-            linkButton.contentTintColor = .linkColor
-            linkButton.target = self; linkButton.action = #selector(openRepository)
-            body.addArrangedSubview(linkButton)
+        licenseButton?.action = #selector(openLicense)
+        linkButton?.action = #selector(openRepository)
+        for button in [licenseButton, linkButton].compactMap({ $0 }) {
+            button.bezelStyle = .inline; button.isBordered = false
+            button.contentTintColor = .linkColor; button.target = self
+            body.addArrangedSubview(button)
         }
         cancelButton.target = self; cancelButton.action = #selector(cancel)
         cancelButton.keyEquivalent = "\r"
@@ -77,6 +81,7 @@ final class AppModal: NSObject, NSWindowDelegate {
     }
     @objc func cancel() { finish(.cancel) }
     @objc private func confirm() { finish(.OK) }
+    @objc private func openLicense() { openURL(Self.licenseURL) }
     @objc private func openRepository() { openURL(Self.repositoryURL) }
     func windowShouldClose(_ sender: NSWindow) -> Bool { cancel(); return false }
     private func finish(_ response: NSApplication.ModalResponse) {
