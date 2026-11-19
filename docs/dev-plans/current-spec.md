@@ -7,6 +7,7 @@
 - macOS·Windows 양쪽 빌드·테스트·패키징 CI를 유지한다. 아래 공통 동작은 목표 명세이며, 알려진 구현 차이와 미검증 범위는 이 문서의 ‘구현 차이와 검증 공백’에서 구분한다.
 - CI 통과, 실제 기기 수동 검증, 플랫폼 기능 동등성을 구분한다. 플랫폼 전용 테스트 제외를 기능 동등성의 증거로 사용하지 않는다.
 - 일반 앱 사용자와 직접 빌드·테스트하는 파워 유저를 위해 영어 기본판 `README.md`와 한국어판 `README_ko.md`를 제공한다. 두 문서는 서로 연결하며 같은 사용 정보와 마지막 빌드·테스트 안내를 유지한다. 개발 진행 상황과 미해결 이슈는 이 명세에서 관리한다. 양쪽 배포물에 두 README를 포함한다. [저장소 정리 명세](specs/20261117-repository-cleanup/spec.md)를 따른다.
+- 일반 사용자는 양쪽 README 상단의 최신 정식 릴리스 링크와 플랫폼별 ZIP 링크로 GitHub Releases에서 다운로드한다. 개발 빌드는 Actions 아티팩트로 제공한다.
 - 영어 README는 실제 영어 UI 명칭을 사용하고 한국어 명칭을 병기하지 않는다. 한국어 README로 이동하는 언어 링크는 유지한다.
 
 ## 표시 언어
@@ -24,7 +25,7 @@
 - macOS 15 이상 Apple Silicon과 Windows 11 x64·ARM64 배포를 유지한다. Windows도 다중 호스트·설정 v2를 지원한다. 실제 검증 범위는 아래 검증 절에서 구분한다.
 - GuruJung/LocalForwarder 공개 저장소에서 MIT 라이선스로 배포한다. GitHub 네이티브 러너로 CPU별 ZIP을 만든다.
 - macOS는 ad-hoc 서명하며 유료 인증서 서명·공증, 설치 프로그램, 자동 업데이트는 포함하지 않는다. 로그인 시 자동 실행은 사용자의 명시적인 선택으로 지원한다.
-- macOS·Windows의 제품 버전은 공통 `major.minor.patch`이며 초기값은 `0.1.0`이다. About·OS 메타데이터·`LocalForwarder-<version>-<platform>-<arch>.zip` 파일명에 반영하고 설정 형식 버전 2와 별개로 관리한다. 버전은 명시적으로 갱신하며 자동 증가·자동 태그 생성은 하지 않는다.
+- macOS·Windows의 제품 버전은 공통 `major.minor.patch`이며 개발 초기 버전은 `0.1.0`, 첫 정식 배포 버전은 `1.0.0`이다. About·OS 메타데이터·`LocalForwarder-<version>-<platform>-<arch>.zip` 파일명에 반영하고 설정 형식 버전 2와 별개로 관리한다. 버전은 명시적으로 갱신하며 자동 증가·자동 태그 생성은 하지 않는다.
 - `v<version>` 태그 push 시 소스 버전 일치와 macOS arm64·Windows x64/arm64 검증·패키징의 전체 성공을 확인한 뒤 세 ZIP을 GitHub Release로 공개한다. 일반 브랜치·PR은 발행하지 않는다. 실패한 업로드는 draft 상태로 재시도하고 공개된 자산은 덮어쓰지 않는다. [About·전체 끊기·버전 명세](specs/20261117-about-disconnect-all-version/spec.md)를 따른다.
 
 ## 시작과 앱 수명

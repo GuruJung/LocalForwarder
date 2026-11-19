@@ -6,15 +6,15 @@ LocalForwarder is a small native app for managing SSH local forwarding on macOS 
 
 ## Download and run
 
+[Latest stable release](https://github.com/GuruJung/LocalForwarder/releases/latest)
+
 | System | CPU | Download |
 |---|---|---|
-| macOS 15 or later | Apple Silicon ARM64 | `LocalForwarder-<version>-macos-arm64.zip` |
-| Windows 11 | x64 | `LocalForwarder-<version>-windows-x64.zip` |
-| Windows 11 | ARM64 | `LocalForwarder-<version>-windows-arm64.zip` |
+| macOS 15 or later | Apple Silicon ARM64 | [LocalForwarder-1.0.0-macos-arm64.zip](https://github.com/GuruJung/LocalForwarder/releases/download/v1.0.0/LocalForwarder-1.0.0-macos-arm64.zip) |
+| Windows 11 | x64 | [LocalForwarder-1.0.0-windows-x64.zip](https://github.com/GuruJung/LocalForwarder/releases/download/v1.0.0/LocalForwarder-1.0.0-windows-x64.zip) |
+| Windows 11 | ARM64 | [LocalForwarder-1.0.0-windows-arm64.zip](https://github.com/GuruJung/LocalForwarder/releases/download/v1.0.0/LocalForwarder-1.0.0-windows-arm64.zip) |
 
-Download a published version from [GitHub Releases](https://github.com/GuruJung/LocalForwarder/releases). Replace `<version>` in the filenames above with the release version (starting at `0.1.0`). Extract the ZIP and run the `.app` or `.exe`.
-
-For development builds, open a successful run in [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml) and download your platform's package from **Artifacts**. Downloads require a GitHub login and are retained for 7 days. Extract both the artifact archive and the distribution ZIP inside it, then run the `.app` on macOS or `.exe` on Windows. No installer is required.
+Extract the ZIP and run `LocalForwarder.app` on macOS or `LocalForwarder.exe` on Windows.
 
 The macOS app is ad-hoc signed and is not notarized; Windows builds do not have a signing certificate. If macOS blocks launch, verify the source before allowing the app in **System Settings → Privacy & Security**. Windows may display a SmartScreen warning. Follow your organization's policies if execution is restricted.
 
@@ -149,6 +149,10 @@ Integration tests use temporary keys, configuration, and a loopback SSH server, 
 
 For product intent and development issues, see the [current specification](https://github.com/GuruJung/LocalForwarder/blob/main/docs/dev-plans/current-spec.md).
 
+### Development builds
+
+For development builds, open a successful run in [GitHub Actions](https://github.com/GuruJung/LocalForwarder/actions/workflows/build.yml) and download your platform's package from **Artifacts**. Downloads require a GitHub login and are retained for 7 days. Extract both the artifact archive and the distribution ZIP inside it, then run the `.app` on macOS or `.exe` on Windows. No installer is required.
+
 ## Versioning and releases
 
 `VERSION` is the shared macOS/Windows product version; configuration format `"version": 2` is independent. To change the product version, edit `VERSION` using `major.minor.patch`, then regenerate and check the committed Swift version constant:
@@ -161,7 +165,7 @@ python3 -m unittest discover -s tests -p 'test_release*.py'
 
 Commit both `VERSION` and the generated Swift file. CMake reads `VERSION` for Windows. The native evaluation scripts verify the version and package metadata. About, OS version information, and ZIP filenames use this same version.
 
-After reviewing and committing a release, deliberately create and push its matching tag (for example `v0.1.0`). The tag must exactly match `v` plus `VERSION`. Tag CI publishes a GitHub Release with generated notes only after macOS arm64 and Windows x64/arm64 checks and packaging all pass. Branch and pull-request CI produces artifacts without publishing. A failed upload leaves a draft for retry; an existing published release is never overwritten. No version or tag is created automatically, and the app does not auto-update.
+After reviewing and committing a release, deliberately create and push its matching tag (for example `v1.0.0`). The tag must exactly match `v` plus `VERSION`. Tag CI publishes a GitHub Release with generated notes only after macOS arm64 and Windows x64/arm64 checks and packaging all pass. Branch and pull-request CI produces artifacts without publishing. A failed upload leaves a draft for retry; an existing published release is never overwritten. No version or tag is created automatically, and the app does not auto-update.
 
 ## Editing translations
 
