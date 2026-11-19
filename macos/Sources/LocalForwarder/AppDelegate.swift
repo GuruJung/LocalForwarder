@@ -322,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             func stop(completion: @escaping () -> Void) { state = .disconnected; onChange?(); completion() }
         }
         let instance = SingleInstance()
-        let controller = AppDelegate(instance: instance, openConfiguration: false, store: store, languagePreferences: LanguagePreferences(load: { L10n.selection }, save: { _ in }))
+        let controller = AppDelegate(instance: instance, openConfiguration: false, store: store, languagePreferences: LanguagePreferences(load: { L10n.selection }, save: { _ in }, preferred: { ["en-US"] }))
         let manager = ConnectionManager(store: store, sessionFactory: { Session() })
         controller.manager = manager
         controller.launchReady = true
@@ -344,11 +344,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try NativeLayoutChecks.require(Array(languages.items.dropFirst(2)).map(\.title) ==
             ["Chinese (Simplified) — 简体中文", "Chinese (Traditional) — 繁體中文", "English", "German — Deutsch", "Japanese — 日本語", "Korean — 한국어", "Spanish — Español"], "fixed alphabetical language names")
         try controller.settings.checkLanguagePreservation {
-            for choice in ["auto", originalLanguage == "de" ? "ja" : "de", originalLanguage] {
+            for choice in ["ko", "auto", originalLanguage] {
                 let entry = NSMenuItem(); entry.representedObject = choice
                 controller.changeLanguage(entry)
                 controller.populateMenu(controller.trayMenu)
-                let checked = controller.languageMenuItem!.submenu!.items.filter { $0.state == .on }
+                let items = controller.languageMenuItem!.submenu!.items
+                if choice == "ko" || choice == "auto" {
+                    let expected = choice == "ko" ? "자동(시스템 언어)" : "Automatic (System Language)"
+                    try NativeLayoutChecks.require(items.first?.title == expected, "localized automatic menu title")
+                }
+                let checked = items.filter { $0.state == .on }
                 try NativeLayoutChecks.require(checked.count == 1 && checked[0].representedObject as? String == choice,
                                                "exactly the selected mode is checked")
                 try NativeLayoutChecks.require(manager.runtime(id)?.state == .connected && manager.runtime(id)?.desiredConnected == true,

@@ -71,8 +71,7 @@ public enum L10n {
         return result
     }
     public static var automaticTitle: String {
-        let name = languageNames[languages.firstIndex(of: language) ?? 2]
-        return text("mac.language.automatic", ["language": name])
+        text("mac.language.automatic")
     }
 }
 
@@ -93,8 +92,10 @@ public struct LanguagePreferences {
     }
     public static var system: Self {
         let domain = "com.gurujung.LocalForwarder", key = "displayLanguage"
-        return Self(load: { UserDefaults(suiteName: domain)?.string(forKey: key) }, save: { value in
-            guard let defaults = UserDefaults(suiteName: domain) else { throw AppError(.key("mac.language.save.failed")) }
+        // Foundation rejects a named suite matching the running app's bundle identifier.
+        let defaults = Bundle.main.bundleIdentifier == domain ? UserDefaults.standard : UserDefaults(suiteName: domain)
+        return Self(load: { defaults?.string(forKey: key) }, save: { value in
+            guard let defaults else { throw AppError(.key("mac.language.save.failed")) }
             let previous = defaults.object(forKey: key)
             defaults.set(value, forKey: key)
             guard defaults.synchronize() else {

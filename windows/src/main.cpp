@@ -598,9 +598,7 @@ private:
     }
     void createTrayMenu(){activeMenu_=CreatePopupMenu();menus_.clear();menuActions_.clear();menuNext_=100;menuDpi_=uiDpi(settingsWindow_?settingsWindow_:window_);
         AppendMenuW(activeMenu_,MF_STRING,1,tw("win.settings"));HMENU languageMenu=CreatePopupMenu();
-        std::string effectiveName=currentLanguage();for(const auto& language:languages())if(language.id==currentLanguage())effectiveName=language.title;
-        auto automatic=wide(tr("win.language_automatic",{{"language",effectiveName}}));
-        AppendMenuW(languageMenu,MF_STRING|(languageSelection()=="auto"?MF_CHECKED:0),20,automatic.c_str());AppendMenuW(languageMenu,MF_SEPARATOR,0,nullptr);
+        AppendMenuW(languageMenu,MF_STRING|(languageSelection()=="auto"?MF_CHECKED:0),20,tw("win.language_automatic"));AppendMenuW(languageMenu,MF_SEPARATOR,0,nullptr);
         for(size_t i=0;i<languages().size();++i){const auto& language=languages()[i];AppendMenuW(languageMenu,MF_STRING|(languageSelection()==language.id?MF_CHECKED:0),21+i,wide(language.title).c_str());}
         AppendMenuW(activeMenu_,MF_POPUP,reinterpret_cast<UINT_PTR>(languageMenu),tw("win.language"));appendLoginStartupMenu(activeMenu_,4,loginStartup_);AppendMenuW(activeMenu_,MF_STRING,2,tw("win.reconnect_all"));AppendMenuW(activeMenu_,MF_STRING,5,tw("win.disconnect_all"));AppendMenuW(activeMenu_,MF_SEPARATOR,0,nullptr);
         for(auto& host:manager_->hosts()){HostMenu menu;menu.menu=CreatePopupMenu();menu.summary=menuNext_++;menu.connect=menuNext_++;menu.disconnect=menuNext_++;menu.settings=menuNext_++;
@@ -954,6 +952,20 @@ public:
         auto check=[](bool value,const char* why){if(!value)throw LocalizedError(why);};
         openSettings({},true);check(settings_.startup&&settings_.order.size()==2,"startup settings load");
         auto originalLanguage=languageSelection();
+        for (const std::string choice : {"ko", "auto"}) {
+            selectLanguage(choice, {"en-US"});
+            createTrayMenu();
+            auto submenu = GetSubMenu(activeMenu_, 1);
+            wchar_t title[128]{};
+            GetMenuStringW(submenu, 20, title, 128, MF_BYCOMMAND);
+            const bool automatic = choice == "auto";
+            check(std::wstring(title) == (automatic ? L"Automatic (System Language)" : L"자동(시스템 언어)"),
+                  "localized automatic menu title");
+            check((GetMenuState(submenu, 20, MF_BYCOMMAND) & MF_CHECKED) == (automatic ? MF_CHECKED : 0),
+                  "automatic check follows selected mode");
+            destroyTrayMenu();
+        }
+        selectLanguage(originalLanguage, systemUILanguages());
         set(Name,L"Unsaved {host} — 日本語");set(Port,L"invalid");capture();auto untranslatedDraft=settings_.drafts;
         SetFocus(control(Name));SendMessageW(control(Name),EM_SETSEL,2,5);
         for(const auto& language:languages()){
