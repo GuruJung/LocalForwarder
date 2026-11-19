@@ -26,7 +26,7 @@ int main(){try{
     check(retained.render()=="Could not save the language setting.\nraw {language} & <peer> 日本語","independent English output and raw preservation");
     selectLanguage("ko",{});
     check(retained.render()=="언어 설정을 저장하지 못했습니다.\nraw {language} & <peer> 日本語","retained message rerenders without touching raw data");
-    check(translated("win.language_automatic",{{"language","{other} & raw"}},"en")=="Automatic (System Language — {other} & raw)","replacement values are not reparsed");
+    check(translated("win.version_value",{{"version","{other} & raw"}},"en")=="Version {other} & raw","replacement values are not reparsed");
     check(translated("win.language",{},"missing")=="Language","missing catalog falls back to English");
     Host host;host.id="host";host.name="name";host.target="server";host.forwards={{"f",true,8080,"localhost",80}};
     ForwardTracker tracker(host);HostRuntime runtime;runtime.executionHost=host;runtime.state=ConnectionState::connected;runtime.forwards=tracker.forwards;

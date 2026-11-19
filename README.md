@@ -46,7 +46,7 @@ Use **Sort by Local Port** below the forwarding list to arrange the selected hos
 
 Choose **Language** directly below **Settings** in the tray menu. LocalForwarder includes English, Korean, Simplified Chinese, Traditional Chinese, Japanese, Spanish, and German. The first launch uses **Automatic (System Language)**: the first supported language in your OS preferred UI languages, or English when none match. Chinese translations use mainland terminology for Simplified and Taiwan terminology for Traditional.
 
-The submenu shows Automatic, a separator, then languages alphabetically by English name with native names alongside. Only the selected option is checked; Automatic also shows the resolved language. The choice is saved for your OS user independently of host configuration.
+The submenu shows Automatic, a separator, then languages alphabetically by English name with native names alongside. Only the selected option is checked. The choice is saved for your OS user independently of host configuration.
 
 Changes apply immediately without reconnecting SSH or losing unsaved edits. Close any open modal before changing the language. Authentication terminals retain the language selected when they started. User-entered names and descriptions, SSH output, and OS-provided dialogs keep their original language. Automatic is evaluated at startup and when selected; restart or select Automatic again after changing OS language preferences. External language files are not loaded.
 
